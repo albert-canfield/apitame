@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="437" viewBox="0 0 980 437" role="img" aria-label="apitame demo: init, inspect, test and add-to on a GitHub API subset">
+<title>apitame demo</title>
+<style>
+text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace;font-size:13.5px;fill:#d4d4d8;opacity:0}
+.g{fill:#4ade80}.y{fill:#facc15}.c{fill:#67e8f9}.d{fill:#8b8b94}.p{fill:#a78bfa}.w{fill:#f4f4f5;font-weight:600}
+@keyframes s0l0{0%,2.970%{opacity:0}2.980%,27.970%{opacity:1}27.980%,100%{opacity:0}}#s0l0{animation:s0l0 20.20s linear infinite}
+@keyframes s0l1{0%,8.416%{opacity:0}8.426%,27.970%{opacity:1}27.980%,100%{opacity:0}}#s0l1{animation:s0l1 20.20s linear infinite}
+@keyframes s0l2{0%,9.208%{opacity:0}9.218%,27.970%{opacity:1}27.980%,100%{opacity:0}}#s0l2{animation:s0l2 20.20s linear infinite}
+@keyframes s0l3{0%,10.000%{opacity:0}10.010%,27.970%{opacity:1}27.980%,100%{opacity:0}}#s0l3{animation:s0l3 20.20s linear infinite}
+@keyframes s0l4{0%,10.792%{opacity:0}10.802%,27.970%{opacity:1}27.980%,100%{opacity:0}}#s0l4{animation:s0l4 20.20s linear infinite}
+@keyframes s0l5{0%,11.584%{opacity:0}11.594%,27.970%{opacity:1}27.980%,100%{opacity:0}}#s0l5{animation:s0l5 20.20s linear infinite}
+@keyframes s1l0{0%,28.218%{opacity:0}28.228%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l0{animation:s1l0 20.20s linear infinite}
+@keyframes s1l1{0%,33.663%{opacity:0}33.673%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l1{animation:s1l1 20.20s linear infinite}
+@keyframes s1l2{0%,34.455%{opacity:0}34.465%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l2{animation:s1l2 20.20s linear infinite}
+@keyframes s1l3{0%,35.248%{opacity:0}35.258%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l3{animation:s1l3 20.20s linear infinite}
+@keyframes s1l4{0%,36.040%{opacity:0}36.050%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l4{animation:s1l4 20.20s linear infinite}
+@keyframes s1l5{0%,36.832%{opacity:0}36.842%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l5{animation:s1l5 20.20s linear infinite}
+@keyframes s1l6{0%,37.624%{opacity:0}37.634%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l6{animation:s1l6 20.20s linear infinite}
+@keyframes s1l7{0%,38.416%{opacity:0}38.426%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l7{animation:s1l7 20.20s linear infinite}
+@keyframes s1l8{0%,39.208%{opacity:0}39.218%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l8{animation:s1l8 20.20s linear infinite}
+@keyframes s1l9{0%,40.000%{opacity:0}40.010%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l9{animation:s1l9 20.20s linear infinite}
+@keyframes s1l10{0%,40.792%{opacity:0}40.802%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l10{animation:s1l10 20.20s linear infinite}
+@keyframes s1l11{0%,41.584%{opacity:0}41.594%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l11{animation:s1l11 20.20s linear infinite}
+@keyframes s1l12{0%,42.376%{opacity:0}42.386%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l12{animation:s1l12 20.20s linear infinite}
+@keyframes s1l13{0%,43.168%{opacity:0}43.178%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l13{animation:s1l13 20.20s linear infinite}
+@keyframes s1l14{0%,43.960%{opacity:0}43.970%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l14{animation:s1l14 20.20s linear infinite}
+@keyframes s1l15{0%,44.752%{opacity:0}44.762%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l15{animation:s1l15 20.20s linear infinite}
+@keyframes s1l16{0%,45.545%{opacity:0}45.555%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l16{animation:s1l16 20.20s linear infinite}
+@keyframes s1l17{0%,46.337%{opacity:0}46.347%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l17{animation:s1l17 20.20s linear infinite}
+@keyframes s1l18{0%,47.129%{opacity:0}47.139%,63.515%{opacity:1}63.525%,100%{opacity:0}}#s1l18{animation:s1l18 20.20s linear infinite}
+@keyframes s2l0{0%,63.762%{opacity:0}63.772%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l0{animation:s2l0 20.20s linear infinite}
+@keyframes s2l1{0%,69.208%{opacity:0}69.218%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l1{animation:s2l1 20.20s linear infinite}
+@keyframes s2l2{0%,70.000%{opacity:0}70.010%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l2{animation:s2l2 20.20s linear infinite}
+@keyframes s2l3{0%,70.792%{opacity:0}70.802%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l3{animation:s2l3 20.20s linear infinite}
+@keyframes s2l4{0%,71.584%{opacity:0}71.594%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l4{animation:s2l4 20.20s linear infinite}
+@keyframes s2l5{0%,72.376%{opacity:0}72.386%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l5{animation:s2l5 20.20s linear infinite}
+@keyframes s2l6{0%,73.168%{opacity:0}73.178%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l6{animation:s2l6 20.20s linear infinite}
+@keyframes s2l7{0%,73.960%{opacity:0}73.970%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l7{animation:s2l7 20.20s linear infinite}
+@keyframes s2l8{0%,74.752%{opacity:0}74.762%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l8{animation:s2l8 20.20s linear infinite}
+@keyframes s2l9{0%,75.545%{opacity:0}75.555%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l9{animation:s2l9 20.20s linear infinite}
+@keyframes s2l10{0%,76.337%{opacity:0}76.347%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l10{animation:s2l10 20.20s linear infinite}
+@keyframes s2l11{0%,77.129%{opacity:0}77.139%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l11{animation:s2l11 20.20s linear infinite}
+@keyframes s2l12{0%,82.574%{opacity:0}82.584%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l12{animation:s2l12 20.20s linear infinite}
+@keyframes s2l13{0%,83.366%{opacity:0}83.376%,99.752%{opacity:1}99.762%,100%{opacity:0}}#s2l13{animation:s2l13 20.20s linear infinite}
+@media (prefers-reduced-motion: reduce){text{animation:none!important;opacity:1}}
+</style>
+<rect width="980" height="437" rx="10" fill="#18181b"/>
+<rect width="980" height="30" rx="10" fill="#27272a"/><rect y="20" width="980" height="10" fill="#27272a"/>
+<circle cx="20" cy="15" r="6" fill="#ef4444"/><circle cx="40" cy="15" r="6" fill="#f59e0b"/><circle cx="60" cy="15" r="6" fill="#22c55e"/>
+<text x="490" y="19" text-anchor="middle" style="opacity:1;fill:#a1a1aa;font-size:12px">apitame</text>
+<text id="s0l0" x="22" y="52" xml:space="preserve"><tspan class="p">$</tspan> <tspan class="w">npx apitame init ./openapi.yaml --name github</tspan></text>
+<text id="s0l1" x="22" y="71" xml:space="preserve"><tspan class="g">✔</tspan> Read GitHub REST API (subset): 38 operations (25 read, 13 write)</text>
+<text id="s0l2" x="22" y="90" xml:space="preserve"><tspan class="g">✔</tspan> Grouped into 8 tools: repos, issues, pulls, search, users, activity, search_operations, call_operation</text>
+<text id="s0l3" x="22" y="109" xml:space="preserve"><tspan class="g">✔</tspan> Read-only mode: 13 write operations blocked until you allow them</text>
+<text id="s0l4" x="22" y="128" xml:space="preserve"><tspan class="g">✔</tspan> Tool list costs ~1,954 tokens (one tool per endpoint: ~5,522, <tspan class="g">65% saved</tspan>)</text>
+<text id="s0l5" x="22" y="147" xml:space="preserve"><tspan class="g">✔</tspan> Wrote ./apitame.config.yaml and 2 skill files in ./skills</text>
+<text id="s1l0" x="22" y="52" xml:space="preserve"><tspan class="p">$</tspan> <tspan class="w">npx apitame inspect</tspan></text>
+<text id="s1l1" x="22" y="71" xml:space="preserve">github  openapi · <tspan class="c">read-only</tspan> · ./openapi.yaml</text>
+<text id="s1l2" x="22" y="90" xml:space="preserve"></text>
+<text id="s1l3" x="22" y="109" xml:space="preserve"><tspan class="d">TOOL               OPS  ACCESS  TOKENS</tspan></text>
+<text id="s1l4" x="22" y="128" xml:space="preserve">repos               11  read       535</text>
+<text id="s1l5" x="22" y="147" xml:space="preserve">issues               4  read       292</text>
+<text id="s1l6" x="22" y="166" xml:space="preserve">pulls                4  read       276</text>
+<text id="s1l7" x="22" y="185" xml:space="preserve">search               3  read       241</text>
+<text id="s1l8" x="22" y="204" xml:space="preserve">users                2  read       141</text>
+<text id="s1l9" x="22" y="223" xml:space="preserve">activity             1  read       157</text>
+<text id="s1l10" x="22" y="242" xml:space="preserve">search_operations    -  read       119</text>
+<text id="s1l11" x="22" y="261" xml:space="preserve">call_operation     any  read        99</text>
+<text id="s1l12" x="22" y="280" xml:space="preserve"></text>
+<text id="s1l13" x="22" y="299" xml:space="preserve">8 tools, ~1,954 tokens (includes 94 for server instructions; estimate)</text>
+<text id="s1l14" x="22" y="318" xml:space="preserve">  one tool per endpoint (38 tools): ~5,522 tokens, <tspan class="g">apitame saves 65%</tspan></text>
+<text id="s1l15" x="22" y="337" xml:space="preserve">  search + call only: ~218 tokens (smallest, but every task needs extra round trips)</text>
+<text id="s1l16" x="22" y="356" xml:space="preserve"></text>
+<text id="s1l17" x="22" y="375" xml:space="preserve"><tspan class="y">!</tspan> 13 operations blocked by <tspan class="c">read-only</tspan> mode: repos/update, repos/delete, repos/create-for-authenticated-u...</text>
+<text id="s1l18" x="22" y="394" xml:space="preserve"><tspan class="g">✔</tspan> Skills: github-api</text>
+<text id="s2l0" x="22" y="52" xml:space="preserve"><tspan class="p">$</tspan> <tspan class="w">npx apitame test</tspan></text>
+<text id="s2l1" x="22" y="71" xml:space="preserve"><tspan class="d">CHECK                              TOOL      RESULT  MS  DETAIL</tspan></text>
+<text id="s2l2" x="22" y="90" xml:space="preserve">search/issues-and-pull-requests    search    <tspan class="g">pass</tspan>     2  HTTP 200</text>
+<text id="s2l3" x="22" y="109" xml:space="preserve">search/code                        search    <tspan class="g">pass</tspan>     2  HTTP 200</text>
+<text id="s2l4" x="22" y="128" xml:space="preserve">users/get-by-username              users     <tspan class="g">pass</tspan>     1  HTTP 200</text>
+<text id="s2l5" x="22" y="147" xml:space="preserve">users/get-authenticated            users     <tspan class="g">pass</tspan>     0  HTTP 200</text>
+<text id="s2l6" x="22" y="166" xml:space="preserve">activity/list-stargazers-for-repo  activity  <tspan class="g">pass</tspan>     1  HTTP 200</text>
+<text id="s2l7" x="22" y="185" xml:space="preserve">13 blocked write operations        safety    <tspan class="g">pass</tspan>     0  refused, nothing sent</text>
+<text id="s2l8" x="22" y="204" xml:space="preserve"></text>
+<text id="s2l9" x="22" y="223" xml:space="preserve"><tspan class="g">✔</tspan> 26 passed, 0 warnings, 0 failed</text>
+<text id="s2l10" x="22" y="242" xml:space="preserve"></text>
+<text id="s2l11" x="22" y="261" xml:space="preserve"><tspan class="p">$</tspan> <tspan class="w">npx apitame add-to claude-code --write</tspan></text>
+<text id="s2l12" x="22" y="280" xml:space="preserve"><tspan class="g">✔</tspan> Updated .mcp.json</text>
+<text id="s2l13" x="22" y="299" xml:space="preserve"><tspan class="g">✔</tspan> Installed skills in .claude/skills: github-api</text>
+</svg>
