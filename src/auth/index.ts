@@ -1,0 +1,183 @@
+import type { AuthConfig } from '../config/schema.js';
+import { resolveEnv } from '../config/env.js';
+import type { Redactor } from '../safety/redact.js';
+
+export interface OutgoingRequest {
+  url: URL;
+  headers: Record<string, string>;
+}
+
+export interface AuthProvider {
+  readonly type: AuthConfig['type'];
+  /** Add credentials to a request. */
+  apply(req: OutgoingRequest, opts?: { forceRefresh?: boolean }): Promise<void>;
+  /** True if a 401 should trigger one retry with fresh credentials. */
+  readonly canRefresh: boolean;
+}
+
+type FetchLike = typeof fetch;
+
+/**
+ * Build an auth provider from config. Secret values are resolved from the
+ * environment here, registered with the redactor, and never stored elsewhere.
+ */
+export function createAuth(
+  cfg: AuthConfig,
+  redactor: Redactor,
+  env: NodeJS.ProcessEnv = process.env,
+  fetchImpl: FetchLike = fetch,
+): AuthProvider {
+  switch (cfg.type) {
+    case 'none':
+      return { type: 'none', canRefresh: false, apply: async () => {} };
+
+    case 'bearer': {
+      const token = resolveEnv(cfg.token, 'auth.token', env);
+      redactor.addSecret(token);
+      return {
+        type: 'bearer',
+        canRefresh: false,
+        apply: async (req) => {
+          req.headers['Authorization'] = `Bearer ${token}`;
+        },
+      };
+    }
+
+    case 'apiKey': {
+      const value = resolveEnv(cfg.value, 'auth.value', env);
+      redactor.addSecret(value);
+      if (cfg.in === 'header') redactor.addSensitiveHeader(cfg.name);
+      return {
+        type: 'apiKey',
+        canRefresh: false,
+        apply: async (req) => {
+          if (cfg.in === 'header') req.headers[cfg.name] = value;
+          else if (cfg.in === 'query') req.url.searchParams.set(cfg.name, value);
+          else {
+            const prev = req.headers['Cookie'];
+            const pair = `${cfg.name}=${encodeURIComponent(value)}`;
+            req.headers['Cookie'] = prev ? `${prev}; ${pair}` : pair;
+          }
+        },
+      };
+    }
+
+    case 'basic': {
+      const username = resolveEnv(cfg.username, 'auth.username', env);
+      const password = resolveEnv(cfg.password, 'auth.password', env);
+      redactor.addSecret(password);
+      const encoded = Buffer.from(`${username}:${password}`).toString('base64');
+      redactor.addSecret(encoded);
+      return {
+        type: 'basic',
+        canRefresh: false,
+        apply: async (req) => {
+          req.headers['Authorization'] = `Basic ${encoded}`;
+        },
+      };
+    }
+
+    case 'oauth2':
+      return new ClientCredentials(cfg, redactor, env, fetchImpl);
+  }
+}
+
+type OAuth2Config = Extract<AuthConfig, { type: 'oauth2' }>;
+
+/** OAuth2 client credentials grant with an in-memory token cache. */
+class ClientCredentials implements AuthProvider {
+  readonly type = 'oauth2' as const;
+  readonly canRefresh = true;
+  private token: { value: string; expiresAt: number } | undefined;
+  private inflight: Promise<string> | undefined;
+  private readonly clientId: string;
+  private readonly clientSecret: string;
+  private readonly tokenUrl: string;
+
+  constructor(
+    private readonly cfg: OAuth2Config,
+    private readonly redactor: Redactor,
+    env: NodeJS.ProcessEnv,
+    private readonly fetchImpl: FetchLike,
+  ) {
+    this.clientId = resolveEnv(cfg.clientId, 'auth.clientId', env);
+    this.clientSecret = resolveEnv(cfg.clientSecret, 'auth.clientSecret', env);
+    this.tokenUrl = resolveEnv(cfg.tokenUrl, 'auth.tokenUrl', env);
+    redactor.addSecret(this.clientSecret);
+    redactor.addSecret(
+      Buffer.from(
+        `${encodeURIComponent(this.clientId)}:${encodeURIComponent(this.clientSecret)}`,
+      ).toString('base64'),
+    );
+  }
+
+  async apply(req: OutgoingRequest, opts?: { forceRefresh?: boolean }): Promise<void> {
+    const token = await this.getToken(opts?.forceRefresh ?? false);
+    req.headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  private async getToken(force: boolean): Promise<string> {
+    if (!force && this.token && this.token.expiresAt > Date.now()) return this.token.value;
+    // Share one token request between concurrent callers.
+    this.inflight ??= this.fetchToken().finally(() => {
+      this.inflight = undefined;
+    });
+    return this.inflight;
+  }
+
+  private async fetchToken(): Promise<string> {
+    const body = new URLSearchParams({ grant_type: 'client_credentials' });
+    if (this.cfg.scopes.length > 0) body.set('scope', this.cfg.scopes.join(' '));
+    if (this.cfg.audience) body.set('audience', this.cfg.audience);
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    };
+    if (this.cfg.clientAuthMethod === 'client_secret_basic') {
+      const basic = Buffer.from(
+        `${encodeURIComponent(this.clientId)}:${encodeURIComponent(this.clientSecret)}`,
+      ).toString('base64');
+      headers['Authorization'] = `Basic ${basic}`;
+    } else {
+      body.set('client_id', this.clientId);
+      body.set('client_secret', this.clientSecret);
+    }
+
+    let res: Response;
+    try {
+      res = await this.fetchImpl(this.tokenUrl, {
+        method: 'POST',
+        headers,
+        body,
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (err) {
+      // The original error is not attached as `cause`: it may hold unredacted secrets.
+      // eslint-disable-next-line preserve-caught-error
+      throw new Error(`OAuth2 token request failed: ${this.redactor.text((err as Error).message)}`);
+    }
+    const raw = await res.text();
+    if (!res.ok) {
+      throw new Error(
+        `OAuth2 token request failed with HTTP ${res.status}: ${this.redactor.text(raw.slice(0, 300))}`,
+      );
+    }
+    let json: { access_token?: unknown; expires_in?: unknown };
+    try {
+      json = JSON.parse(raw) as typeof json;
+    } catch {
+      throw new Error('OAuth2 token endpoint did not return JSON.');
+    }
+    if (typeof json.access_token !== 'string' || json.access_token.length === 0) {
+      throw new Error('OAuth2 token response has no access_token.');
+    }
+    const ttl = typeof json.expires_in === 'number' ? json.expires_in : 3_600;
+    this.redactor.addSecret(json.access_token);
+    // Refresh 30 seconds early to avoid using a token that expires in flight.
+    this.token = {
+      value: json.access_token,
+      expiresAt: Date.now() + Math.max(0, ttl - 30) * 1_000,
+    };
+    return json.access_token;
+  }
+}
