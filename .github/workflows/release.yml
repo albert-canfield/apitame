@@ -2,6 +2,7 @@ name: Release
 
 # Runs when a maintainer pushes a version tag (for example v0.1.0).
 # Publishes to npm with provenance and creates the GitHub release from docs/release-notes/<tag>.md.
+# Both steps are skipped when already done (for example after a manual `npm publish`).
 on:
   push:
     tags: ['v*.*.*']
@@ -29,11 +30,22 @@ jobs:
       - name: Check the tag matches package.json
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "apitame@$VERSION" version >/dev/null 2>&1; then
+            echo "apitame@$VERSION is already on npm, skipping publish."
+          else
+            npm publish --provenance --access public
+          fi
         env:
           # Leave unset when npm trusted publishing is configured for this repository.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Create GitHub release
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "docs/release-notes/$GITHUB_REF_NAME.md"
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists, skipping."
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file "docs/release-notes/$GITHUB_REF_NAME.md"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
