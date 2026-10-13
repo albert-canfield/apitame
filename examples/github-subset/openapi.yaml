@@ -1,0 +1,762 @@
+openapi: 3.1.0
+info:
+  title: GitHub REST API (subset)
+  description: |-
+    A hand-picked subset of the GitHub REST API (repositories, issues, pull requests, search, users and stars),
+    used by the apitame examples. Operation ids, paths and fields follow the official GitHub description.
+  version: 2022-11-28
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: https://api.github.com
+security:
+  - bearerAuth: []
+tags:
+  - name: repos
+    description: Repositories, their content, commits, branches and releases
+  - name: issues
+    description: Issues, comments and labels
+  - name: pulls
+    description: Pull requests, their files and reviews
+  - name: search
+    description: Search repositories, issues and code
+  - name: users
+    description: User profiles
+  - name: activity
+    description: Stars and stargazers
+paths:
+  /repos/{owner}/{repo}:
+    get:
+      tags: [repos]
+      operationId: repos/get
+      summary: Get a repository
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/repository' } } } }
+        '404': { $ref: '#/components/responses/not_found' }
+    patch:
+      tags: [repos]
+      operationId: repos/update
+      summary: Update a repository
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description: { type: string }
+                homepage: { type: string }
+                private: { type: boolean }
+                archived: { type: boolean }
+                default_branch: { type: string }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/repository' } } } }
+    delete:
+      tags: [repos]
+      operationId: repos/delete
+      summary: Delete a repository
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }]
+      responses:
+        '204': { description: No Content }
+  /users/{username}/repos:
+    get:
+      tags: [repos]
+      operationId: repos/list-for-user
+      summary: List repositories for a user
+      parameters:
+        - { $ref: '#/components/parameters/username' }
+        - name: type
+          in: query
+          schema: { type: string, enum: [all, owner, member], default: owner }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [created, updated, pushed, full_name], default: full_name }
+        - { $ref: '#/components/parameters/per_page' }
+        - { $ref: '#/components/parameters/page' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/repository' } } } } }
+  /orgs/{org}/repos:
+    get:
+      tags: [repos]
+      operationId: repos/list-for-org
+      summary: List organization repositories
+      parameters:
+        - { name: org, in: path, required: true, schema: { type: string }, description: The organization name. }
+        - name: type
+          in: query
+          schema: { type: string, enum: [all, public, private, forks, sources, member], default: all }
+        - { $ref: '#/components/parameters/per_page' }
+        - { $ref: '#/components/parameters/page' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/repository' } } } } }
+  /user/repos:
+    post:
+      tags: [repos]
+      operationId: repos/create-for-authenticated-user
+      summary: Create a repository for the authenticated user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, description: The name of the repository. }
+                description: { type: string }
+                private: { type: boolean, default: false }
+                auto_init: { type: boolean, default: false }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/repository' } } } }
+  /repos/{owner}/{repo}/contributors:
+    get:
+      tags: [repos]
+      operationId: repos/list-contributors
+      summary: List repository contributors
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/per_page' }, { $ref: '#/components/parameters/page' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - { $ref: '#/components/schemas/simple-user' }
+                    - type: object
+                      properties:
+                        contributions: { type: integer }
+  /repos/{owner}/{repo}/languages:
+    get:
+      tags: [repos]
+      operationId: repos/list-languages
+      summary: List repository languages
+      description: Lists languages for the specified repository. The value shown for each language is the number of bytes of code written in that language.
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: object, additionalProperties: { type: integer } } } } }
+  /repos/{owner}/{repo}/branches:
+    get:
+      tags: [repos]
+      operationId: repos/list-branches
+      summary: List branches
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/per_page' }, { $ref: '#/components/parameters/page' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    protected: { type: boolean }
+                    commit: { type: object, properties: { sha: { type: string }, url: { type: string } } }
+  /repos/{owner}/{repo}/contents/{path}:
+    get:
+      tags: [repos]
+      operationId: repos/get-content
+      summary: Get repository content
+      description: Gets the contents of a file or directory in a repository. File content is base64 encoded.
+      parameters:
+        - { $ref: '#/components/parameters/owner' }
+        - { $ref: '#/components/parameters/repo' }
+        - { name: path, in: path, required: true, schema: { type: string }, description: Path of the file or directory, for example README.md. }
+        - { name: ref, in: query, schema: { type: string }, description: The name of the commit, branch or tag. Default is the default branch. }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/content-file' } } } }
+  /repos/{owner}/{repo}/commits:
+    get:
+      tags: [repos]
+      operationId: repos/list-commits
+      summary: List commits
+      parameters:
+        - { $ref: '#/components/parameters/owner' }
+        - { $ref: '#/components/parameters/repo' }
+        - { name: sha, in: query, schema: { type: string }, description: SHA or branch to start listing commits from. }
+        - { name: path, in: query, schema: { type: string }, description: Only commits containing this file path. }
+        - { name: author, in: query, schema: { type: string }, description: GitHub username or email address. }
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { $ref: '#/components/parameters/per_page' }
+        - { $ref: '#/components/parameters/page' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/commit' } } } } }
+  /repos/{owner}/{repo}/commits/{ref}:
+    get:
+      tags: [repos]
+      operationId: repos/get-commit
+      summary: Get a commit
+      parameters:
+        - { $ref: '#/components/parameters/owner' }
+        - { $ref: '#/components/parameters/repo' }
+        - { name: ref, in: path, required: true, schema: { type: string }, description: Commit SHA, branch or tag name. }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/commit' } } } }
+  /repos/{owner}/{repo}/releases:
+    get:
+      tags: [repos]
+      operationId: repos/list-releases
+      summary: List releases
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/per_page' }, { $ref: '#/components/parameters/page' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/release' } } } } }
+  /repos/{owner}/{repo}/releases/latest:
+    get:
+      tags: [repos]
+      operationId: repos/get-latest-release
+      summary: Get the latest release
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/release' } } } }
+  /repos/{owner}/{repo}/issues:
+    get:
+      tags: [issues]
+      operationId: issues/list-for-repo
+      summary: List repository issues
+      description: Lists issues in a repository. Pull requests are also returned; they have a pull_request key.
+      parameters:
+        - { $ref: '#/components/parameters/owner' }
+        - { $ref: '#/components/parameters/repo' }
+        - name: state
+          in: query
+          schema: { type: string, enum: [open, closed, all], default: open }
+        - { name: labels, in: query, schema: { type: string }, description: Comma separated list of label names, for example bug,ui. }
+        - { name: assignee, in: query, schema: { type: string } }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [created, updated, comments], default: created }
+        - name: direction
+          in: query
+          schema: { type: string, enum: [asc, desc], default: desc }
+        - { name: since, in: query, schema: { type: string, format: date-time } }
+        - { $ref: '#/components/parameters/per_page' }
+        - { $ref: '#/components/parameters/page' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/issue' } } } } }
+    post:
+      tags: [issues]
+      operationId: issues/create
+      summary: Create an issue
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, description: The title of the issue. }
+                body: { type: string, description: The contents of the issue. }
+                labels: { type: array, items: { type: string } }
+                assignees: { type: array, items: { type: string } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/issue' } } } }
+  /repos/{owner}/{repo}/issues/{issue_number}:
+    get:
+      tags: [issues]
+      operationId: issues/get
+      summary: Get an issue
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/issue_number' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/issue' } } } }
+    patch:
+      tags: [issues]
+      operationId: issues/update
+      summary: Update an issue
+      description: Update the title, body, state, labels or assignees of an issue. Set state to closed to close it.
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/issue_number' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                body: { type: string }
+                state: { type: string, enum: [open, closed] }
+                state_reason: { type: [string, 'null'], enum: [completed, not_planned, reopened, null] }
+                labels: { type: array, items: { type: string } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/issue' } } } }
+  /repos/{owner}/{repo}/issues/{issue_number}/comments:
+    get:
+      tags: [issues]
+      operationId: issues/list-comments
+      summary: List issue comments
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/issue_number' }, { $ref: '#/components/parameters/per_page' }, { $ref: '#/components/parameters/page' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/issue-comment' } } } } }
+    post:
+      tags: [issues]
+      operationId: issues/create-comment
+      summary: Create an issue comment
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/issue_number' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string, description: The contents of the comment. }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/issue-comment' } } } }
+  /repos/{owner}/{repo}/issues/{issue_number}/labels:
+    post:
+      tags: [issues]
+      operationId: issues/add-labels
+      summary: Add labels to an issue
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/issue_number' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                labels: { type: array, items: { type: string } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/label' } } } } }
+  /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}:
+    delete:
+      tags: [issues]
+      operationId: issues/remove-label
+      summary: Remove a label from an issue
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/issue_number' }, { name: name, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/label' } } } } }
+  /repos/{owner}/{repo}/issues/{issue_number}/lock:
+    put:
+      tags: [issues]
+      operationId: issues/lock
+      summary: Lock an issue
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/issue_number' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lock_reason: { type: string, enum: [off-topic, too heated, resolved, spam] }
+      responses:
+        '204': { description: No Content }
+  /repos/{owner}/{repo}/labels:
+    get:
+      tags: [issues]
+      operationId: issues/list-labels-for-repo
+      summary: List labels for a repository
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/per_page' }, { $ref: '#/components/parameters/page' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/label' } } } } }
+  /repos/{owner}/{repo}/pulls:
+    get:
+      tags: [pulls]
+      operationId: pulls/list
+      summary: List pull requests
+      parameters:
+        - { $ref: '#/components/parameters/owner' }
+        - { $ref: '#/components/parameters/repo' }
+        - name: state
+          in: query
+          schema: { type: string, enum: [open, closed, all], default: open }
+        - { name: base, in: query, schema: { type: string }, description: Filter by base branch name. }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [created, updated, popularity, long-running], default: created }
+        - { $ref: '#/components/parameters/per_page' }
+        - { $ref: '#/components/parameters/page' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/pull-request' } } } } }
+    post:
+      tags: [pulls]
+      operationId: pulls/create
+      summary: Create a pull request
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [head, base]
+              properties:
+                title: { type: string }
+                head: { type: string, description: The branch where your changes are. }
+                base: { type: string, description: The branch you want the changes pulled into. }
+                body: { type: string }
+                draft: { type: boolean }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/pull-request' } } } }
+  /repos/{owner}/{repo}/pulls/{pull_number}:
+    get:
+      tags: [pulls]
+      operationId: pulls/get
+      summary: Get a pull request
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/pull_number' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/pull-request' } } } }
+  /repos/{owner}/{repo}/pulls/{pull_number}/files:
+    get:
+      tags: [pulls]
+      operationId: pulls/list-files
+      summary: List pull request files
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/pull_number' }, { $ref: '#/components/parameters/per_page' }, { $ref: '#/components/parameters/page' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    filename: { type: string }
+                    status: { type: string, enum: [added, removed, modified, renamed, copied, changed, unchanged] }
+                    additions: { type: integer }
+                    deletions: { type: integer }
+                    changes: { type: integer }
+                    patch: { type: string }
+  /repos/{owner}/{repo}/pulls/{pull_number}/reviews:
+    get:
+      tags: [pulls]
+      operationId: pulls/list-reviews
+      summary: List reviews for a pull request
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/pull_number' }, { $ref: '#/components/parameters/per_page' }, { $ref: '#/components/parameters/page' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    user: { $ref: '#/components/schemas/simple-user' }
+                    body: { type: string }
+                    state: { type: string, example: APPROVED }
+                    submitted_at: { type: string, format: date-time }
+  /repos/{owner}/{repo}/pulls/{pull_number}/merge:
+    put:
+      tags: [pulls]
+      operationId: pulls/merge
+      summary: Merge a pull request
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/pull_number' }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                commit_title: { type: string }
+                merge_method: { type: string, enum: [merge, squash, rebase] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sha: { type: string }
+                  merged: { type: boolean }
+                  message: { type: string }
+  /search/repositories:
+    get:
+      tags: [search]
+      operationId: search/repos
+      summary: Search repositories
+      description: Find repositories via keywords and qualifiers, for example "mcp language:typescript stars:>100".
+      parameters:
+        - { $ref: '#/components/parameters/q' }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [stars, forks, help-wanted-issues, updated] }
+        - { $ref: '#/components/parameters/order' }
+        - { $ref: '#/components/parameters/per_page' }
+        - { $ref: '#/components/parameters/page' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count: { type: integer }
+                  incomplete_results: { type: boolean }
+                  items: { type: array, items: { $ref: '#/components/schemas/repository' } }
+  /search/issues:
+    get:
+      tags: [search]
+      operationId: search/issues-and-pull-requests
+      summary: Search issues and pull requests
+      description: Find issues and pull requests by keywords and qualifiers, for example "is:open label:bug repo:owner/name".
+      parameters:
+        - { $ref: '#/components/parameters/q' }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [comments, reactions, created, updated] }
+        - { $ref: '#/components/parameters/order' }
+        - { $ref: '#/components/parameters/per_page' }
+        - { $ref: '#/components/parameters/page' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count: { type: integer }
+                  incomplete_results: { type: boolean }
+                  items: { type: array, items: { $ref: '#/components/schemas/issue' } }
+  /search/code:
+    get:
+      tags: [search]
+      operationId: search/code
+      summary: Search code
+      description: Search for code in files, for example "addClass in:file language:js repo:jquery/jquery".
+      parameters: [{ $ref: '#/components/parameters/q' }, { $ref: '#/components/parameters/per_page' }, { $ref: '#/components/parameters/page' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count: { type: integer }
+                  incomplete_results: { type: boolean }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        path: { type: string }
+                        sha: { type: string }
+                        html_url: { type: string, format: uri }
+                        repository: { $ref: '#/components/schemas/repository' }
+  /users/{username}:
+    get:
+      tags: [users]
+      operationId: users/get-by-username
+      summary: Get a user
+      parameters: [{ $ref: '#/components/parameters/username' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/public-user' } } } }
+  /user:
+    get:
+      tags: [users]
+      operationId: users/get-authenticated
+      summary: Get the authenticated user
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/public-user' } } } }
+  /repos/{owner}/{repo}/stargazers:
+    get:
+      tags: [activity]
+      operationId: activity/list-stargazers-for-repo
+      summary: List stargazers
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }, { $ref: '#/components/parameters/per_page' }, { $ref: '#/components/parameters/page' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/simple-user' } } } } }
+  /user/starred/{owner}/{repo}:
+    put:
+      tags: [activity]
+      operationId: activity/star-repo-for-authenticated-user
+      summary: Star a repository for the authenticated user
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }]
+      responses:
+        '204': { description: No Content }
+    delete:
+      tags: [activity]
+      operationId: activity/unstar-repo-for-authenticated-user
+      summary: Unstar a repository for the authenticated user
+      parameters: [{ $ref: '#/components/parameters/owner' }, { $ref: '#/components/parameters/repo' }]
+      responses:
+        '204': { description: No Content }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: A personal access token. Read-only fine-grained tokens are enough for the read tools.
+  parameters:
+    owner: { name: owner, in: path, required: true, schema: { type: string }, description: The account owner of the repository. Not case sensitive. }
+    repo: { name: repo, in: path, required: true, schema: { type: string }, description: The name of the repository without the .git extension. }
+    username: { name: username, in: path, required: true, schema: { type: string }, description: The handle for the GitHub user account. }
+    issue_number: { name: issue_number, in: path, required: true, schema: { type: integer }, description: The number that identifies the issue. }
+    pull_number: { name: pull_number, in: path, required: true, schema: { type: integer }, description: The number that identifies the pull request. }
+    per_page: { name: per_page, in: query, schema: { type: integer, default: 30, maximum: 100 }, description: Results per page (max 100). }
+    page: { name: page, in: query, schema: { type: integer, default: 1 }, description: Page number of the results to fetch. }
+    q: { name: q, in: query, required: true, schema: { type: string }, description: The query, with keywords and qualifiers. }
+    order: { name: order, in: query, schema: { type: string, enum: [desc, asc], default: desc } }
+  responses:
+    not_found:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/basic-error' }
+  schemas:
+    basic-error:
+      type: object
+      properties:
+        message: { type: string }
+        documentation_url: { type: string }
+    simple-user:
+      type: object
+      required: [login, id]
+      properties:
+        login: { type: string, example: octocat }
+        id: { type: integer, example: 1 }
+        avatar_url: { type: string, format: uri }
+        html_url: { type: string, format: uri }
+        type: { type: string, example: User }
+    public-user:
+      allOf:
+        - { $ref: '#/components/schemas/simple-user' }
+        - type: object
+          properties:
+            name: { type: [string, 'null'] }
+            company: { type: [string, 'null'] }
+            blog: { type: [string, 'null'] }
+            location: { type: [string, 'null'] }
+            bio: { type: [string, 'null'] }
+            public_repos: { type: integer }
+            followers: { type: integer }
+            following: { type: integer }
+            created_at: { type: string, format: date-time }
+    license-simple:
+      type: [object, 'null']
+      properties:
+        key: { type: string, example: mit }
+        name: { type: string, example: MIT License }
+        spdx_id: { type: [string, 'null'], example: MIT }
+    repository:
+      type: object
+      required: [id, name, full_name, owner, private, html_url]
+      properties:
+        id: { type: integer, example: 1296269 }
+        name: { type: string, example: Hello-World }
+        full_name: { type: string, example: octocat/Hello-World }
+        owner: { $ref: '#/components/schemas/simple-user' }
+        private: { type: boolean }
+        html_url: { type: string, format: uri }
+        description: { type: [string, 'null'] }
+        fork: { type: boolean }
+        homepage: { type: [string, 'null'] }
+        language: { type: [string, 'null'] }
+        stargazers_count: { type: integer }
+        forks_count: { type: integer }
+        open_issues_count: { type: integer }
+        default_branch: { type: string, example: main }
+        topics: { type: array, items: { type: string } }
+        archived: { type: boolean }
+        license: { $ref: '#/components/schemas/license-simple' }
+        pushed_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    label:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string, example: bug }
+        color: { type: string, example: d73a4a }
+        description: { type: [string, 'null'] }
+    issue:
+      type: object
+      required: [id, number, title, state, user]
+      properties:
+        id: { type: integer }
+        number: { type: integer, example: 1347 }
+        title: { type: string, example: Found a bug }
+        state: { type: string, example: open }
+        user: { $ref: '#/components/schemas/simple-user' }
+        labels: { type: array, items: { $ref: '#/components/schemas/label' } }
+        assignees: { type: array, items: { $ref: '#/components/schemas/simple-user' } }
+        comments: { type: integer }
+        body: { type: [string, 'null'] }
+        html_url: { type: string, format: uri }
+        pull_request:
+          type: object
+          description: Present when the issue is a pull request.
+          properties:
+            url: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        closed_at: { type: [string, 'null'], format: date-time }
+    issue-comment:
+      type: object
+      properties:
+        id: { type: integer }
+        user: { $ref: '#/components/schemas/simple-user' }
+        body: { type: string }
+        html_url: { type: string, format: uri }
+        created_at: { type: string, format: date-time }
+    pull-request:
+      type: object
+      required: [id, number, title, state, user]
+      properties:
+        id: { type: integer }
+        number: { type: integer, example: 42 }
+        title: { type: string }
+        state: { type: string, enum: [open, closed] }
+        draft: { type: boolean }
+        user: { $ref: '#/components/schemas/simple-user' }
+        body: { type: [string, 'null'] }
+        html_url: { type: string, format: uri }
+        head: { type: object, properties: { ref: { type: string }, sha: { type: string } } }
+        base: { type: object, properties: { ref: { type: string }, sha: { type: string } } }
+        merged_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    commit:
+      type: object
+      properties:
+        sha: { type: string, example: 6dcb09b5b57875f334f61aebed695e2e4193db5e }
+        html_url: { type: string, format: uri }
+        commit:
+          type: object
+          properties:
+            message: { type: string }
+            author:
+              type: object
+              properties:
+                name: { type: string }
+                email: { type: string }
+                date: { type: string, format: date-time }
+        author:
+          anyOf:
+            - { $ref: '#/components/schemas/simple-user' }
+            - { type: 'null' }
+    release:
+      type: object
+      properties:
+        id: { type: integer }
+        tag_name: { type: string, example: v1.0.0 }
+        name: { type: [string, 'null'] }
+        body: { type: [string, 'null'] }
+        draft: { type: boolean }
+        prerelease: { type: boolean }
+        html_url: { type: string, format: uri }
+        published_at: { type: [string, 'null'], format: date-time }
+    content-file:
+      type: object
+      properties:
+        type: { type: string, example: file }
+        encoding: { type: string, example: base64 }
+        size: { type: integer }
+        name: { type: string }
+        path: { type: string }
+        content: { type: string }
+        sha: { type: string }
+        html_url: { type: [string, 'null'], format: uri }
