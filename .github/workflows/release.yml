@@ -29,6 +29,15 @@ jobs:
       - run: pnpm test
       - name: Check the tag matches package.json
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - name: Check npm authentication
+        run: |
+          if ! user="$(npm whoami 2>/dev/null)"; then
+            echo "::error::NPM_TOKEN is missing, revoked or invalid. Create a granular token with read and write access to all packages and bypass 2FA, then run: gh secret set NPM_TOKEN"
+            exit 1
+          fi
+          echo "Publishing as $user"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Publish to npm
         run: |
           VERSION="$(node -p "require('./package.json').version")"
