@@ -1,0 +1,30 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The smallest spec, schema or config that shows the problem. Remove secrets.
+      render: yaml
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Command output. Run with APITAME_DEBUG=1 for a stack trace.
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `apitame --version` and `node --version`, plus the MCP client if relevant.
+    validations:
+      required: true
