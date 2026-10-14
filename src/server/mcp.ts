@@ -54,8 +54,18 @@ export function createMcpServer(
   server.setRequestHandler('tools/list', async () => ({ tools: current().listTools() }));
 
   server.setRequestHandler('tools/call', async (request, ctx) => {
+    const auth = ctx.http?.authInfo;
+    const subject = auth?.extra?.subject;
     const callCtx: CallContext = {
       signal: ctx.mcpReq.signal,
+      ...(auth
+        ? {
+            caller: {
+              client: auth.clientId,
+              ...(typeof subject === 'string' ? { subject } : {}),
+            },
+          }
+        : {}),
       elicit: async (message: string): Promise<ElicitOutcome> => {
         if (!server.getClientCapabilities()?.elicitation) return 'unsupported';
         try {

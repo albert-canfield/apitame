@@ -6,24 +6,49 @@ import {
   type ServerResponse,
 } from 'node:http';
 import {
+  hostHeaderValidation,
   localhostHostValidation,
   localhostOriginValidation,
   NodeStreamableHTTPServerTransport,
 } from '@modelcontextprotocol/node';
-import type { Server } from '@modelcontextprotocol/server';
+import {
+  bearerAuthChallengeResponse,
+  localhostAllowedHostnames,
+  OAuthError,
+  verifyBearerToken,
+  type AuthInfo,
+  type OAuthTokenVerifier,
+  type Server,
+} from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { Logger } from '../log.js';
+import {
+  protectedResourceMetadata,
+  protectedResourceMetadataPath,
+  protectedResourceMetadataUrl,
+  type OAuthOptions,
+} from './oauth.js';
 
 export async function serveStdio(server: Server): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
+/** OAuth 2.1 access tokens from an external authorization server (`http.oauth`). */
+export interface HttpOAuth {
+  verifier: OAuthTokenVerifier;
+  options: OAuthOptions;
+  /** Shown as `resource_name` in the protected resource metadata. */
+  name: string;
+}
+
 export interface HttpOptions {
   host: string;
   port: number;
-  /** Bearer token required on every request. Mandatory for non-loopback hosts. */
+  /** Static bearer token required on every request (`APITAME_HTTP_TOKEN`). */
   token?: string;
+  /** Require OAuth access tokens instead. Cannot be combined with `token`. */
+  oauth?: HttpOAuth;
   logger: Logger;
   /**
    * Keep one MCP session per client (`Mcp-Session-Id`) instead of a fresh
@@ -61,12 +86,48 @@ function rpcError(res: ServerResponse, status: number, message: string): void {
   send(res, status, { jsonrpc: '2.0', error: { code: -32000, message }, id: null });
 }
 
+/** Copy a web `Response` (the SDK's bearer challenge) onto a Node response. */
+async function sendWeb(res: ServerResponse, response: Response): Promise<void> {
+  const headers: Record<string, string> = {};
+  response.headers.forEach((value, key) => {
+    headers[key] = value;
+  });
+  res.writeHead(response.status, headers).end(await response.text());
+}
+
+/** The RFC 9728 document is public, and browser-based clients read it cross-origin. */
+function sendMetadata(req: IncomingMessage, res: ServerResponse, body: string): void {
+  const cors = { 'Access-Control-Allow-Origin': '*' };
+  if (req.method === 'OPTIONS') {
+    res
+      .writeHead(204, {
+        ...cors,
+        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+        'Access-Control-Allow-Headers': '*',
+      })
+      .end();
+    return;
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405, { Allow: 'GET, HEAD, OPTIONS' }).end();
+    return;
+  }
+  res.writeHead(200, { ...cors, 'Content-Type': 'application/json' }).end(body);
+}
+
+/** Who a session belongs to: a session id alone must not let another user into it. */
+function ownerOf(auth: AuthInfo | undefined): string | undefined {
+  return auth && JSON.stringify([auth.clientId, auth.extra?.subject ?? null]);
+}
+
 interface Session {
   server: Server;
   transport: NodeStreamableHTTPServerTransport;
   lastSeen: number;
   /** Requests and streams still open. A busy session is never closed for being idle. */
   open: number;
+  /** The OAuth client and subject that started it, when OAuth is on. */
+  owner: string | undefined;
 }
 
 /**
@@ -76,16 +137,39 @@ interface Session {
  * requests, which elicitation needs.
  *
  * Safe defaults: loopback only, Host and Origin checks against DNS rebinding,
- * and a bearer token required as soon as the server listens beyond loopback.
+ * and authentication (a static bearer token or OAuth access tokens) required
+ * as soon as the server listens beyond loopback.
  */
 export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Promise<HttpServer> {
   const loopback = isLoopback(opts.host);
-  if (!loopback && !opts.token) {
+  if (opts.token && opts.oauth) {
     throw new Error(
-      `Refusing to listen on ${opts.host} without authentication. Set APITAME_HTTP_TOKEN (clients then send "Authorization: Bearer <token>"), or use --host 127.0.0.1.`,
+      'APITAME_HTTP_TOKEN and http.oauth cannot be used together. Unset APITAME_HTTP_TOKEN to require OAuth access tokens, or remove http.oauth from the config to use the static token.',
     );
   }
-  const validateHost = loopback ? localhostHostValidation() : undefined;
+  if (!loopback && !opts.token && !opts.oauth) {
+    throw new Error(
+      `Refusing to listen on ${opts.host} without authentication. Set APITAME_HTTP_TOKEN (clients then send "Authorization: Bearer <token>"), configure http.oauth, or use --host 127.0.0.1.`,
+    );
+  }
+  const oauth = opts.oauth && {
+    verifier: opts.oauth.verifier,
+    requiredScopes: opts.oauth.options.scopes,
+    resourceMetadataUrl: protectedResourceMetadataUrl(opts.oauth.options.resource),
+    expectedResource: new URL(opts.oauth.options.resource),
+    metadata: JSON.stringify(protectedResourceMetadata(opts.oauth.options, opts.oauth.name)),
+    metadataPaths: new Set([
+      protectedResourceMetadataPath(opts.oauth.options.resource),
+      '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-protected-resource/mcp',
+    ]),
+  };
+  // Behind a reverse proxy on the same machine, requests carry the public host name.
+  const validateHost = loopback
+    ? oauth
+      ? hostHeaderValidation([...localhostAllowedHostnames(), oauth.expectedResource.hostname])
+      : localhostHostValidation()
+    : undefined;
   const validateOrigin = loopback ? localhostOriginValidation() : undefined;
   const closeServer = (server: Server, transport: NodeStreamableHTTPServerTransport) => {
     void transport.close().catch(() => {});
@@ -107,12 +191,13 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
     for (const [id, s] of sessions) if (s.open === 0 && now - s.lastSeen > idleMs) endSession(id);
   };
 
-  const handleSession = async (req: IncomingMessage, res: ServerResponse) => {
+  const handleSession = async (req: IncomingMessage, res: ServerResponse, owner?: string) => {
     const header = req.headers['mcp-session-id'];
     const id = Array.isArray(header) ? header[0] : header;
     if (id) {
       const s = sessions.get(id);
-      if (!s) return rpcError(res, 404, 'Session not found. Send initialize to start a new one.');
+      if (!s || s.owner !== owner)
+        return rpcError(res, 404, 'Session not found. Send initialize to start a new one.');
       s.open++;
       s.lastSeen = Date.now();
       res.on('close', () => {
@@ -134,7 +219,7 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
     const transport: NodeStreamableHTTPServerTransport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
-        sessions.set(sid, { server, transport, lastSeen: Date.now(), open: 1 });
+        sessions.set(sid, { server, transport, lastSeen: Date.now(), open: 1, owner });
       },
       onsessionclosed: (sid) => endSession(sid),
     });
@@ -159,6 +244,7 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (url.pathname === '/health') return send(res, 200, { ok: true });
+    if (oauth?.metadataPaths.has(url.pathname)) return sendMetadata(req, res, oauth.metadata);
     if (url.pathname !== '/mcp')
       return send(res, 404, { error: 'Not found. The MCP endpoint is /mcp.' });
     if (validateHost && !validateHost(req, res)) return;
@@ -167,9 +253,22 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
       res.setHeader('WWW-Authenticate', 'Bearer');
       return send(res, 401, { error: 'Missing or invalid bearer token.' });
     }
+    let auth: AuthInfo | undefined;
+    if (oauth) {
+      try {
+        auth = await verifyBearerToken(req.headers.authorization, oauth);
+      } catch (err) {
+        const message = (err as Error).message;
+        if (err instanceof OAuthError) opts.logger.debug(`OAuth: refused a request: ${message}`);
+        else opts.logger.error(`OAuth: token check failed: ${message}`);
+        return await sendWeb(res, bearerAuthChallengeResponse(err, oauth));
+      }
+      // The transport hands it to request handlers as `ctx.http.authInfo`.
+      (req as IncomingMessage & { auth?: AuthInfo }).auth = auth;
+    }
 
     try {
-      await (opts.sessions ? handleSession(req, res) : handleStateless(req, res));
+      await (opts.sessions ? handleSession(req, res, ownerOf(auth)) : handleStateless(req, res));
     } catch (err) {
       opts.logger.error(`HTTP request failed: ${(err as Error).message}`);
       if (!res.headersSent) send(res, 500, { error: 'Internal error' });

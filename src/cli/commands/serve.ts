@@ -4,6 +4,7 @@ import { Logger, type LogLevel } from '../../log.js';
 import { Redactor } from '../../safety/redact.js';
 import { LiveRuntime } from '../../server/live.js';
 import { createMcpServer } from '../../server/mcp.js';
+import { JwtVerifier } from '../../server/oauth.js';
 import { serveHttp, serveStdio } from '../../server/transport.js';
 
 export interface ServeOptions {
@@ -87,6 +88,17 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
   const token = process.env.APITAME_HTTP_TOKEN;
   if (token) redactor.addSecret(token);
   const sessions = opts.sessions === true;
+  // Read once: the verifier and the metadata document are built at startup, so changes to
+  // http.oauth need a restart (a --watch reload says so).
+  const oauthConfig = live.loaded.config.http.oauth;
+  const verifier = oauthConfig && new JwtVerifier(oauthConfig);
+  if (oauthConfig && watching) {
+    const applied = JSON.stringify(oauthConfig);
+    live.onReload(() => {
+      if (JSON.stringify(live.loaded.config.http.oauth) !== applied)
+        logger.warn('http.oauth changed; restart apitame to apply it.');
+    });
+  }
   // Every server reads the runtime through `live`, so stateless requests and sessions alike see reloads.
   await serveHttp(makeServer, {
     host,
@@ -95,8 +107,26 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
     sessions,
     onServerClosed: (s) => servers.delete(s),
     ...(token ? { token } : {}),
+    ...(oauthConfig && verifier
+      ? { oauth: { verifier, options: oauthConfig, name: rt.name } }
+      : {}),
   });
-  const notes = [sessions ? 'sessions' : '', token ? 'bearer token required' : ''].filter(Boolean);
+  if (oauthConfig && verifier) {
+    try {
+      const keys = await verifier.warmUp();
+      logger.info(`OAuth: ${keys} signing key${keys === 1 ? '' : 's'} from ${oauthConfig.issuer}`);
+    } catch (err) {
+      // Keep serving: the keys are fetched again when tokens arrive (at most every few seconds).
+      logger.error(
+        `OAuth: could not load the signing keys of ${oauthConfig.issuer}: ${(err as Error).message} Tokens are refused until the keys load; apitame tries again when requests arrive.`,
+      );
+    }
+  }
+  const notes = [
+    sessions ? 'sessions' : '',
+    token ? 'bearer token required' : '',
+    oauthConfig ? `OAuth from ${oauthConfig.issuer}` : '',
+  ].filter(Boolean);
   logger.info(
     `serving ${summary} at http://${host.includes(':') ? `[${host}]` : host}:${port}/mcp${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`,
   );

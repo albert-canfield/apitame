@@ -55,5 +55,5 @@ See [architecture.md](architecture.md) for modules and request flows, and [decis
 ## After v0.1
 
 - v0.2: multipart uploads (done), Swagger 2.0 import (done), response field selection (done), MySQL (done), audit log and rate limits (done), `doctor` (done).
-- Next: see the [open issues](https://github.com/albert-canfield/apitame/issues): tool-selection eval (#24), SQL Server and DuckDB (#27), OAuth 2.1 for HTTP (#28), approvals through multi round-trip input (#45).
+- Next: see the [open issues](https://github.com/albert-canfield/apitame/issues): tool-selection eval (#24), SQL Server and DuckDB (#27), approvals through multi round-trip input (#45).
 - Later: GraphQL.

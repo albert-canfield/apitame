@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- OAuth 2.1 for the HTTP transport (`http.oauth` in the config): apitame acts as a resource server for your own authorization server (Keycloak, Auth0, Okta, Entra ID and others that issue JWT access tokens). It serves RFC 9728 protected resource metadata, answers requests without a valid token with a 401 that points MCP clients to the sign-in, and checks each access token locally: signature against the issuer's published keys, issuer, audience, expiry and required scopes (403 `insufficient_scope`). Keys are discovered through RFC 8414 or OpenID Connect metadata and refreshed when the issuer rotates them. With `--sessions`, a session belongs to the user who started it, and the audit log records the token's client id and subject. `APITAME_HTTP_TOKEN` and `http.oauth` cannot be combined (#28).
+
 ### Changed
 
 - **Breaking:** Node.js 22.14 or later is required. Node 20 reached end of life in April 2026, and the SQLite driver (better-sqlite3 13) crashes on Node 22 before 22.14; `apitame doctor` fails on older versions. Thanks @Enard52 (#48).

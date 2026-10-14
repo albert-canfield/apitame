@@ -82,6 +82,28 @@ describe('config schema', () => {
     expect(() => parseConfig(withParam('x'))).not.toThrow();
   });
 
+  it('reads http.oauth with defaults, and refuses it without valid URLs', () => {
+    expect(parseConfig(minimal).http.oauth).toBeUndefined();
+    const cfg = parseConfig({
+      ...minimal,
+      http: {
+        oauth: { issuer: 'https://auth.example.com', resource: 'https://mcp.example.com/mcp' },
+      },
+    });
+    expect(cfg.http.oauth).toEqual({
+      issuer: 'https://auth.example.com',
+      resource: 'https://mcp.example.com/mcp',
+      scopes: [],
+      audiences: [],
+    });
+    expect(() =>
+      parseConfig({ ...minimal, http: { oauth: { issuer: 'https://auth.example.com' } } }),
+    ).toThrow(/http\.oauth\.resource/);
+    expect(() =>
+      parseConfig({ ...minimal, http: { oauth: { issuer: 'auth', resource: 'https://x/mcp' } } }),
+    ).toThrow(/http\.oauth\.issuer/);
+  });
+
   it('loads YAML from disk and reports a helpful error when missing', () => {
     const { dir, cleanup } = tempDir();
     try {

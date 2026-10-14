@@ -160,6 +160,7 @@ With a file set, apitame appends one JSON object per line:
 - `include: writes` records every write attempt, whatever happened to it: `blocked`, `dry-run`, `confirmation-requested`, `declined`, `rate-limited`, `sent` or `error`. Refused SQL queries are always recorded, because a refused DELETE is worth knowing about.
 - `include: all` records reads too.
 - Arguments go through the redactor and are capped at 2,000 characters. The file is created with owner-only permissions (`0600`).
+- Over HTTP with `http.oauth`, each entry also names the token's client id and subject (`"client"`, `"subject"`), so you can tell which user's agent made the call.
 - If the file cannot be written, apitame logs one error and keeps serving; tool calls never fail because of the audit log.
 
 ## Secrets
@@ -180,14 +181,17 @@ The test suite checks that a bearer token echoed back by an API, OAuth client se
 `apitame serve --transport http` is streamable HTTP on `/mcp`, stateless unless `--sessions` is given.
 
 - It binds to `127.0.0.1` by default and checks the `Host` and `Origin` headers, which blocks DNS rebinding from web pages.
-- It refuses to listen on any other interface unless `APITAME_HTTP_TOKEN` is set, and then requires `Authorization: Bearer <token>` (compared in constant time) on every request.
-- With `--sessions`, session ids are random UUIDs and only identify a conversation: the Host, Origin and token checks still apply to every request. Unknown ids get a 404, and idle sessions are closed.
+- It refuses to listen on any other interface unless `APITAME_HTTP_TOKEN` or `http.oauth` is set. With `APITAME_HTTP_TOKEN`, every request needs `Authorization: Bearer <token>` (compared in constant time).
+- With `http.oauth`, every request needs an OAuth access token from the configured authorization server: a JWT whose signature checks out against the server's published keys, whose `iss`, `aud` and `exp` match, and which carries the required scopes. Only asymmetric algorithms are accepted (`none` and HMAC are refused), and a key is only used with the algorithm family and curve it was published for, so a token cannot pick an algorithm that reads the key differently. Unknown key ids refresh the key set at most once a minute, so made-up tokens cannot turn apitame into a request amplifier against the authorization server. apitame never issues tokens, and never passes a client's token on to the API or database: those are called with the credentials from the config. See [clients.md](clients.md#oauth).
+- The two cannot be combined: one shared token next to per-user tokens would quietly weaken the per-user setup, so apitame refuses to start with both.
+- With `--sessions`, session ids are random UUIDs and only identify a conversation: the Host, Origin and token checks still apply to every request. With OAuth, a session also belongs to the client and subject of the token that started it, so a session id is useless with another user's token. Unknown ids get a 404, and idle sessions are closed.
 
 ## What apitame does not protect against
 
 - **Data the credentials can read.** Read-only access is still access. An agent that can read customer records can repeat them. Scope the API token and the database role to what the agent needs, and use `sql.tables.allow` or `deny`.
 - **Prompt injection in data.** apitame does not filter what an API or table returns. If a record says "ignore previous instructions", the agent sees it. The safety layers make sure such instructions cannot trigger writes you did not allow.
 - **Side effects of reads.** Some APIs change state on GET (counters, "mark as read"). apitame classifies by HTTP method; mark such operations with `writes.destructive` or `x-apitame-access`.
+- **Per-user permissions.** With `http.oauth`, every user with a valid token gets the same tools, and apitame calls the API or database with the same credentials for all of them. Required scopes decide who may connect, not which operations each user may run. Run one server per access level if users need different ones.
 - **A client that auto-approves and an agent that self-confirms.** See the token flow note above. Use elicitation or client-side approval when it matters.
 - **Your config file.** Whoever can edit `apitame.config.yaml` can allow anything. Review changes to it like code.
 - **The spec.** The OpenAPI document decides which operations exist and can mark them with `x-apitame-access` (for example `read` on an endpoint that deletes). A spec loaded from a URL is trusted like the config: point `source.spec` at a URL you control or pin to a version, or keep a reviewed copy next to the config.

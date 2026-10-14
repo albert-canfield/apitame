@@ -49,12 +49,12 @@ APITAME_HTTP_TOKEN=... apitame serve --transport http --host 0.0.0.0
 | `-c, --config <path>` | `apitame.config.yaml` | Config file. |
 | `-t, --transport <stdio\|http>` | `stdio` | Transport. |
 | `-p, --port <port>` | `3333` | HTTP port. |
-| `--host <host>` | `127.0.0.1` | HTTP host. Anything other than loopback needs `APITAME_HTTP_TOKEN`. |
+| `--host <host>` | `127.0.0.1` | HTTP host. Anything other than loopback needs `APITAME_HTTP_TOKEN` or `http.oauth` in the config (OAuth access tokens, see [clients.md](clients.md#oauth)). |
 | `--sessions` | | HTTP only. Keep one MCP session per client (`Mcp-Session-Id`), so destructive operations can be confirmed by the human through elicitation. Without it the HTTP transport is stateless and uses the token flow. |
 | `-w, --watch` | | Reload when `apitame.config.yaml`, a local spec, the skills folder or `.env` change, and notify clients that the tool list changed. |
 | `--log-level <level>` | `info` | `debug`, `info`, `warn`, `error` or `silent`. Logs go to stderr. |
 
-The server exposes `tools/list` and `tools/call`. When the config has skills, it also declares the MCP Skills extension (`io.modelcontextprotocol/skills`) and answers `skills/list`, `skills/get`, `resources/list` and `resources/read` for `skill://` URIs. The HTTP server also answers `GET /health`.
+The server exposes `tools/list` and `tools/call`. When the config has skills, it also declares the MCP Skills extension (`io.modelcontextprotocol/skills`) and answers `skills/list`, `skills/get`, `resources/list` and `resources/read` for `skill://` URIs. The HTTP server also answers `GET /health`, and with `http.oauth` it serves its protected resource metadata at `/.well-known/oauth-protected-resource`.
 
 Missing credentials do not stop the server: it starts, logs a warning, and tool calls explain which variable is missing.
 

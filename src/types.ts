@@ -38,6 +38,8 @@ export interface CallContext {
   /** Ask the human to approve something. Resolves to 'unsupported' when the client cannot. */
   elicit?: (message: string) => Promise<ElicitOutcome>;
   signal?: AbortSignal;
+  /** Who made the call, when the HTTP transport checked an OAuth access token. Audited. */
+  caller?: { client: string; subject?: string };
 }
 
 /** Summary row used by `inspect` and the generators. */

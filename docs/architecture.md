@@ -38,7 +38,7 @@ flowchart LR
 | `src/config/` | Zod schema for `apitame.config.yaml`, YAML loading, `${VAR}` resolution, `.env` loading. |
 | `src/sources/openapi/` | Load and dereference specs (file or URL, external refs, discovery), convert Swagger 2.0 in memory (`swagger2.ts`), normalize operations and body kinds, compact JSON Schemas, classify access, group operations into tools. |
 | `src/sources/sql/` | Database-accurate lexer (PostgreSQL, MySQL and SQLite rules), the SELECT guard, write classification, named parameter binding, and the PostgreSQL, MySQL and SQLite drivers (each with a `privileges()` check). Loaded on demand. |
-| `src/server/` | Runtimes that turn a source into tools, the HTTP client (redirect policy, uploads, size caps), response field selection (`fields.ts`), argument validation, the MCP server wiring, transports, and skills over MCP. |
+| `src/server/` | Runtimes that turn a source into tools, the HTTP client (redirect policy, uploads, size caps), response field selection (`fields.ts`), argument validation, the MCP server wiring, transports, OAuth access token checks for the HTTP transport (`oauth.ts`), and skills over MCP. |
 | `src/safety/` | The policy decision (`decide`), confirmation tokens and elicitation flow, the redactor, and `guardrails.ts` (per-minute rate limits and the JSON Lines audit log, shared by both runtimes). |
 | `src/auth/` | Bearer, API key, basic and OAuth2 client credentials providers. |
 | `src/generator/` | Config file rendering (with comments), skill generation, and a small ZIP writer for packaging skills as uploads. |
