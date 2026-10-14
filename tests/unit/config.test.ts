@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadDotEnv, MissingEnvError, resolveEnv } from '../../src/config/env.js';
 import { ConfigError, loadConfig, parseConfig } from '../../src/config/load.js';
-import { tempDir } from '../helpers.js';
+import { ROOT, tempDir } from '../helpers.js';
 
 const minimal = { name: 'demo', source: { type: 'openapi', spec: './openapi.yaml' } };
 
@@ -95,6 +95,8 @@ describe('config schema', () => {
       resource: 'https://mcp.example.com/mcp',
       scopes: [],
       audiences: [],
+      clients: [],
+      requireAccessTokenType: false,
     });
     expect(() =>
       parseConfig({ ...minimal, http: { oauth: { issuer: 'https://auth.example.com' } } }),
@@ -102,6 +104,45 @@ describe('config schema', () => {
     expect(() =>
       parseConfig({ ...minimal, http: { oauth: { issuer: 'auth', resource: 'https://x/mcp' } } }),
     ).toThrow(/http\.oauth\.issuer/);
+  });
+
+  it('refuses unknown keys, so a typo or a misplaced block cannot turn a setting off', () => {
+    const oauth = { issuer: 'https://auth.example.com', resource: 'https://mcp.example.com/mcp' };
+    expect(() => parseConfig({ ...minimal, oauth })).toThrow(
+      /\(root\): Unknown key "oauth" \(it belongs under http\.oauth\)/,
+    );
+    expect(() => parseConfig({ ...minimal, http: oauth })).toThrow(
+      /http: Unknown key "issuer" \(it belongs under http\.oauth\)/,
+    );
+    expect(() =>
+      parseConfig({ ...minimal, http: { oauth: { ...oauth, scope: ['mcp:tools'] } } }),
+    ).toThrow(/http\.oauth: Unknown key "scope" \(did you mean scopes\?\)/);
+    expect(() => parseConfig({ ...minimal, mdoe: 'read-write' })).toThrow(/Unknown key "mdoe"/);
+  });
+
+  it('accepts every example config', () => {
+    for (const example of ['petstore', 'github-subset', 'postgres-shop']) {
+      expect(
+        loadConfig(join(ROOT, 'examples', example, 'apitame.config.yaml')).config.name,
+      ).toBeTruthy();
+    }
+  });
+
+  it('refuses http.oauth.audiences without scopes or clients', () => {
+    const oauth = {
+      issuer: 'https://dev-1.okta.com/oauth2/default',
+      resource: 'https://mcp.example.com/mcp',
+      audiences: ['api://default'],
+    };
+    expect(() => parseConfig({ ...minimal, http: { oauth } })).toThrow(
+      /http\.oauth\.audiences: .*Also set scopes or clients/,
+    );
+    expect(
+      parseConfig({ ...minimal, http: { oauth: { ...oauth, scopes: ['mcp:tools'] } } }),
+    ).toBeTruthy();
+    expect(
+      parseConfig({ ...minimal, http: { oauth: { ...oauth, clients: ['0oa1'] } } }),
+    ).toBeTruthy();
   });
 
   it('loads YAML from disk and reports a helpful error when missing', () => {

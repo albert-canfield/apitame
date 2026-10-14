@@ -93,6 +93,8 @@ export class FakeAuthServer {
   metadataIssuer: string | undefined;
   /** Requests per path. */
   readonly hits = new Map<string, number>();
+  /** Custom answers by path (a redirect, a slow or oversized body), checked first. */
+  readonly overrides = new Map<string, (res: ServerResponse) => void>();
 
   private constructor(
     private readonly http: Server,
@@ -122,6 +124,8 @@ export class FakeAuthServer {
 
   private handle(path: string, res: ServerResponse): void {
     this.hits.set(path, this.count(path) + 1);
+    const override = this.overrides.get(path);
+    if (override) return override(res);
     const json = (status: number, body: unknown): void => {
       res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
     };

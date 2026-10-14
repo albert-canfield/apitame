@@ -6,10 +6,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
-- OAuth 2.1 for the HTTP transport (`http.oauth` in the config): apitame acts as a resource server for your own authorization server (Keycloak, Auth0, Okta, Entra ID and others that issue JWT access tokens). It serves RFC 9728 protected resource metadata, answers requests without a valid token with a 401 that points MCP clients to the sign-in, and checks each access token locally: signature against the issuer's published keys, issuer, audience, expiry and required scopes (403 `insufficient_scope`). Keys are discovered through RFC 8414 or OpenID Connect metadata and refreshed when the issuer rotates them. With `--sessions`, a session belongs to the user who started it, and the audit log records the token's client id and subject. `APITAME_HTTP_TOKEN` and `http.oauth` cannot be combined (#28).
+- OAuth 2.1 for the HTTP transport (`http.oauth` in the config): apitame acts as a resource server for your own authorization server (Keycloak, Auth0, Okta, Entra ID and others that issue JWT access tokens). It serves RFC 9728 protected resource metadata, answers requests without a valid token with a 401 that points MCP clients to the sign-in, and checks each access token locally: signature against the issuer's published keys, issuer, audience, expiry and required scopes (403 `insufficient_scope`). Keys are discovered through RFC 8414 or OpenID Connect metadata and refreshed when the issuer rotates them. ID and refresh tokens are refused, `http.oauth.clients` limits tokens to known clients, and `http.oauth.requireAccessTokenType` requires `typ: at+jwt`. With `--sessions`, a session belongs to the client and user who started it, with at most 10 sessions per user, and the audit log records the token's client and subject. `APITAME_HTTP_TOKEN` and `http.oauth` cannot be combined (#28).
 
 ### Changed
 
+- **Breaking:** unknown keys at the top level of `apitame.config.yaml` are an error that names the key, instead of being ignored, so a typo or a misplaced block cannot silently turn a setting off.
 - **Breaking:** Node.js 22.14 or later is required. Node 20 reached end of life in April 2026, and the SQLite driver (better-sqlite3 13) crashes on Node 22 before 22.14; `apitame doctor` fails on older versions. Thanks @Enard52 (#48).
 - commander 15: a "too many arguments" error now lists the arguments it got (`Expected 0 arguments but got 2: extra1, extra2.`). Options and help output are unchanged.
 

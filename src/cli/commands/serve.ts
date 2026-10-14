@@ -4,7 +4,7 @@ import { Logger, type LogLevel } from '../../log.js';
 import { Redactor } from '../../safety/redact.js';
 import { LiveRuntime } from '../../server/live.js';
 import { createMcpServer } from '../../server/mcp.js';
-import { JwtVerifier } from '../../server/oauth.js';
+import { JwtVerifier, oauthChange, oauthWarnings } from '../../server/oauth.js';
 import { serveHttp, serveStdio } from '../../server/transport.js';
 
 export interface ServeOptions {
@@ -92,11 +92,11 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
   // http.oauth need a restart (a --watch reload says so).
   const oauthConfig = live.loaded.config.http.oauth;
   const verifier = oauthConfig && new JwtVerifier(oauthConfig);
-  if (oauthConfig && watching) {
-    const applied = JSON.stringify(oauthConfig);
+  if (oauthConfig) for (const w of oauthWarnings(oauthConfig)) logger.warn(w);
+  if (watching) {
     live.onReload(() => {
-      if (JSON.stringify(live.loaded.config.http.oauth) !== applied)
-        logger.warn('http.oauth changed; restart apitame to apply it.');
+      const change = oauthChange(oauthConfig, live.loaded.config.http.oauth);
+      if (change) logger.warn(change);
     });
   }
   // Every server reads the runtime through `live`, so stateless requests and sessions alike see reloads.

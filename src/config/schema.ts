@@ -11,6 +11,23 @@ const envRef = (field: string) =>
       message: `${field} must come from an environment variable, for example "\${MY_SECRET}". Inline secrets are refused.`,
     });
 
+/**
+ * Unknown keys are an error, so a typo (`scope:` for `scopes:`) or a block at the wrong level
+ * cannot silently turn a setting off. `hints` suggests where a misplaced key belongs.
+ */
+const unknownKeys =
+  (hints: Record<string, string> = {}) =>
+  (issue: { code?: string; keys?: string[] }) => {
+    if (issue.code !== 'unrecognized_keys' || !issue.keys) return undefined;
+    return issue.keys
+      .map((k) => `Unknown key "${k}"${hints[k] ? ` (${hints[k]})` : ''}`)
+      .join('; ');
+  };
+
+/** Why `http.oauth.audiences` needs `scopes` or `clients` next to it. */
+export const AUDIENCES_NEED_A_FILTER =
+  'audiences accepts tokens that do not name this server, and such an audience is often shared by every app on the authorization server (for example api://default on Okta). Also set scopes or clients, so that only tokens meant for apitame are accepted.';
+
 const toolName = z
   .string()
   .regex(/^[a-z][a-z0-9_]{0,47}$/, 'Tool names use lowercase letters, digits and underscores');
@@ -107,89 +124,130 @@ export const NamedQuerySchema = z.object({
 });
 
 export const ConfigSchema = z
-  .object({
-    version: z.literal(1).default(1),
-    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/, 'Use lowercase letters, digits and dashes'),
-    description: z.string().default(''),
-    source: SourceSchema,
-    mode: z.enum(['read-only', 'read-write']).default('read-only'),
-    auth: AuthSchema.prefault({ type: 'none' }),
-    limits: z
-      .object({
-        maxTools: z.number().int().min(1).max(128).default(12),
-        maxOperationsPerTool: z.number().int().min(1).max(100).default(15),
-        timeoutMs: z.number().int().min(100).max(600_000).default(15_000),
-        maxResponseBytes: z.number().int().min(1_000).max(10_000_000).default(50_000),
-        rowLimit: z.number().int().min(1).max(10_000).default(200),
-        /** Total size of files an agent may upload in one call. */
-        maxUploadBytes: z.number().int().min(1_000).max(100_000_000).default(10_000_000),
-        /** Tool calls per minute across all tools. 0 means unlimited. */
-        maxCallsPerMinute: z.number().int().min(0).max(100_000).default(120),
-        /** Writes per minute (HTTP writes and named write queries). 0 means unlimited. */
-        maxWritesPerMinute: z.number().int().min(0).max(100_000).default(20),
-        /** Calls per minute for individual tools, on top of the server-wide limits. */
-        perTool: z.record(z.string(), z.number().int().min(1).max(100_000)).default({}),
-      })
-      .prefault({}),
-    audit: z
-      .object({
-        /** JSON Lines file, relative to the config file. Unset means no audit file. */
-        file: z.string().min(1).optional(),
-        /** `writes`: write attempts and refused queries. `all`: every call. */
-        include: z.enum(['writes', 'all']).default('writes'),
-      })
-      .prefault({}),
-    tools: z.array(ToolGroupSchema).default([]),
-    longTail: z.object({ enabled: z.boolean().default(true) }).prefault({}),
-    writes: z
-      .object({
-        /** Operation ids (or named queries) allowed to write. `*` wildcards are supported. */
-        allow: z.array(z.string()).default([]),
-        /** Writes that always need confirmation, on top of destructive ones. */
-        confirm: z.array(z.string()).default([]),
-        /** Non-GET operations that are known to be safe reads (for example POST /search). */
-        treatAsRead: z.array(z.string()).default([]),
-        /** Writes that should be treated as destructive even if they do not look like it. */
-        destructive: z.array(z.string()).default([]),
-      })
-      .prefault({}),
-    confirmation: z
-      .object({
-        method: z.enum(['auto', 'elicitation', 'token']).default('auto'),
-        ttlSeconds: z.number().int().min(10).max(3_600).default(300),
-      })
-      .prefault({}),
-    sql: z
-      .object({
-        queries: z.array(NamedQuerySchema).default([]),
-        tables: z
-          .object({
-            /** If set, only these tables can be listed, described or queried. */
-            allow: z.array(z.string()).default([]),
-            /** Tables that are never exposed. */
-            deny: z.array(z.string()).default([]),
-          })
-          .prefault({}),
-      })
-      .prefault({}),
-    skills: z.object({ dir: z.string().default('./skills') }).prefault({}),
-    /** `serve --transport http` settings. */
-    http: z
-      .object({
-        /** Accept OAuth 2.1 access tokens from an external authorization server. */
-        oauth: z
-          .object({
-            issuer: z.string().url(),
-            resource: z.string().url(),
-            scopes: z.array(z.string().min(1)).default([]),
-            audiences: z.array(z.string().min(1)).default([]),
-            jwksUri: z.string().url().optional(),
-          })
-          .optional(),
-      })
-      .prefault({}),
-  })
+  .strictObject(
+    {
+      version: z.literal(1).default(1),
+      name: z
+        .string()
+        .regex(/^[a-z0-9][a-z0-9-]{0,63}$/, 'Use lowercase letters, digits and dashes'),
+      description: z.string().default(''),
+      source: SourceSchema,
+      mode: z.enum(['read-only', 'read-write']).default('read-only'),
+      auth: AuthSchema.prefault({ type: 'none' }),
+      limits: z
+        .object({
+          maxTools: z.number().int().min(1).max(128).default(12),
+          maxOperationsPerTool: z.number().int().min(1).max(100).default(15),
+          timeoutMs: z.number().int().min(100).max(600_000).default(15_000),
+          maxResponseBytes: z.number().int().min(1_000).max(10_000_000).default(50_000),
+          rowLimit: z.number().int().min(1).max(10_000).default(200),
+          /** Total size of files an agent may upload in one call. */
+          maxUploadBytes: z.number().int().min(1_000).max(100_000_000).default(10_000_000),
+          /** Tool calls per minute across all tools. 0 means unlimited. */
+          maxCallsPerMinute: z.number().int().min(0).max(100_000).default(120),
+          /** Writes per minute (HTTP writes and named write queries). 0 means unlimited. */
+          maxWritesPerMinute: z.number().int().min(0).max(100_000).default(20),
+          /** Calls per minute for individual tools, on top of the server-wide limits. */
+          perTool: z.record(z.string(), z.number().int().min(1).max(100_000)).default({}),
+        })
+        .prefault({}),
+      audit: z
+        .object({
+          /** JSON Lines file, relative to the config file. Unset means no audit file. */
+          file: z.string().min(1).optional(),
+          /** `writes`: write attempts and refused queries. `all`: every call. */
+          include: z.enum(['writes', 'all']).default('writes'),
+        })
+        .prefault({}),
+      tools: z.array(ToolGroupSchema).default([]),
+      longTail: z.object({ enabled: z.boolean().default(true) }).prefault({}),
+      writes: z
+        .object({
+          /** Operation ids (or named queries) allowed to write. `*` wildcards are supported. */
+          allow: z.array(z.string()).default([]),
+          /** Writes that always need confirmation, on top of destructive ones. */
+          confirm: z.array(z.string()).default([]),
+          /** Non-GET operations that are known to be safe reads (for example POST /search). */
+          treatAsRead: z.array(z.string()).default([]),
+          /** Writes that should be treated as destructive even if they do not look like it. */
+          destructive: z.array(z.string()).default([]),
+        })
+        .prefault({}),
+      confirmation: z
+        .object({
+          method: z.enum(['auto', 'elicitation', 'token']).default('auto'),
+          ttlSeconds: z.number().int().min(10).max(3_600).default(300),
+        })
+        .prefault({}),
+      sql: z
+        .object({
+          queries: z.array(NamedQuerySchema).default([]),
+          tables: z
+            .object({
+              /** If set, only these tables can be listed, described or queried. */
+              allow: z.array(z.string()).default([]),
+              /** Tables that are never exposed. */
+              deny: z.array(z.string()).default([]),
+            })
+            .prefault({}),
+        })
+        .prefault({}),
+      skills: z.object({ dir: z.string().default('./skills') }).prefault({}),
+      /** `serve --transport http` settings. */
+      http: z
+        .strictObject(
+          {
+            /** Accept OAuth 2.1 access tokens from an external authorization server. */
+            oauth: z
+              .strictObject(
+                {
+                  issuer: z.string().url(),
+                  resource: z.string().url(),
+                  scopes: z.array(z.string().min(1)).default([]),
+                  audiences: z.array(z.string().min(1)).default([]),
+                  /** Accept only tokens issued to these clients (client_id, azp, cid or appid). */
+                  clients: z.array(z.string().min(1)).default([]),
+                  /** Require the RFC 9068 token type (`typ: at+jwt`) in the token header. */
+                  requireAccessTokenType: z.boolean().default(false),
+                  jwksUri: z.string().url().optional(),
+                },
+                {
+                  error: unknownKeys({
+                    scope: 'did you mean scopes?',
+                    audience: 'did you mean audiences?',
+                    client: 'did you mean clients?',
+                    jwks_uri: 'did you mean jwksUri?',
+                  }),
+                },
+              )
+              .optional(),
+          },
+          {
+            error: unknownKeys({
+              issuer: 'it belongs under http.oauth',
+              resource: 'it belongs under http.oauth',
+              scopes: 'it belongs under http.oauth',
+            }),
+          },
+        )
+        .prefault({}),
+    },
+    { error: unknownKeys({ oauth: 'it belongs under http.oauth' }) },
+  )
   .superRefine((cfg, ctx) => {
+    const oauth = cfg.http.oauth;
+    if (
+      oauth &&
+      oauth.audiences.length > 0 &&
+      oauth.scopes.length === 0 &&
+      oauth.clients.length === 0
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['http', 'oauth', 'audiences'],
+        message: AUDIENCES_NEED_A_FILTER,
+      });
+    }
     const seen = new Set<string>();
     for (const t of cfg.tools) {
       if (seen.has(t.name)) {
