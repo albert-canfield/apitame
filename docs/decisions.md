@@ -85,3 +85,10 @@ A running log of decisions and the reasons behind them. Newest last. Add an entr
 **Context.** Elicitation lets the human approve a destructive call in the client, but the server must send a request in the middle of a tool call and receive the answer. Stateless HTTP builds a fresh server per request, which never sees `initialize` (so it does not know the client can elicit) and cannot receive the reply.
 
 **Decision.** `serve --transport http --sessions` keeps one server per client, keyed by `Mcp-Session-Id`, with an idle timeout (30 minutes, counted only while no request or stream is open) and a cap (100, the oldest idle session makes room). Stateless stays the default: it is simpler to run behind load balancers and has no per-client memory. All sessions read the same live runtime, so `--watch` reloads and confirmation tokens work the same way in both modes.
+
+## 016. Require Node 22+ and drop Node 20 at EOL
+
+**Context.** Node 20 reached end of life on 30 April 2026. Supporting it held back dependency majors (commander 15, better-sqlite3 13, vitest 5, TypeScript 7) and required workarounds for Node 20 GC quirks (see entry 002).
+
+**Decision.** Require Node 22+ (`engines.node: ">=22.0.0"`). Drop Node 20 from the CI matrix, remove the Dependabot ignore rules holding back major dependency updates, and prepare for dependency major upgrades.
+

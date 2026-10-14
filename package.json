@@ -46,7 +46,7 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
-    "node": ">=20.12"
+    "node": ">=22.0.0"
   },
   "packageManager": "pnpm@10.10.0",
   "scripts": {

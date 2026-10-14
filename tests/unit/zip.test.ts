@@ -31,7 +31,7 @@ describe('zip', () => {
         ],
         { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } },
       );
-      if (py.error) return; // python3 not available: nothing to check against
+      if (py.error || py.status === 9009 || py.status === 127) return; // python3 not available: nothing to check against
       expect(py.status, py.stderr).toBe(0);
       expect(py.stdout).toContain('demo-api/references/ops.md');
       expect(py.stdout).toContain('# Démo');
