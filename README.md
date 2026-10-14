@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/demo.svg" alt="Terminal demo: apitame init turns a 38-endpoint GitHub API spec into 8 read-only tools, inspect shows 65% fewer tokens, test passes and add-to installs it in Claude Code" width="900">
+  <img src="docs/assets/demo.svg" alt="Terminal demo: apitame init turns a 38-endpoint GitHub API spec into 8 read-only tools, inspect shows about 60% fewer tokens, test passes and add-to installs it in Claude Code" width="900">
 </p>
 
 ```bash
@@ -28,7 +28,7 @@ That is the whole setup. Your agent now has a small set of task-level tools for 
 Giving an agent an API is easy. Giving it one safely, without flooding its context, is not. Most generators map every endpoint to a tool and expose every write operation. apitame makes the opposite choices:
 
 - **Safe by default.** Read-only out of the box. Writes need `mode: read-write` and an explicit allowlist. Destructive operations stop for human approval. Every write has a dry run.
-- **A curated tool surface.** Endpoints are grouped into a handful of task-level tools, with `search_operations` and `call_operation` for the long tail. The GitHub example goes from 38 endpoints to 8 tools and about 65% fewer tokens. Responses can be trimmed to the fields the agent needs with `"fields": ["items.full_name"]`.
+- **A curated tool surface.** Endpoints are grouped into a handful of task-level tools, with `search_operations` and `call_operation` for the long tail. The GitHub example goes from 38 endpoints to 8 tools and about 60% fewer tokens. Responses can be trimmed to the fields the agent needs with `"fields": ["items.full_name"]`.
 - **Skills that match the server.** Generated `SKILL.md` files use the real tool names, argument shapes, workflows and safety rules. They are installed where Claude Code, Codex, Cursor, VS Code and Gemini CLI look for them, packaged for Claude Desktop, and served over MCP.
 - **SQL without the usual footguns.** PostgreSQL, MySQL and SQLite with `list_tables`, `describe_table` and a SELECT-only `query`, checked by a lexer and a real SQL parser, then run in a read-only transaction with a row limit and a timeout.
 - **One config file you can review in a pull request.** `apitame.config.yaml` holds the tool groups, the allowlist, limits and auth. No daemon, no account, no code generation.
@@ -49,7 +49,7 @@ npx apitame init https://api.example.com   # a spec URL, or a base URL (apitame 
 ✔ Read GitHub REST API (subset): 38 operations (25 read, 13 write)
 ✔ Grouped into 8 tools: repos, issues, pulls, search, users, activity, search_operations, call_operation
 ✔ Read-only mode: 13 write operations blocked until you allow them
-✔ Tool list costs ~1,954 tokens (one tool per endpoint: ~5,522, 65% saved)
+✔ Tool list costs ~2,087 tokens (one tool per endpoint: ~5,522, 62% saved)
 ✔ Wrote ./apitame.config.yaml and 2 skill files in ./skills
 ```
 
@@ -198,6 +198,9 @@ apitame assumes the agent will eventually call the wrong thing, and makes that b
 | Limits | Per-request timeout and response size cap. Large JSON is trimmed to fit, with a note saying how much was kept. |
 | Secrets | Credentials come only from environment variables (inline secrets in the config are refused) and are redacted from results, errors, logs and previews, even when an API echoes them back. |
 | HTTP transport | Loopback only by default, with Host and Origin checks. Listening on another interface requires a bearer token. |
+| Outgoing requests | Path parameters cannot be `.` or `..`; credentials never follow a redirect to another host; files are passed inline, never as local paths, and uploads are capped. |
+| Rate limits | By default 120 calls and 20 writes per minute, so a looping agent cannot hammer an API or database. |
+| Audit log | Optional JSON Lines record of every write attempt (blocked, dry run, confirmed, sent) and every refused query, with secrets redacted. |
 
 For SQL, every free-form query passes four independent layers:
 
@@ -252,10 +255,10 @@ Every field is documented in [docs/configuration.md](docs/configuration.md).
 
 | Example | Operations | One tool per endpoint | apitame (read-only) | Saved |
 | --- | ---: | ---: | ---: | ---: |
-| [Petstore](examples/petstore) | 19 | ~1,989 tokens, 19 tools | ~767 tokens, 5 tools | 61% |
-| [GitHub subset](examples/github-subset) | 38 | ~5,522 tokens, 38 tools | ~1,954 tokens, 8 tools | 65% |
+| [Petstore](examples/petstore) | 19 | ~2,046 tokens, 19 tools | ~855 tokens, 5 tools | 58% |
+| [GitHub subset](examples/github-subset) | 38 | ~5,522 tokens, 38 tools | ~2,087 tokens, 8 tools | 62% |
 
-The estimate is calibrated against a real BPE tokenizer and lands slightly above it; exact counts vary by model. Several clients now load tool schemas on demand, so the bigger win is often fewer, clearer tools rather than raw token count. A search-and-call-only surface is smaller still (about 220 tokens) but costs extra round trips on every task; apitame gives you both.
+The estimate is calibrated against a real BPE tokenizer and lands slightly above it; exact counts vary by model. Several clients now load tool schemas on demand, so the bigger win is often fewer, clearer tools rather than raw token count. A search-and-call-only surface is smaller still (about 230 tokens) but costs extra round trips on every task; apitame gives you both.
 
 ## How it compares
 

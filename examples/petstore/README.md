@@ -4,7 +4,7 @@ The classic Swagger Petstore (OpenAPI 3.0, 19 operations), served by the public 
 
 ```bash
 cd examples/petstore
-npx apitame inspect      # 5 tools, about 770 tokens; 11 write operations blocked
+npx apitame inspect      # 5 tools, about 850 tokens; 11 write operations blocked
 npx apitame test         # every read against a local mock, plus the blocked-write check
 npx apitame test --live  # the same against the public demo server
 npx apitame serve        # stdio MCP server
