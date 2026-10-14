@@ -19,7 +19,10 @@ program
 program
   .command('init')
   .description('Introspect a source and generate apitame.config.yaml and skills')
-  .argument('[source]', 'OpenAPI file or URL, postgres:// URL, or SQLite file')
+  .argument(
+    '[source]',
+    'OpenAPI or Swagger file or URL, postgres:// or mysql:// URL, or SQLite file',
+  )
   .option('-o, --out <dir>', 'output folder', '.')
   .option('-n, --name <name>', 'server name (default: from the spec title or database name)')
   .option('--base-url <url>', 'API base URL, overrides the servers in the spec')
@@ -34,7 +37,7 @@ program
 program
   .command('serve')
   .description('Run the MCP server')
-  .option('-c, --config <path>', 'config file', 'apitame.config.yaml')
+  .option('-c, --config <path>', 'config file (default: $APITAME_CONFIG or apitame.config.yaml)')
   .addOption(
     new Option('-t, --transport <transport>', 'transport')
       .choices(['stdio', 'http'])
@@ -61,7 +64,7 @@ program
 program
   .command('inspect')
   .description('List tools, modes and estimated token cost')
-  .option('-c, --config <path>', 'config file', 'apitame.config.yaml')
+  .option('-c, --config <path>', 'config file (default: $APITAME_CONFIG or apitame.config.yaml)')
   .option('--json', 'machine readable output')
   .option('--verbose', 'list the operations in each tool')
   .option('--max-tokens <n>', 'exit with code 1 if the tool list costs more (for CI)')
@@ -70,7 +73,7 @@ program
 program
   .command('test')
   .description('Call every read tool against a mock (or --live) and run safety checks')
-  .option('-c, --config <path>', 'config file', 'apitame.config.yaml')
+  .option('-c, --config <path>', 'config file (default: $APITAME_CONFIG or apitame.config.yaml)')
   .option('--live', 'call the real API instead of a local mock (read operations only)')
   .option('--json', 'machine readable output')
   .action(testCommand);
@@ -80,7 +83,7 @@ program
   .description(
     'Check the setup: config, environment, connectivity, credentials, skills and clients',
   )
-  .option('-c, --config <path>', 'config file', 'apitame.config.yaml')
+  .option('-c, --config <path>', 'config file (default: $APITAME_CONFIG or apitame.config.yaml)')
   .option('--offline', 'skip checks that contact the API or database')
   .option('--json', 'machine readable output')
   .action(doctorCommand);
@@ -89,7 +92,7 @@ program
   .command('add-to')
   .description(`Print or write the MCP client config (${CLIENTS.join(', ')})`)
   .argument('<client>', CLIENTS.join(' | '))
-  .option('-c, --config <path>', 'config file', 'apitame.config.yaml')
+  .option('-c, --config <path>', 'config file (default: $APITAME_CONFIG or apitame.config.yaml)')
   .option('-w, --write', 'write the config file and install skills in this project')
   .option('-n, --name <name>', 'server name in the client (default: config name)')
   .option('--command <cmd>', 'how to launch apitame (default: npx -y apitame@<version>)')

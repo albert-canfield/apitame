@@ -74,6 +74,25 @@ describe('CLI: OpenAPI flow', () => {
     expect(budget.stdout).toMatch(/Over budget/);
   });
 
+  it('finds the config through APITAME_CONFIG from another folder', () => {
+    const elsewhere = tempDir('apitame-cli-other-');
+    try {
+      const res = run(['inspect', '--json'], elsewhere.dir, {
+        APITAME_CONFIG: join(t.dir, 'apitame.config.yaml'),
+      });
+      expect(res.code, res.stderr).toBe(0);
+      expect((JSON.parse(res.stdout) as { tools: unknown[] }).tools).toHaveLength(5);
+      // --config still wins over the variable.
+      const missing = run(['inspect', '--config', 'nope.yaml'], elsewhere.dir, {
+        APITAME_CONFIG: join(t.dir, 'apitame.config.yaml'),
+      });
+      expect(missing.code).toBe(1);
+      expect(missing.stderr).toMatch(/No config found/);
+    } finally {
+      elsewhere.cleanup();
+    }
+  });
+
   it('test passes against the mock and proves writes are blocked', () => {
     const res = run(['test'], t.dir);
     expect(res.code, res.stdout + res.stderr).toBe(0);
