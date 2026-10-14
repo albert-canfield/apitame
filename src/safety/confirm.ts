@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { CallContext, ToolResult } from '../types.js';
+import type { ApprovalRound, CallContext, ToolResult } from '../types.js';
 
 /** JSON.stringify with sorted keys, so equal objects hash equally. */
 export function stableStringify(value: unknown): string {
@@ -20,36 +20,47 @@ interface Pending {
   expiresAt: number;
 }
 
+interface Reasons {
+  unknown: string;
+  expired: string;
+  mismatch: string;
+}
+
 /**
- * One-time confirmation tokens. A token is bound to one operation and the
- * exact arguments it was issued for, expires after a TTL and can be used once.
+ * Random ids that can be used once. Each id is bound to one operation and a hash of what it
+ * was issued for, and expires after a TTL.
  */
-export class ConfirmationStore {
+export class OneTimeIds {
   private readonly pending = new Map<string, Pending>();
 
   constructor(
     readonly ttlMs: number,
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number,
+    private readonly prefix: string,
+    private readonly bytes: number,
+    private readonly reasons: Reasons,
   ) {}
 
-  issue(id: string, args: unknown): { token: string; expiresAt: number } {
+  issue(id: string, binding: unknown): { token: string; expiresAt: number } {
     this.sweep();
-    const token = `confirm_${randomBytes(12).toString('base64url')}`;
+    const token = `${this.prefix}${randomBytes(this.bytes).toString('base64url')}`;
     const expiresAt = this.now() + this.ttlMs;
-    this.pending.set(token, { fingerprint: fingerprint(id, args), expiresAt });
+    this.pending.set(token, { fingerprint: fingerprint(id, binding), expiresAt });
     return { token, expiresAt };
   }
 
-  consume(token: string, id: string, args: unknown): { ok: true } | { ok: false; reason: string } {
+  /** Check an id and use it up, whatever the outcome: a failed attempt burns it too. */
+  consume(
+    token: string,
+    id: string,
+    binding: unknown,
+  ): { ok: true } | { ok: false; reason: string } {
     const entry = this.pending.get(token);
-    if (!entry) return { ok: false, reason: 'Unknown or already used confirmation token.' };
+    if (!entry) return { ok: false, reason: this.reasons.unknown };
     this.pending.delete(token);
-    if (entry.expiresAt < this.now()) return { ok: false, reason: 'Confirmation token expired.' };
-    if (entry.fingerprint !== fingerprint(id, args)) {
-      return {
-        ok: false,
-        reason: 'Confirmation token was issued for a different operation or different arguments.',
-      };
+    if (entry.expiresAt < this.now()) return { ok: false, reason: this.reasons.expired };
+    if (entry.fingerprint !== fingerprint(id, binding)) {
+      return { ok: false, reason: this.reasons.mismatch };
     }
     return { ok: true };
   }
@@ -57,6 +68,46 @@ export class ConfirmationStore {
   private sweep(): void {
     const t = this.now();
     for (const [k, v] of this.pending) if (v.expiresAt < t) this.pending.delete(k);
+  }
+}
+
+/**
+ * One-time confirmation tokens. A token is bound to one operation and the
+ * exact arguments it was issued for, expires after a TTL and can be used once.
+ */
+export class ConfirmationStore {
+  private readonly tokens: OneTimeIds;
+  /**
+   * Approval ids for protocol 2026-07-28, sent to the client as `requestState`. They live in
+   * their own store with their own prefix, so an approval id never works as a `confirm` token
+   * and a token never works as an approval id.
+   */
+  readonly approvals: OneTimeIds;
+
+  constructor(
+    readonly ttlMs: number,
+    now: () => number = () => Date.now(),
+  ) {
+    this.tokens = new OneTimeIds(ttlMs, now, 'confirm_', 12, {
+      unknown: 'Unknown or already used confirmation token.',
+      expired: 'Confirmation token expired.',
+      mismatch: 'Confirmation token was issued for a different operation or different arguments.',
+    });
+    // 256 random bits: the id travels through the client, so it must not be guessable.
+    this.approvals = new OneTimeIds(ttlMs, now, 'approval_', 32, {
+      unknown: 'Unknown or already used approval.',
+      expired: 'The approval expired.',
+      mismatch:
+        'The approval was given for a different operation, different arguments or a different user.',
+    });
+  }
+
+  issue(id: string, args: unknown): { token: string; expiresAt: number } {
+    return this.tokens.issue(id, args);
+  }
+
+  consume(token: string, id: string, args: unknown): { ok: true } | { ok: false; reason: string } {
+    return this.tokens.consume(token, id, args);
   }
 }
 
@@ -81,27 +132,67 @@ const text = (t: string, isError = false): ToolResult => ({
   ...(isError ? { isError: true } : {}),
 });
 
+const notApproved = (id: string): ConfirmOutcome => ({
+  proceed: false,
+  result: text(`The user did not approve "${id}". Nothing was changed.`, true),
+});
+
+/**
+ * The two rounds of an approval on protocol 2026-07-28. The first call stores a one-time
+ * approval id bound to the operation, the exact arguments and the caller, and asks the client
+ * to show the form (`inputRequired`). The client calls again with the answer and the id as
+ * `requestState`. The call runs only if the id is known, unused and unexpired, matches this
+ * operation, these arguments and this caller, and the human approved. Any other second round is
+ * refused with nothing sent, and the id is used up.
+ */
+function approvalRound(
+  req: ConfirmRequest,
+  round: ApprovalRound,
+  message: string,
+): ConfirmOutcome | undefined {
+  const binding = { args: req.args, caller: req.ctx?.caller ?? null };
+  if (round.state !== undefined) {
+    const check = req.store.approvals.consume(round.state, req.id, binding);
+    if (!check.ok)
+      return { proceed: false, result: text(`${check.reason} Nothing was changed.`, true) };
+    return round.answer === 'accept' ? { proceed: true } : notApproved(req.id);
+  }
+  if (!round.canAsk) return undefined;
+  const { token } = req.store.approvals.issue(req.id, binding);
+  return {
+    proceed: false,
+    result: {
+      ...text(`Waiting for the user to approve "${req.id}". Nothing has been changed yet.`),
+      inputRequired: { message, requestState: token },
+    },
+  };
+}
+
 /**
  * Gate a risky call behind a human decision.
  *
  * With `auto`, MCP elicitation is used when the client supports it (the
  * client shows the prompt to the human directly). Otherwise a one-time token
  * is returned and the agent must show the preview to the user and call again.
+ *
+ * On protocol 2026-07-28 (`ctx.approval`) the prompt is not sent in the middle of the call:
+ * the call returns it, and the client calls again with the answer (see `approvalRound`).
  */
 export async function confirmOrChallenge(req: ConfirmRequest): Promise<ConfirmOutcome> {
   if (req.method !== 'token') {
-    const outcome = req.ctx?.elicit
-      ? await req.ctx.elicit(
-          `Confirm a destructive action requested by the agent:\n\n${req.preview}\n\nApprove only if you expect this.`,
-        )
-      : 'unsupported';
-    if (outcome === 'accept') return { proceed: true };
-    if (outcome === 'decline' || outcome === 'cancel') {
-      return {
-        proceed: false,
-        result: text(`The user did not approve "${req.id}". Nothing was changed.`, true),
-      };
+    const message = `Confirm a destructive action requested by the agent:\n\n${req.preview}\n\nApprove only if you expect this.`;
+    const round = req.ctx?.approval;
+    if (round) {
+      const settled = approvalRound(req, round, message);
+      if (settled) return settled;
     }
+    const outcome = round
+      ? 'unsupported'
+      : req.ctx?.elicit
+        ? await req.ctx.elicit(message)
+        : 'unsupported';
+    if (outcome === 'accept') return { proceed: true };
+    if (outcome === 'decline' || outcome === 'cancel') return notApproved(req.id);
     if (req.method === 'elicitation') {
       return {
         proceed: false,

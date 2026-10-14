@@ -147,13 +147,16 @@ APITAME_HTTP_TOKEN=$(openssl rand -hex 24) npx apitame serve --transport http --
 
 Clients then send `Authorization: Bearer <token>`. Put TLS in front of it (a reverse proxy) before exposing it beyond a private network.
 
-By default the HTTP transport is stateless, so destructive operations are confirmed with the one-time token flow rather than an elicitation prompt (see [safety.md](safety.md#confirmation)). With `--sessions`, each client keeps a session (`Mcp-Session-Id`) and clients that support elicitation show the approval prompt to the human:
+The HTTP transport serves both MCP protocol eras on the same URL (see [safety.md](safety.md#protocol-eras)). How a destructive operation is approved depends on the one the client speaks:
+
+- **Clients on protocol 2026-07-28** are asked through elicitation over plain stateless HTTP: the first call returns the approval form, and the client sends the answer with a second call. No session is needed.
+- **2025-era clients** (protocol 2025-11-25 and earlier) need a session for that, because the server asks in the middle of the call. By default the HTTP transport is stateless, so they confirm with the one-time token flow instead (see [safety.md](safety.md#confirmation)). With `--sessions`, each of them keeps a session (`Mcp-Session-Id`) and clients that support elicitation show the approval prompt to the human:
 
 ```bash
 npx apitame serve --transport http --sessions
 ```
 
-Sessions without requests or open streams are closed after 30 minutes, and at most 100 are kept (the oldest idle one makes room). A client whose session was closed gets a 404 and starts a new one.
+Sessions without requests or open streams are closed after 30 minutes, and at most 100 are kept (the oldest idle one makes room). A client whose session was closed gets a 404 and starts a new one. Requests from 2026-07-28 clients never open or use a session, with or without `--sessions`. With `--watch`, 2025-era clients are told about tool list changes on their session, and 2026-07-28 clients on their `subscriptions/listen` stream. `--log-level debug` logs which protocol each request uses.
 
 ### OAuth
 
@@ -208,4 +211,4 @@ npx apitame add-to claude-code --command "node /path/to/apitame/dist/cli.js"
 
 ## Elicitation and annotations
 
-Destructive operations use MCP elicitation when the client supports it, so the approval prompt comes from the client, not from the agent. Tools also carry `readOnlyHint`, `destructiveHint` and `openWorldHint` annotations, which some clients use to decide when to ask for permission or to run read-only tools in parallel.
+Destructive operations use MCP elicitation when the client supports it, so the approval prompt comes from the client, not from the agent. 2025-era clients get the prompt in the middle of the call; clients on protocol 2026-07-28 get it as the result of a first call and send the answer with a second one, which also works over stateless HTTP. Tools also carry `readOnlyHint`, `destructiveHint` and `openWorldHint` annotations, which some clients use to decide when to ask for permission or to run read-only tools in parallel.

@@ -6,6 +6,9 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
+import { startMockServer, type MockServer } from '../../src/mock/server.js';
+import { loadSpec } from '../../src/sources/openapi/load.js';
+import { extractOperations } from '../../src/sources/openapi/operations.js';
 import { createSqliteShop, freePort, PETSTORE, ROOT, tempDir } from '../helpers.js';
 import { claimsFor, FakeAuthServer, makeKey, signers, signJwt } from '../oauth-fixtures.js';
 
@@ -299,6 +302,147 @@ describe('CLI: serve over HTTP with OAuth', () => {
       await client.close();
       const anonymous = await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' });
       expect(anonymous.status).toBe(401);
+    } finally {
+      child.kill();
+    }
+  });
+});
+
+describe('CLI: serve for protocol 2026-07-28 clients', () => {
+  const t = tempDir('apitame-cli-mrtr-');
+  let mock: MockServer;
+  const writeConfig = (operations: string[]) =>
+    writeFileSync(
+      join(t.dir, 'apitame.config.yaml'),
+      [
+        'name: petstore',
+        `source: { type: openapi, spec: ./openapi.yaml, baseUrl: "${mock.url}" }`,
+        'mode: read-write',
+        'writes: { allow: [deletePet] }',
+        `tools: [{ name: pet, operations: [${operations.join(', ')}] }]`,
+        '',
+      ].join('\n'),
+    );
+  beforeAll(async () => {
+    copyFileSync(PETSTORE, join(t.dir, 'openapi.yaml'));
+    mock = await startMockServer(extractOperations((await loadSpec(PETSTORE)).doc));
+  });
+  afterAll(async () => {
+    await mock.close();
+    t.cleanup();
+  });
+
+  const modern = (onChanged?: () => void) => {
+    const prompts: string[] = [];
+    const client = new Client(
+      { name: 'e2e-2026', version: '1.0.0' },
+      {
+        capabilities: { elicitation: { form: {} } },
+        versionNegotiation: { mode: { pin: '2026-07-28' } },
+        ...(onChanged ? { listChanged: { tools: { onChanged } } } : {}),
+      },
+    );
+    client.setRequestHandler('elicitation/create', async (req) => {
+      prompts.push(String(req.params.message));
+      return { action: 'accept', content: { approve: true } };
+    });
+    return { client, prompts };
+  };
+  const deletes = () => mock.requests.filter((r) => r.operationId === 'deletePet').length;
+
+  const subscribed = async (client: Client) => {
+    const until = Date.now() + 10_000;
+    while (!client.autoOpenedSubscription) {
+      if (Date.now() > until) throw new Error('no subscriptions/listen stream');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+  const within = (heard: Promise<void>, what: () => string) =>
+    Promise.race([
+      heard,
+      new Promise<never>((_, rej) =>
+        setTimeout(() => rej(new Error(`no list change:\n${what()}`)), 10_000),
+      ),
+    ]);
+
+  it('asks the human in two rounds over stdio, and tells the client about reloads', async () => {
+    writeConfig(['getPetById', 'deletePet']);
+    let changed!: () => void;
+    const heard = new Promise<void>((r) => (changed = r));
+    const { client, prompts } = modern(() => changed());
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: [...NODE_ARGS, 'serve', '--watch'],
+        cwd: t.dir,
+        env: { ...(process.env as Record<string, string>), APITAME_LOG_LEVEL: 'silent' },
+        stderr: 'ignore',
+      }),
+    );
+    try {
+      expect(client.getNegotiatedProtocolVersion()).toBe('2026-07-28');
+      const before = deletes();
+      const res = await client.callTool({
+        name: 'pet',
+        arguments: { operation: 'deletePet', params: { petId: 7 } },
+      });
+      expect(res.isError).toBeFalsy();
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toContain('/pet/7');
+      expect(deletes()).toBe(before + 1);
+
+      await subscribed(client);
+      writeConfig(['getPetById', 'findPetsByStatus', 'deletePet']);
+      await within(heard, () => 'stdio');
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('serves stateless HTTP and tells clients about reloads with --watch', async () => {
+    writeConfig(['getPetById', 'deletePet']);
+    const port = await freePort();
+    const child = spawn(
+      process.execPath,
+      [...NODE_ARGS, 'serve', '--transport', 'http', '--port', String(port), '--watch'],
+      { cwd: t.dir, env: { ...process.env, NO_COLOR: '1', APITAME_LOG_LEVEL: 'debug' } },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`no startup line:\n${stderr}`)), 30_000);
+        child.stderr.on('data', () => {
+          if (/serving .*\/mcp/.test(stderr)) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+        child.on('exit', (code) => reject(new Error(`exited with ${code}:\n${stderr}`)));
+      });
+      let changed!: () => void;
+      const heard = new Promise<void>((r) => (changed = r));
+      const { client, prompts } = modern(() => changed());
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)),
+      );
+      try {
+        const before = deletes();
+        const res = await client.callTool({
+          name: 'pet',
+          arguments: { operation: 'deletePet', params: { petId: 8 } },
+        });
+        expect(res.isError).toBeFalsy();
+        expect(prompts).toHaveLength(1);
+        expect(deletes()).toBe(before + 1);
+        expect(stderr).toContain('debug: HTTP POST: protocol 2026-07-28 request');
+
+        await subscribed(client);
+        writeConfig(['getPetById', 'findPetsByStatus', 'deletePet']);
+        await within(heard, () => stderr);
+      } finally {
+        await client.close();
+      }
     } finally {
       child.kill();
     }

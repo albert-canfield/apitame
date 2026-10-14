@@ -58,12 +58,29 @@ Blocked operations are not listed in any tool, so they cost no tokens. If the ag
 
 Confirmation is enforced by the server, not requested politely in a description.
 
-- **Elicitation (preferred).** When the MCP client supports elicitation, apitame sends a form to the human with a preview of the exact request and an approve checkbox. Declining or cancelling stops the call, and so does a prompt that fails or is not answered within 5 minutes: once the client has said it can ask the human, apitame never falls back to a token the agent could send back on its own.
+- **Elicitation (preferred).** When the MCP client supports elicitation, apitame shows the human a form with a preview of the exact request and an approve checkbox. How the form travels depends on the protocol version the client speaks (see [Protocol eras](#protocol-eras) below). Declining or cancelling stops the call, and so does a prompt that fails or is not answered: once the client has said it can ask the human, apitame never falls back to a token the agent could send back on its own.
 - **One-time token (fallback).** Otherwise the first call returns `CONFIRMATION REQUIRED` with a preview and a token. The agent must show the preview to the user and call again with the same arguments plus `"confirm": "<token>"`. Tokens are random, bound to the operation and a hash of the exact arguments, expire after `confirmation.ttlSeconds` (default 300), and work once. A token used with different arguments is rejected and burned.
 
-Elicitation needs a stateful connection: it is used over stdio (how Claude Code, Codex, Cursor, VS Code and Gemini CLI run apitame) and over HTTP with `serve --transport http --sessions`. The default stateless HTTP transport uses the token flow.
+`confirmation.method` chooses the behavior: `auto` (elicitation if available, else token), `elicitation` (refuse if the client cannot elicit), or `token`. It works the same in both protocol eras.
 
-`confirmation.method` chooses the behavior: `auto` (elicitation if available, else token), `elicitation` (refuse if the client cannot elicit), or `token`.
+#### Protocol eras
+
+MCP clients speak one of two protocol eras, and apitame serves both on every transport. Over stdio the client's first message decides for the whole connection; over HTTP each request says which era it belongs to. `--log-level debug` logs the era of each stdio connection and HTTP request.
+
+- **2025-era clients** (protocol 2025-11-25 and earlier, started with `initialize`). apitame sends the form in the middle of the tool call (`elicitation/create`) and waits up to 5 minutes for the answer. This needs a connection that stays open: stdio (how Claude Code, Codex, Cursor, VS Code and Gemini CLI run apitame) or HTTP with `serve --transport http --sessions`. Over the default stateless HTTP transport these clients get the token flow.
+- **Clients on protocol 2026-07-28.** This version has no requests from server to client. Instead, the first call returns the form as an input-required result together with a one-time approval id (`requestState`). The client shows the form, then calls the tool again with the same arguments, the answer and the approval id (multi round-trip input). The call runs only if the id is known, unused and unexpired, was issued for the same operation, the same arguments and the same OAuth client and user, and the human checked the box. Anything else (a decline, a cancel, an unchecked box, other arguments, an id that was changed, used before or expired) is refused with nothing sent, and the id is used up. An answer sent back without an approval id never runs anything: the human is asked again. Because the question and the answer travel in two ordinary requests, this works over every transport, stateless HTTP included, and `--sessions` makes no difference.
+
+| Transport | 2025-era clients | 2026-07-28 clients |
+| --- | --- | --- |
+| stdio | elicitation | elicitation, in two rounds |
+| HTTP (stateless, the default) | token flow | elicitation, in two rounds |
+| HTTP with `--sessions` | elicitation | elicitation, in two rounds (served without a session) |
+
+A 2026-07-28 client that does not declare form elicitation gets the token flow under `auto` and a refusal under `elicitation`, exactly like a 2025-era client without elicitation.
+
+Approval ids are random (256 bits), expire after `confirmation.ttlSeconds` like tokens, and are kept in a store of their own: an approval id never works as a `confirm` token, and a token never works as an approval id. They are not signed. Approvals in flight live in the memory of the apitame process that asked, like confirm tokens: behind a load balancer the second round must reach the same process (otherwise it is refused as unknown, with nothing sent), and a restart or a `--watch` reload forgets them. The write rate limit is checked before the human is asked, in both eras. A second round that arrives while the write limit is exhausted is refused before its approval id is looked at, so that id stays valid until it expires and can still be used once.
+
+Elicitation trusts the client application, in both eras: the answer comes from the client, which is responsible for showing the form to the human rather than to the agent.
 
 Be clear about the limit of the token flow: an agent that ignores its instructions could send the token back without asking. The token flow guarantees that the human-readable preview reaches the conversation and that the second call is identical to what was previewed. If you need a hard guarantee that a human approved, use a client with elicitation support and set `confirmation.method: elicitation`, or keep your client's per-call approval on for write tools (apitame marks them with `destructiveHint` and `readOnlyHint` annotations).
 
@@ -180,7 +197,7 @@ The test suite checks that a bearer token echoed back by an API, OAuth client se
 
 ## HTTP transport
 
-`apitame serve --transport http` is streamable HTTP on `/mcp`, stateless unless `--sessions` is given.
+`apitame serve --transport http` is streamable HTTP on `/mcp`, stateless unless `--sessions` is given. Each request is routed by protocol era with the MCP SDK's own classification: 2025-era requests go to the stateless or session wiring, and 2026-07-28 requests to the SDK's handler for that version, which serves each request with a fresh server and never uses a session. Every check below runs before that routing, so it applies to both eras.
 
 - It binds to `127.0.0.1` by default and checks the `Host` and `Origin` headers, which blocks DNS rebinding from web pages.
 - It refuses to listen on any other interface unless `APITAME_HTTP_TOKEN` or `http.oauth` is set. With `APITAME_HTTP_TOKEN`, every request needs `Authorization: Bearer <token>` (compared in constant time).

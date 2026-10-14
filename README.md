@@ -155,7 +155,7 @@ Or: `codex mcp add github -- npx -y apitame@0.2 serve --config /abs/path/apitame
 
 </details>
 
-Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp` (add `--sessions` so destructive actions are approved in the client). To share it with a team, `http.oauth` lets your identity provider sign each user in and apitame check their access tokens. More in [docs/clients.md](docs/clients.md).
+Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp` (destructive actions are approved in the client: right away for clients on MCP protocol 2026-07-28, with `--sessions` for older clients). To share it with a team, `http.oauth` lets your identity provider sign each user in and apitame check their access tokens. More in [docs/clients.md](docs/clients.md).
 
 ## What the agent sees
 
@@ -295,7 +295,6 @@ Executor is the closest match on safety and is a great choice if you want a mana
 
 - [A published tool-selection eval](https://github.com/albert-canfield/apitame/issues/24): curated tools vs one tool per endpoint vs search-only.
 - [SQL Server and DuckDB](https://github.com/albert-canfield/apitame/issues/27).
-- [Approvals through multi round-trip input](https://github.com/albert-canfield/apitame/issues/45), ready for the 2026-07-28 protocol and for stateless HTTP.
 - Later: GraphQL sources.
 
 Ideas and votes are welcome in [issues](https://github.com/albert-canfield/apitame/issues).
