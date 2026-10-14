@@ -71,7 +71,7 @@ Be clear about the limit of the token flow: an agent that ignores its instructio
 
 Every tool that can write accepts `"dryRun": true`. For HTTP operations the result is the exact method, URL, headers and body that would be sent, with credentials hidden and nothing sent. Dry runs do not need confirmation.
 
-`dryRun` must be `true` or `false` (the strings `"true"` and `"false"` are accepted too); any other value is refused, so a preview is never sent by mistake. `dryRun` and `confirm` always mean what they say here: if an API has its own parameter with one of these names, a single-operation tool exposes it as `api_dryRun` or `api_confirm`.
+`dryRun` must be `true` or `false` (the strings `"true"` and `"false"` are accepted too); any other value, `null` included, is refused, so a preview is never sent by mistake. `dryRun` and `confirm` always mean what they say here: if an API has its own parameter with one of these names, a single-operation tool exposes it as `api_dryRun` or `api_confirm`.
 
 A call that would exceed `limits.maxWritesPerMinute` is refused before the human is asked, so a rate limit never uses up an approval.
 
@@ -117,11 +117,11 @@ is a SELECT of the string `\` followed by a DELETE. A parser that treats `\'` as
 Named queries in `sql.queries` are written by you, not the agent, and are exposed as their own tools with typed parameters. Parameter values are always bound by the driver, never interpolated into SQL.
 
 - Read queries go through the same lexer and parser checks when the server starts. If the parser cannot read a query you wrote, apitame still serves it (with a warning) because the lexer and database layers still apply.
-- Write queries (`write: true`) are hidden unless `mode: read-write` and the query name is in `writes.allow`. DELETE, DROP, TRUNCATE, ALTER, MERGE and UPDATE without WHERE are destructive and always need confirmation. The confirmation preview includes the number of rows the statement would affect right now, measured in a rolled-back transaction. `dryRun: true` reports the same number without changing anything; as for HTTP operations, anything but `true` or `false` is refused. Named query parameters cannot be called `dryRun` or `confirm`.
+- Write queries (`write: true`) are hidden unless `mode: read-write` and the query name is in `writes.allow`. DELETE, DROP, TRUNCATE, ALTER, MERGE and UPDATE without WHERE are destructive and always need confirmation. The confirmation preview includes the number of rows the statement would affect right now, measured in a rolled-back transaction. `dryRun: true` reports the same number without changing anything; as for HTTP operations, anything but `true` or `false` is refused. Named query parameters cannot be called `dryRun` or `confirm`, and are bound with their declared types after validation (`"42"` becomes 42 for an integer, `0` becomes `"0"` for a string). `writes.destructive` patterns and the write rate limit apply as for HTTP operations.
 
 ### Limits
 
-`limits.rowLimit` (default 200) caps rows per result and the agent can only ask for fewer. `limits.timeoutMs` cancels slow queries on the server (PostgreSQL `statement_timeout`) and on the client.
+`limits.rowLimit` (default 200) caps rows per result and the agent can only ask for fewer. `limits.maxResponseBytes` caps every result, `list_tables` and `describe_table` included. `limits.timeoutMs` cancels slow queries on the server (PostgreSQL `statement_timeout`) and on the client.
 
 ## Rate limits
 

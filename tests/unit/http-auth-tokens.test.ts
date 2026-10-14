@@ -50,6 +50,14 @@ describe('fitJson', () => {
     expect(fitJson({ a: 1 }, 100)).toEqual({ value: { a: 1 } });
   });
 
+  it('cuts text by bytes, never splitting a character', () => {
+    const out = fitJson('ñ'.repeat(5_000), 1_000);
+    const value = out.value as string;
+    expect(Buffer.byteLength(value)).toBeLessThanOrEqual(1_000);
+    expect(value).not.toContain('\uFFFD');
+    expect(value.endsWith('ñ...')).toBe(true);
+  });
+
   it('trims arrays to fit and says how much was kept', () => {
     const items = Array.from({ length: 500 }, (_, i) => ({ id: i, name: `item ${i}` }));
     const out = fitJson(items, 2_000);

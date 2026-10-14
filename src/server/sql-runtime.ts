@@ -4,7 +4,7 @@ import type { Config, NamedQueryConfig } from '../config/schema.js';
 import { Logger } from '../log.js';
 import { ConfirmationStore, confirmOrChallenge } from '../safety/confirm.js';
 import { Guardrails, type AuditEntry, type AuditOutcome } from '../safety/guardrails.js';
-import { decide } from '../safety/policy.js';
+import { decide, matchesAny } from '../safety/policy.js';
 import { Redactor } from '../safety/redact.js';
 import type { SqlDriver, TableInfo } from '../sources/sql/driver.js';
 import { analyzeWrite, bindNamedParams, guardSelect } from '../sources/sql/guard.js';
@@ -98,7 +98,9 @@ export class SqlRuntime implements Runtime {
         return;
       }
       access =
-        w.destructive || this.config.writes.destructive.includes(q.name) ? 'destructive' : 'write';
+        w.destructive || matchesAny(q.name, this.config.writes.destructive)
+          ? 'destructive'
+          : 'write';
       sql = w.sql ?? q.sql;
     } else {
       let g = guardSelect(q.sql, {
@@ -178,7 +180,10 @@ export class SqlRuntime implements Runtime {
     for (const q of this.config.sql.queries) {
       if (this.named.has(q.name) || !q.write) continue;
       const w = analyzeWrite(q.sql, this.dialect);
-      const access: Access = w.ok && w.destructive ? 'destructive' : 'write';
+      const access: Access =
+        (w.ok && w.destructive) || matchesAny(q.name, this.config.writes.destructive)
+          ? 'destructive'
+          : 'write';
       const d = decide(q.name, access, this.policy());
       if (!d.allowed) out.push({ name: q.name, reason: d.reason });
     }
@@ -313,7 +318,7 @@ export class SqlRuntime implements Runtime {
 
   private async listTables(schema?: string): Promise<ToolResult> {
     const tables = (await this.tables()).filter((t) => !schema || t.schema === schema);
-    return jsonResult({
+    return this.fit({
       tables: tables.map((t) => ({
         name: t.schema && this.sourceType === 'postgres' ? `${t.schema}.${t.name}` : t.name,
         type: t.type,
@@ -335,7 +340,7 @@ export class SqlRuntime implements Runtime {
     const detail = await this.driver.describeTable(schema, name);
     if (!detail || !this.tableVisible(detail))
       return errorResult(`Table "${table}" not found. Call list_tables to see what exists.`);
-    return jsonResult({
+    return this.fit({
       table:
         detail.schema && this.sourceType === 'postgres'
           ? `${detail.schema}.${detail.name}`
@@ -369,7 +374,11 @@ export class SqlRuntime implements Runtime {
         : {}),
       elapsedMs: result.elapsedMs,
     };
-    // Redact before trimming: a cut could otherwise leave part of a secret behind.
+    return this.fit(payload);
+  }
+
+  /** Redact, then trim to maxResponseBytes (redacting after a cut could leave part of a secret). */
+  private fit(payload: Record<string, unknown>): ToolResult {
     const fitted = fitJson(this.redactor.value(payload), this.config.limits.maxResponseBytes);
     const out = !fitted.note
       ? fitted.value
@@ -425,23 +434,26 @@ export class SqlRuntime implements Runtime {
     args: Record<string, unknown>,
     ctx?: CallContext,
   ): Promise<ToolResult> {
-    const { dryRun: dryRunArg, confirm, ...params } = args;
     let dryRun: boolean;
     try {
-      dryRun = parseDryRun(dryRunArg);
+      dryRun = parseDryRun(args.dryRun);
     } catch (err) {
       return errorResult((err as Error).message);
     }
+    // Validation coerces in place ("42" to 42), so parameters are read after it: binding the
+    // raw values would compare 0 with a text column, which MySQL does numerically.
+    const checked = { ...args };
     const problems = this.validator.check(
       `named:${named.query.name}`,
       { ...named.def.inputSchema },
-      args,
+      checked,
     );
     if (problems.length > 0) {
       return errorResult(
         `Invalid arguments for ${named.query.name}:\n${problems.map((p) => `- ${p}`).join('\n')}`,
       );
     }
+    const { dryRun: _dryRun, confirm, ...params } = checked;
     const bound = bindNamedParams(named.sql, this.dialect, params);
     const audit = (outcome: AuditOutcome, extra: Partial<AuditEntry> = {}) =>
       this.guardrails.record({
@@ -482,6 +494,13 @@ export class SqlRuntime implements Runtime {
         params,
         wouldAffectRows: res.rowCount,
       });
+    }
+
+    // Checked before asking: a call that would be rate-limited must not use up a human approval.
+    const limitedBefore = this.guardrails.peekWrite();
+    if (limitedBefore) {
+      audit('rate-limited');
+      return errorResult(limitedBefore);
     }
 
     if (decision.needsConfirmation) {

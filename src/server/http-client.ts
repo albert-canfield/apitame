@@ -289,6 +289,14 @@ async function readCapped(
   return { text: buf.subarray(0, Math.min(buf.length, limit)).toString('utf8'), complete };
 }
 
+/** The longest prefix of `text` that fits in `maxBytes` of UTF-8, never splitting a character. */
+function cutBytes(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  const cut = Buffer.from(text.slice(0, maxBytes), 'utf8').subarray(0, maxBytes).toString('utf8');
+  // A character split by the cut decodes as U+FFFD; drop it.
+  return cut.endsWith('\uFFFD') ? cut.slice(0, -1) : cut;
+}
+
 /**
  * Shrink a JSON value to fit a byte budget. Arrays are cut to the number of
  * items that fit, so the agent still gets valid, useful JSON and a note.
@@ -298,7 +306,7 @@ export function fitJson(value: unknown, maxBytes: number): { value: unknown; not
   if (typeof value === 'string') {
     if (Buffer.byteLength(value, 'utf8') <= maxBytes) return { value };
     return {
-      value: `${value.slice(0, Math.max(0, maxBytes - 3))}...`,
+      value: `${cutBytes(value, Math.max(0, maxBytes - 3))}...`,
       note: `Response truncated to ${maxBytes} bytes. Use filters or pagination to get a smaller result.`,
     };
   }
@@ -343,7 +351,7 @@ export function fitJson(value: unknown, maxBytes: number): { value: unknown; not
   }
   const text = JSON.stringify(value);
   return {
-    value: `${text.slice(0, Math.max(0, maxBytes - 3))}...`,
+    value: `${cutBytes(text, Math.max(0, maxBytes - 3))}...`,
     note: `Response truncated to ${maxBytes} bytes. Use filters or pagination to get a smaller result.`,
   };
 }
@@ -463,7 +471,6 @@ async function exchange(
   } catch (err) {
     const e = err as Error;
     // Original errors are not attached as `cause`: they may hold URLs with credentials.
-    // eslint-disable-next-line preserve-caught-error
     if (e.name === 'TimeoutError') throw timedOut();
     // eslint-disable-next-line preserve-caught-error
     throw new Error(
@@ -489,7 +496,6 @@ async function exchange(
   try {
     read = await readCapped(res, hardCap);
   } catch (err) {
-    // eslint-disable-next-line preserve-caught-error
     if ((err as Error).name === 'TimeoutError') throw timedOut();
     throw err;
   }
