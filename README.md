@@ -18,7 +18,7 @@
 
 ```bash
 npx apitame init ./openapi.yaml          # or an API URL, postgres://..., ./shop.db
-npx apitame add-to claude-code --write   # or codex, cursor, vscode
+npx apitame add-to claude-code --write   # or codex, cursor, vscode, gemini, claude-desktop
 ```
 
 That is the whole setup. Your agent now has a small set of task-level tools for the API, read-only by default, plus a skill that teaches it how to use them.
@@ -29,7 +29,7 @@ Giving an agent an API is easy. Giving it one safely, without flooding its conte
 
 - **Safe by default.** Read-only out of the box. Writes need `mode: read-write` and an explicit allowlist. Destructive operations stop for human approval. Every write has a dry run.
 - **A curated tool surface.** Endpoints are grouped into a handful of task-level tools, with `search_operations` and `call_operation` for the long tail. The GitHub example goes from 38 endpoints to 8 tools and about 65% fewer tokens. Responses can be trimmed to the fields the agent needs with `"fields": ["items.full_name"]`.
-- **Skills that match the server.** Generated `SKILL.md` files use the real tool names, argument shapes, workflows and safety rules. They are installed where Claude Code, Codex, Cursor and VS Code look for them, and served over MCP.
+- **Skills that match the server.** Generated `SKILL.md` files use the real tool names, argument shapes, workflows and safety rules. They are installed where Claude Code, Codex, Cursor, VS Code and Gemini CLI look for them, packaged for Claude Desktop, and served over MCP.
 - **SQL without the usual footguns.** PostgreSQL and SQLite with `list_tables`, `describe_table` and a SELECT-only `query`, checked by a lexer and a real SQL parser, then run in a read-only transaction with a row limit and a timeout.
 - **One config file you can review in a pull request.** `apitame.config.yaml` holds the tool groups, the allowlist, limits and auth. No daemon, no account, no code generation.
 - **Secrets stay secret.** Credentials come only from environment variables and are redacted from every tool result, error, log line and dry-run preview.
@@ -143,6 +143,13 @@ Or: `codex mcp add github -- npx -y apitame@0.1 serve --config /abs/path/apitame
 
 </details>
 
+<details>
+<summary><b>Gemini CLI</b> and <b>Claude Desktop</b></summary>
+
+`add-to gemini` writes `.gemini/settings.json` and installs skills in `.agents/skills/`. `add-to claude-desktop` writes Claude Desktop's config with absolute paths (desktop apps do not inherit your shell's `PATH`) and packages each skill as a `.zip` to upload in the app.
+
+</details>
+
 Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp`. More in [docs/clients.md](docs/clients.md).
 
 ## What the agent sees
@@ -210,7 +217,7 @@ Read [docs/safety.md](docs/safety.md) for the full model, including what apitame
 | `apitame serve` | Run the MCP server over stdio (default) or `--transport http`. |
 | `apitame inspect` | List tools, access levels and estimated token cost. `--max-tokens <n>` fails CI when the tool list grows past a budget. |
 | `apitame test` | Call every read tool against a local mock built from the spec (or `--live`), validate responses, and prove that blocked writes are refused. For SQL, check every table and try known injection payloads. |
-| `apitame add-to <client>` | Print or `--write` the config for `claude-code`, `codex`, `cursor` or `vscode`, and install the skills. |
+| `apitame add-to <client>` | Print or `--write` the config for `claude-code`, `codex`, `cursor`, `vscode`, `gemini` or `claude-desktop`, and install the skills. |
 | `apitame doctor` | Check the setup end to end: config, environment variables, `.env` safety, API or database connectivity and credentials, whether the database role could write, skills and client configs. |
 
 Full reference: [docs/cli.md](docs/cli.md).

@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - Swagger 2.0 documents are converted to OpenAPI 3 in memory: servers, body and form parameters, `collectionFormat`, responses and security definitions.
+- `add-to gemini` (`.gemini/settings.json`, skills in `.agents/skills/`) and `add-to claude-desktop` (absolute paths and `PATH` for desktop apps, skills packaged as `.zip` for upload).
 - `apitame doctor`: checks Node, config, environment variables, whether `.env` is git-ignored, API or database connectivity and credentials, whether the database role could write, allowlist typos, stale skills and client configs.
 - Rate limits: `limits.maxCallsPerMinute` (default 120) and `limits.maxWritesPerMinute` (default 20) stop runaway agent loops.
 - Audit log: `audit.file` appends a redacted JSON Lines record of every write attempt and refused query (`include: all` adds reads).
