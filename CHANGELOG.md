@@ -22,6 +22,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- On Node 20, request timeouts could silently stop working after a garbage collection: a timeout signal reachable only through `AbortSignal.any()` is collected there and never fires, so a slow API could hold a tool call indefinitely (0.1.0 is affected too). The deadline is now an explicit timer.
+
 - JSON media types with a structured suffix (`application/vnd.api+json`, `application/vnd.github+json`) were treated as binary, so JSON:API responses were never returned.
 - A base URL with a query string (`https://api.example.com/v1?api-version=2024-01-01`) put the operation path inside the query.
 
