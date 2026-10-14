@@ -6,15 +6,28 @@ import type { ConfigInput } from '../../src/config/schema.js';
 import { Redactor } from '../../src/safety/redact.js';
 import { SqlRuntime } from '../../src/server/sql-runtime.js';
 import type { SqlDriver } from '../../src/sources/sql/driver.js';
+import { MysqlDriver } from '../../src/sources/sql/mysql.js';
 import { PostgresDriver } from '../../src/sources/sql/postgres.js';
 import { SqliteDriver } from '../../src/sources/sql/sqlite.js';
-import { createSqliteShop, jsonOf, startPostgresShop, tempDir, textOf } from '../helpers.js';
+import {
+  createSqliteShop,
+  jsonOf,
+  setupMysqlServer,
+  setupPostgresServer,
+  startPostgresShop,
+  tempDir,
+  textOf,
+} from '../helpers.js';
+
+type Dialect = 'sqlite' | 'postgres' | 'mysql';
 
 interface Target {
-  name: 'sqlite' | 'postgres';
+  name: string;
+  dialect: Dialect;
+  /** PGlite does not enforce statement_timeout; real servers do. */
+  realServer: boolean;
   driver: () => SqlDriver;
   count: (table: string) => Promise<number>;
-  url?: string;
 }
 
 type NamedQueries = NonNullable<NonNullable<ConfigInput['sql']>['queries']>;
@@ -23,19 +36,41 @@ const tmp = tempDir();
 let pg: Awaited<ReturnType<typeof startPostgresShop>>;
 const sqliteFile = join(tmp.dir, 'shop.db');
 
+// Real servers are opt-in (CI starts them as service containers).
+const PG_SERVER = process.env.APITAME_TEST_POSTGRES_URL;
+const MYSQL_SERVER = process.env.APITAME_TEST_MYSQL_URL;
+let pgServer: Awaited<ReturnType<typeof setupPostgresServer>> | undefined;
+let mysqlServer: Awaited<ReturnType<typeof setupMysqlServer>> | undefined;
+
 beforeAll(async () => {
   createSqliteShop(sqliteFile);
   pg = await startPostgresShop();
-});
+  if (PG_SERVER) pgServer = await setupPostgresServer(PG_SERVER);
+  if (MYSQL_SERVER) mysqlServer = await setupMysqlServer(MYSQL_SERVER);
+}, 120_000);
 
 afterAll(async () => {
   await pg.close();
   tmp.cleanup();
 });
 
+async function countWith(driver: SqlDriver, table: string): Promise<number> {
+  try {
+    const r = await driver.readQuery(`SELECT count(*) FROM ${table}`, [], {
+      rowLimit: 1,
+      timeoutMs: 5_000,
+    });
+    return Number(r.rows[0]![0]);
+  } finally {
+    await driver.close();
+  }
+}
+
 const targets: Target[] = [
   {
     name: 'sqlite',
+    dialect: 'sqlite',
+    realServer: false,
     driver: () => new SqliteDriver(sqliteFile),
     count: async (table) => {
       const db = new Database(sqliteFile, { readonly: true });
@@ -45,22 +80,38 @@ const targets: Target[] = [
     },
   },
   {
-    name: 'postgres',
+    name: 'postgres (PGlite)',
+    dialect: 'postgres',
+    realServer: false,
     driver: () => new PostgresDriver(pg.url, ['public'], 5_000),
-    count: async (table) => {
-      const d = new PostgresDriver(pg.url, ['public']);
-      const r = await d.readQuery(`SELECT count(*) FROM ${table}`, [], {
-        rowLimit: 1,
-        timeoutMs: 5_000,
-      });
-      await d.close();
-      return Number(r.rows[0]![0]);
-    },
+    count: (table) => countWith(new PostgresDriver(pg.url, ['public']), table),
   },
+  ...(PG_SERVER
+    ? [
+        {
+          name: 'postgres (server)',
+          dialect: 'postgres' as const,
+          realServer: true,
+          driver: () => new PostgresDriver(pgServer!.url, ['public'], 5_000),
+          count: (table: string) => countWith(new PostgresDriver(pgServer!.url, ['public']), table),
+        },
+      ]
+    : []),
+  ...(MYSQL_SERVER
+    ? [
+        {
+          name: 'mysql (server)',
+          dialect: 'mysql' as const,
+          realServer: true,
+          driver: () => new MysqlDriver(mysqlServer!.url),
+          count: (table: string) => countWith(new MysqlDriver(mysqlServer!.url), table),
+        },
+      ]
+    : []),
 ];
 
 function config(
-  type: 'sqlite' | 'postgres',
+  type: Dialect,
   overrides: Omit<Partial<ConfigInput>, 'sql'> & {
     sql?: {
       queries?: readonly NamedQueries[number][];
@@ -71,9 +122,7 @@ function config(
   return parseConfig({
     name: 'shop',
     source:
-      type === 'sqlite'
-        ? { type: 'sqlite', path: sqliteFile }
-        : { type: 'postgres', url: '${DATABASE_URL}' },
+      type === 'sqlite' ? { type: 'sqlite', path: sqliteFile } : { type, url: '${DATABASE_URL}' },
     limits: { rowLimit: 25, timeoutMs: 3_000 },
     ...(overrides as Partial<ConfigInput>),
   });
@@ -84,7 +133,7 @@ describe.each(targets)('SQL runtime on $name', (target) => {
     overrides: Parameters<typeof config>[1],
     fn: (rt: SqlRuntime) => Promise<void>,
   ) => {
-    const rt = new SqlRuntime(config(target.name, overrides), target.driver(), new Redactor());
+    const rt = new SqlRuntime(config(target.dialect, overrides), target.driver(), new Redactor());
     try {
       await fn(rt);
     } finally {
@@ -154,19 +203,24 @@ describe.each(targets)('SQL runtime on $name', (target) => {
         'DROP TABLE orders',
         'COMMIT; DROP TABLE orders;',
         'SELECT 1; DELETE FROM orders',
-        "SELECT '\\'; DELETE FROM orders; --'",
         'WITH d AS (DELETE FROM orders RETURNING *) SELECT * FROM d',
         'SELECT * INTO backup FROM orders',
+        ...(target.dialect === 'mysql'
+          ? [
+              'SELECT 1 /*!50000 , (SELECT COUNT(*) FROM orders) */',
+              'SELECT 1 --; DELETE FROM orders',
+            ]
+          : ["SELECT '\\'; DELETE FROM orders; --'"]),
       ];
       for (const sql of attacks) {
         const res = await rt.callTool('query', { sql });
         expect(res.isError, `${sql} -> ${textOf(res)}`).toBe(true);
       }
-      // Comments nest in PostgreSQL (so this is one harmless SELECT) but not in SQLite (two statements: refused).
+      // Comments nest in PostgreSQL (one harmless SELECT) but not in SQLite or MySQL (two statements: refused).
       const nested = await rt.callTool('query', {
         sql: 'SELECT 1 /* x /* y */ ; DELETE FROM orders; */',
       });
-      if (target.name === 'sqlite') expect(nested.isError).toBe(true);
+      if (target.dialect !== 'postgres') expect(nested.isError).toBe(true);
       else expect(jsonOf<{ rows: unknown[][] }>(nested).rows).toEqual([[1]]);
     });
     expect(await target.count('orders')).toBe(before);
@@ -178,11 +232,12 @@ describe.each(targets)('SQL runtime on $name', (target) => {
       await expect(
         driver.readQuery('DELETE FROM order_items', [], { rowLimit: 5, timeoutMs: 3_000 }),
       ).rejects.toThrow();
+      const stacked =
+        target.dialect === 'mysql'
+          ? 'SELECT 1; DELETE FROM order_items'
+          : "SELECT '\\'; DELETE FROM order_items; --'";
       await expect(
-        driver.readQuery("SELECT '\\'; DELETE FROM order_items; --'", [], {
-          rowLimit: 5,
-          timeoutMs: 3_000,
-        }),
+        driver.readQuery(stacked, [], { rowLimit: 5, timeoutMs: 3_000 }),
       ).rejects.toThrow();
     } finally {
       await driver.close();
@@ -358,6 +413,78 @@ describe('secrets', () => {
       await rt.close();
     }
   });
+});
+
+describe.runIf(Boolean(PG_SERVER || MYSQL_SERVER))('real database servers', () => {
+  it.runIf(Boolean(PG_SERVER))('postgres: statement_timeout cancels a slow query', async () => {
+    const rt = new SqlRuntime(
+      config('postgres', { limits: { timeoutMs: 300, rowLimit: 10 } }),
+      new PostgresDriver(pgServer!.url, ['public'], 300),
+      new Redactor(),
+    );
+    try {
+      const res = await rt.callTool('query', {
+        sql: 'SELECT count(*) FROM generate_series(1, 2000000000)',
+      });
+      expect(textOf(res)).toMatch(/timed out/);
+      expect((await rt.callTool('query', { sql: 'SELECT 1' })).isError).toBeUndefined();
+    } finally {
+      await rt.close();
+    }
+  });
+
+  it.runIf(Boolean(MYSQL_SERVER))('mysql: max_execution_time cancels a slow query', async () => {
+    const rt = new SqlRuntime(
+      config('mysql', { limits: { timeoutMs: 300, rowLimit: 10 } }),
+      new MysqlDriver(mysqlServer!.url),
+      new Redactor(),
+    );
+    try {
+      const res = await rt.callTool('query', {
+        sql: 'SELECT COUNT(*) FROM information_schema.columns a, information_schema.columns b, information_schema.columns c',
+      });
+      expect(textOf(res)).toMatch(/timed out/);
+      expect((await rt.callTool('query', { sql: 'SELECT 1' })).isError).toBeUndefined();
+    } finally {
+      await rt.close();
+    }
+  });
+
+  it.runIf(Boolean(PG_SERVER))('postgres: a read-only role is recognised', async () => {
+    const admin = new PostgresDriver(pgServer!.url, ['public']);
+    const ro = new PostgresDriver(pgServer!.readOnlyUrl, ['public']);
+    try {
+      expect((await admin.privileges()).canWrite).toBe(true);
+      expect(await ro.privileges()).toEqual({
+        canWrite: false,
+        detail: 'role "apitame_ro" has no write privileges',
+      });
+    } finally {
+      await admin.close();
+      await ro.close();
+    }
+  });
+
+  it.runIf(Boolean(MYSQL_SERVER))(
+    'mysql: a read-only user is recognised, and the DDL dry run is refused',
+    async () => {
+      const admin = new MysqlDriver(mysqlServer!.url);
+      const ro = new MysqlDriver(mysqlServer!.readOnlyUrl);
+      try {
+        expect((await admin.privileges()).canWrite).toBe(true);
+        expect((await ro.privileges()).canWrite).toBe(false);
+        await expect(
+          admin.writeQuery('DROP TABLE order_items', [], { timeoutMs: 3_000, dryRun: true }),
+        ).rejects.toThrow(/DDL/);
+        expect(await countWith(new MysqlDriver(mysqlServer!.url), 'order_items')).toBeGreaterThan(
+          100,
+        );
+      } finally {
+        await admin.close();
+        await ro.close();
+      }
+    },
+  );
 });
 
 describe('privileges', () => {

@@ -3,6 +3,7 @@ import type { LoadedConfig } from '../config/load.js';
 import { Logger } from '../log.js';
 import { Guardrails } from '../safety/guardrails.js';
 import { Redactor } from '../safety/redact.js';
+import { MysqlDriver } from '../sources/sql/mysql.js';
 import { PostgresDriver } from '../sources/sql/postgres.js';
 import { SqliteDriver } from '../sources/sql/sqlite.js';
 import { createOpenApiRuntime, type OpenApiRuntime } from './openapi-runtime.js';
@@ -47,7 +48,9 @@ export async function createRuntime(
   const driver =
     target.kind === 'postgres'
       ? new PostgresDriver(target.url, target.schemas, config.limits.timeoutMs)
-      : new SqliteDriver(target.file);
+      : target.kind === 'mysql'
+        ? new MysqlDriver(target.url)
+        : new SqliteDriver(target.file);
   return new SqlRuntime(
     config,
     driver,

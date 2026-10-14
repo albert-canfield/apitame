@@ -1,4 +1,4 @@
-export type Dialect = 'postgres' | 'sqlite';
+export type Dialect = 'postgres' | 'sqlite' | 'mysql';
 
 export type TokenType =
   | 'word'
@@ -43,12 +43,17 @@ const WORD_CHAR = /[A-Za-z0-9_$\u0080-￿]/;
  * - Postgres dollar quoting: $tag$ ... $tag$
  * - Postgres block comments nest; SQLite block comments do not
  * - SQLite [identifiers] and `identifiers`
+ * - MySQL: backslash escapes in '' and "" strings (both are strings), `identifiers`,
+ *   # comments, "--" comments only when followed by whitespace, and /*! ... *\/
+ *   executable comments refused outright because MySQL runs their content
  */
 export function tokenize(sql: string, dialect: Dialect): Token[] {
   const tokens: Token[] = [];
   let i = 0;
   const n = sql.length;
   const pg = dialect === 'postgres';
+  const my = dialect === 'mysql';
+  const lite = dialect === 'sqlite';
 
   const readQuoted = (quote: string, start: number, backslash: boolean): number => {
     let j = start + 1;
@@ -81,11 +86,22 @@ export function tokenize(sql: string, dialect: Dialect): Token[] {
       i++;
       continue;
     }
-    if (c === '-' && next === '-') {
+    // MySQL only treats "--" as a comment when whitespace (or the end) follows it.
+    if (c === '-' && next === '-' && (!my || i + 2 >= n || sql.charCodeAt(i + 2) <= 32)) {
+      while (i < n && sql[i] !== '\n') i++;
+      continue;
+    }
+    if (my && c === '#') {
       while (i < n && sql[i] !== '\n') i++;
       continue;
     }
     if (c === '/' && next === '*') {
+      // MySQL runs the contents of /*! ... */ and reads optimizer hints from /*+ ... */.
+      if (my && (sql[i + 2] === '!' || sql[i + 2] === '+')) {
+        throw new LexError(
+          'MySQL executable comments and optimizer hints (/*! ... */, /*+ ... */) are not allowed.',
+        );
+      }
       let depth = 1;
       let j = i + 2;
       while (depth > 0) {
@@ -102,7 +118,7 @@ export function tokenize(sql: string, dialect: Dialect): Token[] {
       continue;
     }
     if (c === "'") {
-      const end = readQuoted("'", i, false);
+      const end = readQuoted("'", i, my);
       tokens.push({ type: 'string', value: sql.slice(i, end), start: i, end });
       i = end;
       continue;
@@ -130,6 +146,13 @@ export function tokenize(sql: string, dialect: Dialect): Token[] {
       i = end;
       continue;
     }
+    if (my && c === '"') {
+      // Without ANSI_QUOTES (the default), MySQL reads double quotes as a string.
+      const end = readQuoted('"', i, true);
+      tokens.push({ type: 'string', value: sql.slice(i, end), start: i, end });
+      i = end;
+      continue;
+    }
     if (c === '"') {
       const end = readQuoted('"', i, false);
       tokens.push({
@@ -141,7 +164,7 @@ export function tokenize(sql: string, dialect: Dialect): Token[] {
       i = end;
       continue;
     }
-    if (!pg && c === '[') {
+    if (lite && c === '[') {
       const end = sql.indexOf(']', i + 1);
       if (end < 0) throw new LexError(`Unterminated [identifier] at position ${i}`);
       tokens.push({ type: 'quoted', value: sql.slice(i + 1, end), start: i, end: end + 1 });
@@ -149,6 +172,7 @@ export function tokenize(sql: string, dialect: Dialect): Token[] {
       continue;
     }
     if (!pg && c === '`') {
+      // SQLite and MySQL identifiers.
       const end = readQuoted('`', i, false);
       tokens.push({
         type: 'quoted',
@@ -159,7 +183,7 @@ export function tokenize(sql: string, dialect: Dialect): Token[] {
       i = end;
       continue;
     }
-    if (c === '$') {
+    if (c === '$' && !my) {
       if (pg) {
         const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
         if (m) {
@@ -184,14 +208,22 @@ export function tokenize(sql: string, dialect: Dialect): Token[] {
       i += 2;
       continue;
     }
-    if ((c === ':' || (!pg && c === '@')) && next !== undefined && WORD_START.test(next)) {
+    if (my && c === '@') {
+      // MySQL user and system variables (@x, @@version): not parameters.
+      let j = i;
+      while (sql[j] === '@') j++;
+      tokens.push({ type: 'op', value: sql.slice(i, j), start: i, end: j });
+      i = j;
+      continue;
+    }
+    if ((c === ':' || (lite && c === '@')) && next !== undefined && WORD_START.test(next)) {
       let j = i + 1;
       while (j < n && /[A-Za-z0-9_]/.test(sql[j] as string)) j++;
       tokens.push({ type: 'named', value: sql.slice(i + 1, j), start: i, end: j });
       i = j;
       continue;
     }
-    if (!pg && c === '?') {
+    if ((lite || my) && c === '?') {
       let j = i + 1;
       while (j < n && /\d/.test(sql[j] as string)) j++;
       tokens.push({ type: 'param', value: sql.slice(i, j), start: i, end: j });

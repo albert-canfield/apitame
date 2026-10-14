@@ -191,10 +191,11 @@ async function testOpenApi(
   return checks;
 }
 
-function quoteIdent(name: string): string {
+function quoteIdent(name: string, mysql = false): string {
+  const q = mysql ? '`' : '"';
   return name
     .split('.')
-    .map((p) => `"${p.replace(/"/g, '""')}"`)
+    .map((p) => `${q}${p.split(q).join(q + q)}${q}`)
     .join('.');
 }
 
@@ -226,7 +227,10 @@ async function testSql(loaded: LoadedConfig, redactor: Redactor): Promise<Check[
     for (const t of tables.slice(0, 100)) {
       const d = await timed(() => rt.callTool('describe_table', { table: t }));
       const q = await timed(() =>
-        rt.callTool('query', { sql: `SELECT * FROM ${quoteIdent(t)} LIMIT 1`, limit: 1 }),
+        rt.callTool('query', {
+          sql: `SELECT * FROM ${quoteIdent(t, rt.sourceType === 'mysql')} LIMIT 1`,
+          limit: 1,
+        }),
       );
       const failed = [d, q].find((x) => x.r.isError);
       checks.push({
@@ -260,13 +264,22 @@ async function testSql(loaded: LoadedConfig, redactor: Redactor): Promise<Check[
     }
 
     // Safety: these must all be refused.
-    const target = tables[0] ? quoteIdent(tables[0]) : 'x';
+    const target = tables[0] ? quoteIdent(tables[0], rt.sourceType === 'mysql') : 'x';
     const attacks = [
       `DELETE FROM ${target}`,
       `COMMIT; DROP SCHEMA public CASCADE;`,
       `SELECT 1; DELETE FROM ${target}`,
-      `SELECT '\\'; DELETE FROM ${target}; --'`,
       `WITH d AS (DELETE FROM ${target} RETURNING *) SELECT * FROM d`,
+      ...(rt.sourceType === 'mysql'
+        ? [
+            // MySQL runs the contents of executable comments, and "--" needs a space to be a comment.
+            `SELECT 1 /*!50000 , (SELECT COUNT(*) FROM ${target}) */`,
+            `SELECT 1 --; DELETE FROM ${target}`,
+          ]
+        : [
+            // A backslash is just a character in standard SQL strings: two statements, not one.
+            `SELECT '\\'; DELETE FROM ${target}; --'`,
+          ]),
     ];
     let refused = 0;
     for (const sql of attacks) if ((await rt.callTool('query', { sql })).isError) refused++;

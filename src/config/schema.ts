@@ -59,6 +59,12 @@ export const PostgresSourceSchema = z.object({
   schemas: z.array(z.string()).min(1).default(['public']),
 });
 
+export const MysqlSourceSchema = z.object({
+  type: z.literal('mysql'),
+  /** mysql:// (or mariadb://) connection string, normally from an environment variable. */
+  url: z.string().min(1).default('${DATABASE_URL}'),
+});
+
 export const SqliteSourceSchema = z.object({
   type: z.literal('sqlite'),
   /** Database file path, relative to the config file. */
@@ -68,6 +74,7 @@ export const SqliteSourceSchema = z.object({
 export const SourceSchema = z.discriminatedUnion('type', [
   OpenApiSourceSchema,
   PostgresSourceSchema,
+  MysqlSourceSchema,
   SqliteSourceSchema,
 ]);
 

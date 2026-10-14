@@ -17,7 +17,7 @@
 </p>
 
 ```bash
-npx apitame init ./openapi.yaml          # or an API URL, postgres://..., ./shop.db
+npx apitame init ./openapi.yaml          # or an API URL, postgres://..., mysql://..., ./shop.db
 npx apitame add-to claude-code --write   # or codex, cursor, vscode, gemini, claude-desktop
 ```
 
@@ -30,7 +30,7 @@ Giving an agent an API is easy. Giving it one safely, without flooding its conte
 - **Safe by default.** Read-only out of the box. Writes need `mode: read-write` and an explicit allowlist. Destructive operations stop for human approval. Every write has a dry run.
 - **A curated tool surface.** Endpoints are grouped into a handful of task-level tools, with `search_operations` and `call_operation` for the long tail. The GitHub example goes from 38 endpoints to 8 tools and about 65% fewer tokens. Responses can be trimmed to the fields the agent needs with `"fields": ["items.full_name"]`.
 - **Skills that match the server.** Generated `SKILL.md` files use the real tool names, argument shapes, workflows and safety rules. They are installed where Claude Code, Codex, Cursor, VS Code and Gemini CLI look for them, packaged for Claude Desktop, and served over MCP.
-- **SQL without the usual footguns.** PostgreSQL and SQLite with `list_tables`, `describe_table` and a SELECT-only `query`, checked by a lexer and a real SQL parser, then run in a read-only transaction with a row limit and a timeout.
+- **SQL without the usual footguns.** PostgreSQL, MySQL and SQLite with `list_tables`, `describe_table` and a SELECT-only `query`, checked by a lexer and a real SQL parser, then run in a read-only transaction with a row limit and a timeout.
 - **One config file you can review in a pull request.** `apitame.config.yaml` holds the tool groups, the allowlist, limits and auth. No daemon, no account, no code generation.
 - **Secrets stay secret.** Credentials come only from environment variables and are redacted from every tool result, error, log line and dry-run preview.
 
@@ -57,10 +57,11 @@ npx apitame init https://api.example.com   # a spec URL, or a base URL (apitame 
 
 ```bash
 npx apitame init postgres://readonly_user:password@localhost:5432/shop
+npx apitame init mysql://readonly_user:password@localhost:3306/shop
 npx apitame init ./shop.db
 ```
 
-The Postgres connection string is saved to `.env` (never to the config file). Use a read-only role: [docs/sql.md](docs/sql.md) has a two-line setup.
+The connection string is saved to `.env` (never to the config file). Use a read-only role: [docs/sql.md](docs/sql.md) has a two-line setup.
 
 ### Check it, then connect your agent
 
@@ -262,7 +263,7 @@ There is good prior work here. This table is our honest reading as of 13 October
 
 | | apitame | [FastMCP](https://github.com/PrefectHQ/fastmcp) `from_openapi` | [Executor](https://github.com/UsefulSoftwareCo/executor) | [mcp-openapi-server](https://github.com/ivo-toby/mcp-openapi-server) | [openapi-mcp-generator](https://github.com/harsha-iiiv/openapi-mcp-generator) | [MCP Toolbox for Databases](https://github.com/googleapis/mcp-toolbox) | [DBHub](https://github.com/bytebase/dbhub) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Inputs | OpenAPI 3.x, Swagger 2.0, PostgreSQL, SQLite | OpenAPI (in Python code) | OpenAPI, GraphQL, MCP | OpenAPI | OpenAPI | 20+ databases | 6 SQL engines |
+| Inputs | OpenAPI 3.x, Swagger 2.0, PostgreSQL, MySQL, SQLite | OpenAPI (in Python code) | OpenAPI, GraphQL, MCP | OpenAPI | OpenAPI | 20+ databases | 6 SQL engines |
 | Runs as | CLI plus a config file | Python framework | Daemon, desktop app or hosted | CLI proxy | Generated Node project | Go server | Node server |
 | Tool surface | Grouped task tools (capped) plus search and call | One per endpoint, or search and call, or code mode | Code mode, or search and invoke | One per endpoint, or 3 discovery tools | One per endpoint | Hand-written toolsets | 2 tools plus custom |
 | Read-only by default | Yes | No | Partial | No | No | No | Partial |
@@ -281,7 +282,7 @@ Executor is the closest match on safety and is a great choice if you want a mana
 
 ## Roadmap
 
-- v0.2: OpenAPI `multipart/form-data` uploads, response field filtering, MySQL.
+- v0.2: OpenAPI `multipart/form-data` uploads.
 - v0.3: a published tool-selection eval (curated vs one-per-endpoint vs search-only), per-tool rate limits, audit log export.
 - Later: GraphQL sources, OAuth authorization code flow for remote HTTP serving.
 

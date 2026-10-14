@@ -89,3 +89,65 @@ export function jsonOf<T = Record<string, unknown>>(result: {
 }): T {
   return JSON.parse(textOf(result)) as T;
 }
+
+const SERVER_DB = 'apitame_test';
+
+/**
+ * A fresh database with the shop data on a real PostgreSQL server, plus a
+ * read-only role. Opt-in: set APITAME_TEST_POSTGRES_URL to an admin URL.
+ */
+export async function setupPostgresServer(
+  adminUrl: string,
+): Promise<{ url: string; readOnlyUrl: string; close: () => Promise<void> }> {
+  const pg = (await import('pg')).default;
+  const admin = new pg.Client({ connectionString: adminUrl });
+  await admin.connect();
+  await admin.query(`DROP DATABASE IF EXISTS ${SERVER_DB} WITH (FORCE)`);
+  await admin.query(`CREATE DATABASE ${SERVER_DB}`);
+  await admin.query(
+    `DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'apitame_ro') THEN CREATE ROLE apitame_ro LOGIN PASSWORD 'apitame_ro'; END IF; END $$`,
+  );
+  const url = new URL(adminUrl);
+  url.pathname = `/${SERVER_DB}`;
+  const db = new pg.Client({ connectionString: url.toString() });
+  await db.connect();
+  await db.query(readFileSync(SHOP_SEED, 'utf8'));
+  await db.query(`GRANT CONNECT ON DATABASE ${SERVER_DB} TO apitame_ro`);
+  await db.query('GRANT USAGE ON SCHEMA public TO apitame_ro');
+  await db.query('GRANT SELECT ON ALL TABLES IN SCHEMA public TO apitame_ro');
+  await db.query('ANALYZE');
+  await db.end();
+  await admin.end();
+  const ro = new URL(url);
+  ro.username = 'apitame_ro';
+  ro.password = 'apitame_ro';
+  return { url: url.toString(), readOnlyUrl: ro.toString(), close: async () => {} };
+}
+
+/**
+ * The same for a real MySQL server. Opt-in: set APITAME_TEST_MYSQL_URL to an admin URL.
+ */
+export async function setupMysqlServer(
+  adminUrl: string,
+): Promise<{ url: string; readOnlyUrl: string; close: () => Promise<void> }> {
+  const mysql = (await import('mysql2/promise')).default;
+  const admin = await mysql.createConnection({ uri: adminUrl, multipleStatements: true });
+  await admin.query(
+    `DROP DATABASE IF EXISTS ${SERVER_DB}; CREATE DATABASE ${SERVER_DB}; USE ${SERVER_DB};`,
+  );
+  // MySQL cannot index TEXT without a length; the rest of the seed is portable.
+  await admin.query(readFileSync(SHOP_SEED, 'utf8').replace(/\bTEXT\b/g, 'VARCHAR(255)'));
+  await admin.query(
+    // MySQL 8 parses inline REFERENCES but ignores them, so foreign keys are added explicitly.
+    `ALTER TABLE orders ADD FOREIGN KEY (customer_id) REFERENCES customers(id);
+     ALTER TABLE order_items ADD FOREIGN KEY (order_id) REFERENCES orders(id), ADD FOREIGN KEY (product_id) REFERENCES products(id);
+     CREATE USER IF NOT EXISTS 'apitame_ro'@'%' IDENTIFIED BY 'apitame_ro'; GRANT SELECT ON ${SERVER_DB}.* TO 'apitame_ro'@'%'; ANALYZE TABLE customers, products, orders, order_items;`,
+  );
+  await admin.end();
+  const url = new URL(adminUrl);
+  url.pathname = `/${SERVER_DB}`;
+  const ro = new URL(url);
+  ro.username = 'apitame_ro';
+  ro.password = 'apitame_ro';
+  return { url: url.toString(), readOnlyUrl: ro.toString(), close: async () => {} };
+}

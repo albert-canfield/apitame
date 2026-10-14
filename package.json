@@ -71,6 +71,7 @@
     "@readme/openapi-parser": "^9.1.0",
     "ajv": "^8.20.0",
     "commander": "^14.0.3",
+    "mysql2": "^3.24.6",
     "node-sql-parser": "^5.4.0",
     "pg": "^8.23.1",
     "yaml": "^2.9.1",

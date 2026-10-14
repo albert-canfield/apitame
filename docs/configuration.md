@@ -45,6 +45,14 @@ source:
   schemas: [public]        # default
 ```
 
+### MySQL and MariaDB
+
+```yaml
+source:
+  type: mysql
+  url: ${DATABASE_URL}     # mysql://user:password@host:3306/db (mariadb:// also accepted by init)
+```
+
 ### SQLite
 
 ```yaml

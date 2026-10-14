@@ -31,10 +31,12 @@ interface NamedTool {
 
 const lower = (s: string) => s.toLowerCase();
 
+const ENGINE = { postgres: 'PostgreSQL', sqlite: 'SQLite', mysql: 'MySQL' } as const;
+
 export class SqlRuntime implements Runtime {
   readonly name: string;
   readonly mode: Config['mode'];
-  readonly sourceType: 'postgres' | 'sqlite';
+  readonly sourceType: 'postgres' | 'sqlite' | 'mysql';
   readonly warnings: string[] = [];
   private readonly named = new Map<string, NamedTool>();
   private readonly confirmations: ConfirmationStore;
@@ -191,7 +193,7 @@ export class SqlRuntime implements Runtime {
   }
 
   instructions(): string {
-    const engine = this.sourceType === 'postgres' ? 'PostgreSQL' : 'SQLite';
+    const engine = ENGINE[this.sourceType];
     return [
       `${this.name}: ${engine} database via apitame.`,
       'Call list_tables and describe_table before writing SQL.',
@@ -207,7 +209,7 @@ export class SqlRuntime implements Runtime {
 
   listTools(): ToolDefinition[] {
     const limit = this.config.limits.rowLimit;
-    const engine = this.sourceType === 'postgres' ? 'PostgreSQL' : 'SQLite';
+    const engine = ENGINE[this.sourceType];
     const builtIn: ToolDefinition[] = [
       {
         name: 'list_tables',
@@ -524,7 +526,10 @@ export function resolveSqlTarget(
   configDir: string,
   redactor: Redactor,
   env: NodeJS.ProcessEnv = process.env,
-): { kind: 'postgres'; url: string; schemas: string[] } | { kind: 'sqlite'; file: string } {
+):
+  | { kind: 'postgres'; url: string; schemas: string[] }
+  | { kind: 'mysql'; url: string }
+  | { kind: 'sqlite'; file: string } {
   const src = config.source;
   if (src.type === 'postgres') {
     const url = resolveEnv(src.url, 'source.url', env);
@@ -536,6 +541,17 @@ export function resolveSqlTarget(
     }
     redactor.addSecret(url);
     return { kind: 'postgres', url, schemas: src.schemas };
+  }
+  if (src.type === 'mysql') {
+    const url = resolveEnv(src.url, 'source.url', env);
+    try {
+      const u = new URL(url);
+      if (u.password) redactor.addSecret(decodeURIComponent(u.password));
+    } catch {
+      // the URL-password pattern in the redactor still applies
+    }
+    redactor.addSecret(url);
+    return { kind: 'mysql', url };
   }
   if (src.type === 'sqlite')
     return {

@@ -76,6 +76,16 @@ const DENIED_FUNCTIONS = new Set([
   'writefile',
   'edit',
   'fts3_tokenizer',
+  'sleep',
+  'benchmark',
+  'load_file',
+  'get_lock',
+  'release_lock',
+  'release_all_locks',
+  'master_pos_wait',
+  'source_pos_wait',
+  'wait_for_executed_gtid_set',
+  'wait_until_sql_thread_after_gtids',
   'txid_current',
   'pg_current_xact_id',
   'pg_export_snapshot',
@@ -142,9 +152,7 @@ const parsers = new Map<Dialect, SqlParser>();
 function parser(dialect: Dialect): SqlParser {
   let p = parsers.get(dialect);
   if (!p) {
-    const mod = require(
-      `node-sql-parser/build/${dialect === 'postgres' ? 'postgresql' : 'sqlite'}`,
-    ) as {
+    const mod = require(`node-sql-parser/build/${PARSER_BUILD[dialect]}`) as {
       Parser: new () => SqlParser;
     };
     p = new mod.Parser();
@@ -153,7 +161,30 @@ function parser(dialect: Dialect): SqlParser {
   return p;
 }
 
-const PARSER_DB: Record<Dialect, string> = { postgres: 'PostgresQL', sqlite: 'sqlite' };
+const PARSER_DB: Record<Dialect, string> = {
+  postgres: 'PostgresQL',
+  sqlite: 'sqlite',
+  mysql: 'MySQL',
+};
+const PARSER_BUILD: Record<Dialect, string> = {
+  postgres: 'postgresql',
+  sqlite: 'sqlite',
+  mysql: 'mysql',
+};
+
+/** Extra keywords that only matter in one dialect (MySQL locking reads and file export). */
+const DIALECT_KEYWORDS: Record<Dialect, string[]> = {
+  postgres: [],
+  sqlite: [],
+  mysql: ['LOCK', 'SHARE', 'HANDLER', 'OUTFILE', 'DUMPFILE', 'LOAD'],
+};
+
+/** Schemas that hold credentials or other sessions' statements. */
+const SYSTEM_SCHEMAS: Record<Dialect, string[]> = {
+  postgres: [],
+  sqlite: [],
+  mysql: ['mysql', 'performance_schema', 'sys'],
+};
 
 const lower = (s: string) => s.toLowerCase();
 
@@ -273,10 +304,13 @@ export function guardSelect(sql: string, opts: GuardOptions): GuardResult {
   if (!['SELECT', 'WITH', 'VALUES', 'TABLE'].includes(firstWord) && first?.type !== 'lparen') {
     return fail(`Only SELECT queries are allowed (query starts with "${first?.value ?? ''}").`);
   }
+  const extraKeywords = new Set(DIALECT_KEYWORDS[opts.dialect]);
+  const quoteHint = opts.dialect === 'mysql' ? 'backticks' : 'double quotes';
   for (const t of stmt) {
-    if (t.type === 'word' && FORBIDDEN_KEYWORDS.has(t.value.toUpperCase())) {
+    const upper = t.type === 'word' ? t.value.toUpperCase() : '';
+    if (FORBIDDEN_KEYWORDS.has(upper) || extraKeywords.has(upper)) {
       return fail(
-        `"${t.value}" is not allowed in a read-only query. If it is a column or table name, wrap it in double quotes.`,
+        `"${t.value}" is not allowed in a read-only query. If it is a column or table name, wrap it in ${quoteHint}.`,
       );
     }
     if (!opts.allowParams && (t.type === 'param' || t.type === 'named')) {
@@ -285,6 +319,17 @@ export function guardSelect(sql: string, opts: GuardOptions): GuardResult {
   }
   for (const fn of calledFunctions(stmt)) {
     if (isDeniedFunction(fn)) return fail(`Function ${fn}() is not allowed in read-only queries.`);
+  }
+  const systemSchemas = SYSTEM_SCHEMAS[opts.dialect];
+  for (let k = 0; k < stmt.length - 1; k++) {
+    const t = stmt[k] as Token;
+    if (
+      (t.type === 'word' || t.type === 'quoted') &&
+      stmt[k + 1]?.type === 'dot' &&
+      systemSchemas.includes(lower(t.value))
+    ) {
+      return fail(`The "${t.value}" schema is not available.`);
+    }
   }
   const denied = [...BUILTIN_DENIED_TABLES, ...(opts.denyTables ?? [])];
   for (const t of stmt) {
@@ -358,6 +403,9 @@ export function guardSelect(sql: string, opts: GuardOptions): GuardResult {
     (t) => !(t.schema === null && facts.cteNames.has(lower(t.table))),
   );
   for (const t of tables) {
+    if (t.schema && systemSchemas.includes(lower(t.schema))) {
+      return fail(`The "${t.schema}" schema is not available.`);
+    }
     if (tableMatches(t, denied)) return fail(`Table "${t.table}" is not available.`);
     if (opts.allowTables && opts.allowTables.length > 0 && !tableMatches(t, opts.allowTables)) {
       return fail(
@@ -417,6 +465,7 @@ export function analyzeWrite(sql: string, dialect: Dialect): WriteAnalysis {
           'CREATE',
           'SELECT',
           'UPSERT',
+          'RENAME',
         ].includes(w)
       )
         kind = w;
@@ -425,15 +474,16 @@ export function analyzeWrite(sql: string, dialect: Dialect): WriteAnalysis {
   }
   if (!kind) return { ok: false, reason: 'Could not find the statement type.' };
   const destructive =
-    ['DELETE', 'DROP', 'TRUNCATE', 'ALTER', 'MERGE'].includes(kind) ||
+    ['DELETE', 'DROP', 'TRUNCATE', 'ALTER', 'MERGE', 'RENAME'].includes(kind) ||
     (kind === 'UPDATE' && !hasWhere);
   const end = (stmt[stmt.length - 1] as Token).end;
   return { ok: true, kind, destructive, sql: sql.trim().slice(0, end) };
 }
 
 /**
- * Rewrite `:name` parameters for the driver. Postgres gets `$1..$n`;
- * SQLite keeps `:name` (bound by name). Values are never interpolated.
+ * Rewrite `:name` parameters for the driver. Postgres gets `$1..$n`, MySQL
+ * gets `?` (one per occurrence), SQLite keeps `:name` (bound by name).
+ * Values are never interpolated.
  */
 export function bindNamedParams(
   sql: string,
@@ -445,6 +495,18 @@ export function bindNamedParams(
     const params: Record<string, unknown> = {};
     for (const t of tokens) params[t.value] = normalizeValue(values[t.value]);
     return { sql, params };
+  }
+  if (dialect === 'mysql') {
+    let out = '';
+    let last = 0;
+    for (const t of tokens) {
+      out += `${sql.slice(last, t.start)}?`;
+      last = t.end;
+    }
+    return {
+      sql: out + sql.slice(last),
+      params: tokens.map((t) => normalizeValue(values[t.value])),
+    };
   }
   const order: string[] = [];
   let out = '';
