@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { envRefs, loadDotEnv } from '../../config/env.js';
-import { loadConfig, type LoadedConfig } from '../../config/load.js';
+import { loadConfig, withoutGuardrails, type LoadedConfig } from '../../config/load.js';
 import { Logger } from '../../log.js';
 import { matchesAny } from '../../safety/policy.js';
 import { Redactor } from '../../safety/redact.js';
@@ -301,7 +301,7 @@ export async function runDoctor(opts: DoctorOptions): Promise<Finding[]> {
   const redactor = new Redactor();
   let rt: AnyRuntime;
   try {
-    rt = await createRuntime(loaded, {
+    rt = await createRuntime(withoutGuardrails(loaded), {
       redactor,
       logger: new Logger(redactor, 'silent'),
       dotenv: false,

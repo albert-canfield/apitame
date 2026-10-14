@@ -40,6 +40,11 @@ export function groupKey(op: Operation): string {
   return seg ?? 'default';
 }
 
+/** Number of meaningful (non-parameter, non-version) path segments. */
+function pathDepth(op: Operation): number {
+  return op.path.split('/').filter((s) => s && !s.startsWith('{') && !SKIP_SEGMENTS.test(s)).length;
+}
+
 /** Reads first, then by how "central" an operation is (shorter paths first). */
 function operationRank(op: Operation): number {
   const accessRank = op.access === 'read' ? 0 : op.access === 'write' ? 1 : 2;
@@ -75,10 +80,19 @@ export function groupOperations(
     buckets.set(key, list);
   }
 
+  // Tags are deliberate, so tagged groups count as top level. Path-derived groups rank by how
+  // close to the root they start: /v1/customers before /v1/treasury/financial_accounts.
+  const depthOf = (list: Operation[]) =>
+    list.some((o) => o.tags[0]) ? 1 : Math.min(...list.map(pathDepth));
   const ordered = [...buckets.entries()].sort((a, b) => {
     const readsA = a[1].filter((o) => o.access === 'read').length;
     const readsB = b[1].filter((o) => o.access === 'read').length;
-    return readsB - readsA || b[1].length - a[1].length || a[0].localeCompare(b[0]);
+    return (
+      depthOf(a[1]) - depthOf(b[1]) ||
+      readsB - readsA ||
+      b[1].length - a[1].length ||
+      a[0].localeCompare(b[0])
+    );
   });
 
   const groups: ToolGroupConfig[] = [];

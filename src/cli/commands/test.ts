@@ -1,5 +1,5 @@
 import { envRefs } from '../../config/env.js';
-import { loadConfig, type LoadedConfig } from '../../config/load.js';
+import { loadConfig, withoutGuardrails, type LoadedConfig } from '../../config/load.js';
 import { Logger } from '../../log.js';
 import { sampleFromSchema } from '../../mock/sample.js';
 import { startMockServer } from '../../mock/server.js';
@@ -107,7 +107,16 @@ async function testOpenApi(
       const ms = Date.now() - started;
       const body = parse(res);
       const status = typeof body?.status === 'number' ? body.status : undefined;
-      if (status === undefined) {
+      if (status === undefined && !opts.live && /^Invalid arguments for /.test(text(res))) {
+        // The sample generator could not satisfy the schema (an unusual pattern, for example).
+        checks.push({
+          name: op.id,
+          tool: call.tool,
+          outcome: 'warn',
+          detail: 'could not build sample arguments for this operation',
+          ms,
+        });
+      } else if (status === undefined) {
         checks.push({
           name: op.id,
           tool: call.tool,
@@ -116,8 +125,10 @@ async function testOpenApi(
           ms,
         });
       } else if (status >= 200 && status < 300) {
+        // Against the mock, responses are generated from the spec, so validating them would only
+        // test the sample generator (and compiling huge schemas is slow). Live runs check for drift.
         const problems =
-          op.response && body?.note === undefined
+          opts.live && op.response && body?.note === undefined
             ? validator.check(`resp:${op.id}`, op.response.schema, body?.data)
             : [];
         checks.push(
@@ -298,7 +309,9 @@ async function testSql(loaded: LoadedConfig, redactor: Redactor): Promise<Check[
 }
 
 export async function testCommand(opts: TestOptions): Promise<void> {
-  const loaded = loadConfig(opts.config ?? process.env.APITAME_CONFIG ?? undefined);
+  const loaded = withoutGuardrails(
+    loadConfig(opts.config ?? process.env.APITAME_CONFIG ?? undefined),
+  );
   const redactor = new Redactor();
   const isApi = loaded.config.source.type === 'openapi';
   if (!opts.json) {
