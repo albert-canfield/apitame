@@ -1,4 +1,5 @@
 import mysql from 'mysql2/promise';
+import { analyzeWrite } from './guard.js';
 import {
   SqlError,
   type PrivilegeInfo,
@@ -11,7 +12,8 @@ import {
   type WriteOptions,
 } from './driver.js';
 
-const DDL = /^\s*(CREATE|DROP|ALTER|TRUNCATE|RENAME)\b/i;
+/** Statements MySQL commits implicitly, so they can never run inside a rolled-back transaction. */
+const DDL_KINDS = new Set(['CREATE', 'DROP', 'ALTER', 'TRUNCATE', 'RENAME']);
 const WRITE_GRANTS = /\b(ALL PRIVILEGES|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|SUPER)\b/i;
 
 function wrap(err: unknown, timeoutMs: number): SqlError {
@@ -213,7 +215,9 @@ export class MysqlDriver implements SqlDriver {
     params: SqlParams,
     opts: WriteOptions,
   ): Promise<{ rowCount: number }> {
-    if (opts.dryRun && DDL.test(sql)) {
+    // Classify with the lexer, not a regex: a leading comment or CTE must not hide a DROP.
+    const analysis = analyzeWrite(sql, 'mysql');
+    if (opts.dryRun && (!analysis.ok || DDL_KINDS.has(analysis.kind ?? ''))) {
       // MySQL commits DDL implicitly, so it cannot run inside a transaction that is rolled back.
       throw new SqlError('A dry run is not possible for DDL on MySQL: DDL commits implicitly.');
     }
