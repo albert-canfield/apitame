@@ -3,6 +3,7 @@ import { resolveEnv } from '../config/env.js';
 import type { Config, NamedQueryConfig } from '../config/schema.js';
 import { Logger } from '../log.js';
 import { ConfirmationStore, confirmOrChallenge } from '../safety/confirm.js';
+import { Guardrails, type AuditEntry, type AuditOutcome } from '../safety/guardrails.js';
 import { decide } from '../safety/policy.js';
 import { Redactor } from '../safety/redact.js';
 import type { SqlDriver, TableInfo } from '../sources/sql/driver.js';
@@ -37,6 +38,7 @@ export class SqlRuntime implements Runtime {
   readonly warnings: string[] = [];
   private readonly named = new Map<string, NamedTool>();
   private readonly confirmations: ConfirmationStore;
+  private readonly guardrails: Guardrails;
   private readonly validator = new ArgValidator();
   private readonly logger: Logger;
 
@@ -45,6 +47,7 @@ export class SqlRuntime implements Runtime {
     readonly driver: SqlDriver,
     private readonly redactor: Redactor = new Redactor(),
     logger?: Logger,
+    guardrails?: Guardrails,
   ) {
     if (config.source.type === 'openapi') throw new Error('SqlRuntime needs a SQL source');
     this.name = config.name;
@@ -52,6 +55,8 @@ export class SqlRuntime implements Runtime {
     this.sourceType = config.source.type;
     this.logger = logger ?? new Logger(redactor);
     this.confirmations = new ConfirmationStore(config.confirmation.ttlSeconds * 1_000);
+    this.guardrails =
+      guardrails ?? Guardrails.fromConfig(config, process.cwd(), redactor, this.logger);
     for (const q of config.sql.queries) this.registerNamed(q);
   }
 
@@ -278,6 +283,8 @@ export class SqlRuntime implements Runtime {
     args: Record<string, unknown>,
     ctx?: CallContext,
   ): Promise<ToolResult> {
+    const limited = this.guardrails.checkCall();
+    if (limited) return errorResult(limited);
     try {
       switch (name) {
         case 'list_tables':
@@ -370,7 +377,16 @@ export class SqlRuntime implements Runtime {
       allowTables: this.config.sql.tables.allow,
       denyTables: this.config.sql.tables.deny,
     });
-    if (!g.ok) return errorResult(`Refused: ${g.reason}`);
+    if (!g.ok) {
+      this.guardrails.record({
+        tool: 'query',
+        access: 'read',
+        outcome: 'refused',
+        reason: g.reason,
+        args: { sql },
+      });
+      return errorResult(`Refused: ${g.reason}`);
+    }
     const max = this.config.limits.rowLimit;
     const limit = Math.min(
       max,
@@ -381,9 +397,17 @@ export class SqlRuntime implements Runtime {
           : Math.min(50, max),
       ),
     );
+    const started = Date.now();
     const res = await this.driver.readQuery(g.sql, [], {
       rowLimit: limit,
       timeoutMs: this.config.limits.timeoutMs,
+    });
+    this.guardrails.record({
+      tool: 'query',
+      access: 'read',
+      outcome: 'sent',
+      durationMs: Date.now() - started,
+      args: { sql },
     });
     return this.format(res, limit);
   }
@@ -405,6 +429,14 @@ export class SqlRuntime implements Runtime {
       );
     }
     const bound = bindNamedParams(named.sql, this.dialect, params);
+    const audit = (outcome: AuditOutcome, extra: Partial<AuditEntry> = {}) =>
+      this.guardrails.record({
+        tool: named.query.name,
+        access: named.access,
+        outcome,
+        args: params,
+        ...extra,
+      });
 
     if (named.access === 'read') {
       const limit = this.config.limits.rowLimit;
@@ -412,11 +444,15 @@ export class SqlRuntime implements Runtime {
         rowLimit: limit,
         timeoutMs: this.config.limits.timeoutMs,
       });
+      audit('sent');
       return this.format(res, limit);
     }
 
     const decision = decide(named.query.name, named.access, this.policy());
-    if (!decision.allowed) return errorResult(`Blocked: ${decision.reason}\n${decision.hint}`);
+    if (!decision.allowed) {
+      audit('blocked', { reason: decision.reason });
+      return errorResult(`Blocked: ${decision.reason}\n${decision.hint}`);
+    }
 
     const timeoutMs = this.config.limits.timeoutMs;
     if (dryRun === true) {
@@ -424,6 +460,7 @@ export class SqlRuntime implements Runtime {
         timeoutMs,
         dryRun: true,
       });
+      audit('dry-run');
       return jsonResult({
         dryRun: true,
         note: 'Ran inside a transaction that was rolled back. Nothing changed.',
@@ -451,11 +488,28 @@ export class SqlRuntime implements Runtime {
         store: this.confirmations,
         ctx,
       });
-      if (!outcome.proceed) return outcome.result;
+      if (!outcome.proceed) {
+        audit(outcome.result.isError ? 'declined' : 'confirmation-requested');
+        return outcome.result;
+      }
+    }
+
+    const limited = this.guardrails.checkWrite();
+    if (limited) {
+      audit('rate-limited');
+      return errorResult(limited);
     }
 
     this.logger.info(`${named.access} ${named.query.name}`);
-    const res = await this.driver.writeQuery(bound.sql, bound.params, { timeoutMs, dryRun: false });
+    const started = Date.now();
+    let res: { rowCount: number };
+    try {
+      res = await this.driver.writeQuery(bound.sql, bound.params, { timeoutMs, dryRun: false });
+    } catch (err) {
+      audit('error', { durationMs: Date.now() - started, reason: (err as Error).message });
+      throw err;
+    }
+    audit('sent', { durationMs: Date.now() - started });
     return jsonResult({ query: named.query.name, affectedRows: res.rowCount });
   }
 

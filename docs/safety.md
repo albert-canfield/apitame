@@ -111,6 +111,36 @@ Named queries in `sql.queries` are written by you, not the agent, and are expose
 
 `limits.rowLimit` (default 200) caps rows per result and the agent can only ask for fewer. `limits.timeoutMs` cancels slow queries on the server (PostgreSQL `statement_timeout`) and on the client.
 
+## Rate limits
+
+An agent stuck in a loop can call the same tool hundreds of times. Two per-server limits stop that, for both OpenAPI and SQL sources:
+
+| Setting | Default | Counts |
+| --- | --- | --- |
+| `limits.maxCallsPerMinute` | 120 | every tool call |
+| `limits.maxWritesPerMinute` | 20 | writes that are about to be sent (after dry run and confirmation) |
+
+The window slides over the last 60 seconds. A call over the limit is refused with the number of seconds to wait, and nothing is sent. `0` turns a limit off. In HTTP mode the limits are shared by every client of the server.
+
+## Audit log
+
+```yaml
+audit:
+  file: ./apitame-audit.jsonl   # relative to the config file; unset means no audit file
+  include: writes               # or all
+```
+
+With a file set, apitame appends one JSON object per line:
+
+```json
+{"time":"2026-10-14T01:30:00.000Z","server":"github","tool":"issues","operation":"issues/update","access":"write","outcome":"sent","status":200,"durationMs":312,"args":{"owner":"octocat","repo":"hello-world","issue_number":12,"body":{"state":"closed"}}}
+```
+
+- `include: writes` records every write attempt, whatever happened to it: `blocked`, `dry-run`, `confirmation-requested`, `declined`, `rate-limited`, `sent` or `error`. Refused SQL queries are always recorded, because a refused DELETE is worth knowing about.
+- `include: all` records reads too.
+- Arguments go through the redactor and are capped at 2,000 characters. The file is created with owner-only permissions (`0600`).
+- If the file cannot be written, apitame logs one error and keeps serving; tool calls never fail because of the audit log.
+
 ## Secrets
 
 - Auth secrets must be `${ENV_VAR}` references. A literal secret in the config is a validation error.

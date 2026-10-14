@@ -6,6 +6,9 @@ import { isObject } from '../sources/openapi/schema.js';
 
 const DOCS = 'https://github.com/albert-canfield/apitame/blob/main/docs/configuration.md';
 
+const AUDIT_COMMENT =
+  'Add "file: ./apitame-audit.jsonl" to keep a JSON Lines record of every write attempt\n(blocked, dry run, confirmed, sent) and every refused query. include: all also records reads.';
+
 /** Lowercase dash-separated name usable as config name, server name and skill name. */
 export function slugify(input: string, fallback = 'api'): string {
   const s = input
@@ -150,11 +153,14 @@ export function renderOpenApiConfig(input: OpenApiConfigInput): string {
       maxOperationsPerTool: input.maxOperationsPerTool,
       timeoutMs: 15_000,
       maxResponseBytes: 50_000,
+      maxCallsPerMinute: 120,
+      maxWritesPerMinute: 20,
     },
     tools: input.groups,
     longTail: { enabled: true },
     writes: { allow: [], confirm: [], treatAsRead: [], destructive: [] },
     confirmation: { method: 'auto', ttlSeconds: 300 },
+    audit: { include: 'writes' },
     skills: { dir: './skills' },
   };
 
@@ -226,6 +232,7 @@ export function renderOpenApiConfig(input: OpenApiConfigInput): string {
     'confirmation',
     'auto: ask the human through the MCP client (elicitation) when it supports it, else return a one-time token.',
   );
+  comment(doc, 'audit', AUDIT_COMMENT);
   comment(doc, 'skills', 'Generated agent skills. Regenerate with "apitame init --skills-only".');
 
   return doc.toString({ lineWidth: 0 });
@@ -251,10 +258,17 @@ export function renderSqlConfig(input: SqlConfigInput): string {
         ? { type: 'postgres', url: input.target, schemas: input.schemas ?? ['public'] }
         : { type: 'sqlite', path: input.target },
     mode: 'read-only',
-    limits: { timeoutMs: 10_000, rowLimit: 200, maxResponseBytes: 50_000 },
+    limits: {
+      timeoutMs: 10_000,
+      rowLimit: 200,
+      maxResponseBytes: 50_000,
+      maxCallsPerMinute: 120,
+      maxWritesPerMinute: 20,
+    },
     sql: { queries: [], tables: { allow: [], deny: [] } },
     writes: { allow: [], confirm: [] },
     confirmation: { method: 'auto', ttlSeconds: 300 },
+    audit: { include: 'writes' },
     skills: { dir: './skills' },
   };
   const doc = new Document(obj);
@@ -275,7 +289,11 @@ export function renderSqlConfig(input: SqlConfigInput): string {
     'mode',
     'read-only: the query tool only runs single SELECT statements, inside a read-only transaction.\nread-write only affects named queries marked "write: true" and listed in writes.allow.',
   );
-  comment(doc, 'limits', 'rowLimit caps every result; timeoutMs cancels slow queries.');
+  comment(
+    doc,
+    'limits',
+    'rowLimit caps every result; timeoutMs cancels slow queries.\nmaxCallsPerMinute and maxWritesPerMinute stop runaway agent loops (0 means unlimited).',
+  );
   comment(
     doc,
     'sql',
@@ -294,5 +312,6 @@ export function renderSqlConfig(input: SqlConfigInput): string {
     'writes',
     'Named write queries allowed when mode is read-write. DELETE, UPDATE without WHERE and DDL always need confirmation.',
   );
+  comment(doc, 'audit', AUDIT_COMMENT);
   return doc.toString({ lineWidth: 0 });
 }
