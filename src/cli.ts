@@ -42,6 +42,7 @@ program
   )
   .option('-p, --port <port>', 'port for --transport http', '3333')
   .option('--host <host>', 'host for --transport http', '127.0.0.1')
+  .option('-w, --watch', 'reload when the config, spec, skills or .env change')
   .addOption(
     new Option('--log-level <level>', 'log level (stderr)').choices([
       'debug',

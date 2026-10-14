@@ -7,8 +7,10 @@ import { findSkillFile, mimeTypeFor, skillListEntry, skillUri, type SkillEntry }
 export const SKILLS_EXTENSION = 'io.modelcontextprotocol/skills';
 
 export interface McpServerOptions {
-  /** Skills to serve through the MCP Skills extension. */
-  skills?: SkillEntry[];
+  /** Skills to serve through the MCP Skills extension (a getter follows live reloads). */
+  skills?: SkillEntry[] | (() => SkillEntry[]);
+  /** Advertise tools/list_changed (set when `serve --watch` can change the tools). */
+  listChanged?: boolean;
 }
 
 const CACHE = { ttlMs: 300_000, cacheScope: 'public' as const };
@@ -18,20 +20,29 @@ const CACHE = { ttlMs: 300_000, cacheScope: 'public' as const };
  * tool schemas are plain JSON Schema generated from the source, and what is
  * sent in tools/list is exactly what `apitame inspect` measures.
  */
-export function createMcpServer(runtime: Runtime, opts: McpServerOptions = {}): Server {
-  const skills = opts.skills ?? [];
+export function createMcpServer(
+  source: Runtime | (() => Runtime),
+  opts: McpServerOptions = {},
+): Server {
+  const current = typeof source === 'function' ? source : () => source;
+  const currentSkills =
+    typeof opts.skills === 'function' ? opts.skills : () => (opts.skills as SkillEntry[]) ?? [];
+  const runtime = current();
+  const listChanged = opts.listChanged ?? false;
   const server = new Server(
     { name: `apitame-${runtime.name}`, version: VERSION },
     {
       capabilities: {
-        tools: { listChanged: false },
-        ...(skills.length > 0 ? { resources: {}, extensions: { [SKILLS_EXTENSION]: {} } } : {}),
+        tools: { listChanged },
+        ...(currentSkills().length > 0
+          ? { resources: { listChanged }, extensions: { [SKILLS_EXTENSION]: {} } }
+          : {}),
       },
       instructions: runtime.instructions(),
     },
   );
 
-  server.setRequestHandler('tools/list', async () => ({ tools: runtime.listTools() }));
+  server.setRequestHandler('tools/list', async () => ({ tools: current().listTools() }));
 
   server.setRequestHandler('tools/call', async (request, ctx) => {
     const callCtx: CallContext = {
@@ -64,13 +75,13 @@ export function createMcpServer(runtime: Runtime, opts: McpServerOptions = {}): 
       },
     };
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-    const result = await runtime.callTool(request.params.name, args, callCtx);
+    const result = await current().callTool(request.params.name, args, callCtx);
     return { content: result.content, ...(result.isError ? { isError: true } : {}) };
   });
 
-  if (skills.length > 0) {
+  if (currentSkills().length > 0) {
     server.setRequestHandler('resources/list', async () => ({
-      resources: skills.flatMap((s) =>
+      resources: currentSkills().flatMap((s) =>
         s.files.map((f) => ({
           uri: skillUri(s.name, f.path),
           name: f.path === 'SKILL.md' ? s.name : `${s.name}/${f.path}`,
@@ -81,7 +92,7 @@ export function createMcpServer(runtime: Runtime, opts: McpServerOptions = {}): 
     }));
 
     server.setRequestHandler('resources/read', async (request) => {
-      const found = findSkillFile(skills, request.params.uri);
+      const found = findSkillFile(currentSkills(), request.params.uri);
       if (!found)
         throw new ProtocolError(
           ProtocolErrorCode.InvalidParams,
@@ -101,14 +112,18 @@ export function createMcpServer(runtime: Runtime, opts: McpServerOptions = {}): 
     server.setRequestHandler(
       'skills/list',
       { params: z.object({ cursor: z.string().optional() }).passthrough().optional() },
-      async () => ({ resultType: 'complete', skills: skills.map(skillListEntry), ...CACHE }),
+      async () => ({
+        resultType: 'complete',
+        skills: currentSkills().map(skillListEntry),
+        ...CACHE,
+      }),
     );
 
     server.setRequestHandler(
       'skills/get',
       { params: z.object({ uri: z.string() }).passthrough() },
       async (params) => {
-        const found = findSkillFile(skills, params.uri);
+        const found = findSkillFile(currentSkills(), params.uri);
         if (!found || found.file.path !== 'SKILL.md')
           throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown skill: ${params.uri}`);
         return { resultType: 'complete', skill: skillListEntry(found.skill), ...CACHE };
