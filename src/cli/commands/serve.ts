@@ -13,6 +13,7 @@ export interface ServeOptions {
   host?: string;
   logLevel?: string;
   watch?: boolean;
+  sessions?: boolean;
 }
 
 export async function serveCommand(opts: ServeOptions): Promise<void> {
@@ -30,9 +31,16 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
   for (const w of live.runtime.warnings) logger.warn(w);
 
   const watching = opts.watch === true;
+  // Live servers, so a reload can tell every connected client that the tool list changed.
   const servers = new Set<Server>();
-  const makeServer = () =>
-    createMcpServer(() => live.runtime, { skills: () => live.skills, listChanged: watching });
+  const makeServer = () => {
+    const server = createMcpServer(() => live.runtime, {
+      skills: () => live.skills,
+      listChanged: watching,
+    });
+    servers.add(server);
+    return server;
+  };
 
   if (watching) {
     live.onReload(({ toolsChanged, skillsChanged }) => {
@@ -78,9 +86,18 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
   const port = Number(opts.port ?? 3333);
   const token = process.env.APITAME_HTTP_TOKEN;
   if (token) redactor.addSecret(token);
-  // Stateless HTTP builds a server per request, so every request sees the latest runtime.
-  await serveHttp(makeServer, { host, port, logger, ...(token ? { token } : {}) });
+  const sessions = opts.sessions === true;
+  // Every server reads the runtime through `live`, so stateless requests and sessions alike see reloads.
+  await serveHttp(makeServer, {
+    host,
+    port,
+    logger,
+    sessions,
+    onServerClosed: (s) => servers.delete(s),
+    ...(token ? { token } : {}),
+  });
+  const notes = [sessions ? 'sessions' : '', token ? 'bearer token required' : ''].filter(Boolean);
   logger.info(
-    `serving ${summary} at http://${host.includes(':') ? `[${host}]` : host}:${port}/mcp${token ? ' (bearer token required)' : ''}`,
+    `serving ${summary} at http://${host.includes(':') ? `[${host}]` : host}:${port}/mcp${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`,
   );
 }

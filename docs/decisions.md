@@ -79,3 +79,9 @@ A running log of decisions and the reasons behind them. Newest last. Add an entr
 **Context.** `node-sql-parser` installs about 88 MB (every dialect plus source maps), while apitame uses three dialect builds of about 800 KB. It was most of what every `npx apitame` user downloaded, even for OpenAPI-only use.
 
 **Decision.** Import the PostgreSQL, MySQL and SQLite builds statically and let the bundler include them (with `big-integer`), keep `node-sql-parser` as a development dependency, and load all SQL code lazily so OpenAPI users never parse it. Published builds have no source maps. License texts are shipped in `THIRD_PARTY_NOTICES.md`. Install size went from about 141 MB to 53 MB.
+
+## 015. HTTP sessions are opt-in
+
+**Context.** Elicitation lets the human approve a destructive call in the client, but the server must send a request in the middle of a tool call and receive the answer. Stateless HTTP builds a fresh server per request, which never sees `initialize` (so it does not know the client can elicit) and cannot receive the reply.
+
+**Decision.** `serve --transport http --sessions` keeps one server per client, keyed by `Mcp-Session-Id`, with an idle timeout (30 minutes, counted only while no request or stream is open) and a cap (100, the oldest idle session makes room). Stateless stays the default: it is simpler to run behind load balancers and has no per-client memory. All sessions read the same live runtime, so `--watch` reloads and confirmation tokens work the same way in both modes.

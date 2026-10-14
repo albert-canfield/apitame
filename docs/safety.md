@@ -61,7 +61,7 @@ Confirmation is enforced by the server, not requested politely in a description.
 - **Elicitation (preferred).** When the MCP client supports elicitation, apitame sends a form to the human with a preview of the exact request and an approve checkbox. Declining or cancelling stops the call.
 - **One-time token (fallback).** Otherwise the first call returns `CONFIRMATION REQUIRED` with a preview and a token. The agent must show the preview to the user and call again with the same arguments plus `"confirm": "<token>"`. Tokens are random, bound to the operation and a hash of the exact arguments, expire after `confirmation.ttlSeconds` (default 300), and work once. A token used with different arguments is rejected and burned.
 
-Elicitation needs a stateful connection, so it is used over stdio (how Claude Code, Codex, Cursor, VS Code and Gemini CLI run apitame). The streamable HTTP transport is stateless and uses the token flow.
+Elicitation needs a stateful connection: it is used over stdio (how Claude Code, Codex, Cursor, VS Code and Gemini CLI run apitame) and over HTTP with `serve --transport http --sessions`. The default stateless HTTP transport uses the token flow.
 
 `confirmation.method` chooses the behavior: `auto` (elicitation if available, else token), `elicitation` (refuse if the client cannot elicit), or `token`.
 
@@ -177,10 +177,11 @@ The test suite checks that a bearer token echoed back by an API, OAuth client se
 
 ## HTTP transport
 
-`apitame serve --transport http` is stateless streamable HTTP on `/mcp`.
+`apitame serve --transport http` is streamable HTTP on `/mcp`, stateless unless `--sessions` is given.
 
 - It binds to `127.0.0.1` by default and checks the `Host` and `Origin` headers, which blocks DNS rebinding from web pages.
 - It refuses to listen on any other interface unless `APITAME_HTTP_TOKEN` is set, and then requires `Authorization: Bearer <token>` (compared in constant time) on every request.
+- With `--sessions`, session ids are random UUIDs and only identify a conversation: the Host, Origin and token checks still apply to every request. Unknown ids get a 404, and idle sessions are closed.
 
 ## What apitame does not protect against
 
