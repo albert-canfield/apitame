@@ -359,3 +359,16 @@ describe('secrets', () => {
     }
   });
 });
+
+describe('privileges', () => {
+  it('postgres: reports a role that could write', async () => {
+    const driver = new PostgresDriver(pg.url, ['public'], 5_000);
+    try {
+      const p = await driver.privileges();
+      expect(p.canWrite).toBe(true);
+      expect(p.detail).toMatch(/superuser|can write/);
+    } finally {
+      await driver.close();
+    }
+  });
+});

@@ -100,6 +100,42 @@ For SQL sources it lists tables, describes each one, runs `SELECT * ... LIMIT 1`
 
 Exit code 1 when any check fails. Warnings (for example HTTP 404 for a sample id in `--live` mode) do not fail the run.
 
+## `apitame doctor`
+
+Checks a setup end to end and says what to fix.
+
+```text
+$ apitame doctor
+✔ Node.js        v22.22.2
+✔ Config         apitame.config.yaml (postgres, read-only)
+✔ .env           present and ignored by git
+✔ Environment    DATABASE_URL set
+✔ Database       connected, 4 tables and views visible
+! Database role  role "shop_owner" can write to 4 tables (public.customers, ...). apitame enforces read-only access itself, but a read-only role is the layer nothing can bypass (docs/sql.md).
+✔ Skills         shop-db up to date
+✔ Clients        "shop" configured for Claude Code (.mcp.json)
+```
+
+| Check | What it looks at |
+| --- | --- |
+| Node.js | 20.12 or later; warns on Node 20, which is past end of life. |
+| Config | The config file validates; unknown operation ids and skipped named queries. |
+| .env | If present, that git ignores it (a committed `.env` leaks secrets). |
+| Environment | Every `${VAR}` the config needs is set (after loading `.env`). |
+| writes.* | Every allowlist or confirm pattern matches at least one operation (catches typos). |
+| API | Calls the first GET that needs no input, to test DNS, TLS and credentials. 401 and 403 are failures. |
+| Database | Connects, lists tables, and checks whether the role (or the SQLite file) could write. |
+| Skills | Generated skills match the current config, and installed copies in `.claude/skills` or `.agents/skills` match too. |
+| Clients | Which client configs in the current folder reference this server. |
+
+| Option | Description |
+| --- | --- |
+| `-c, --config <path>` | Config file. |
+| `--offline` | Skip the checks that contact the API or database. |
+| `--json` | Machine-readable findings. |
+
+Exit code 1 when a check fails; warnings do not fail.
+
 ## `apitame add-to <client>`
 
 Prints, or writes with `--write`, the configuration for an MCP client, and installs the generated skills.

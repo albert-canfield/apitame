@@ -71,7 +71,8 @@ function ensureEnvExample(dir: string, vars: string[]): void {
   writeFileSync(file, current + missing.map((v) => `${v}=\n`).join(''));
 }
 
-async function skillsFor(runtime: OpenApiRuntime | SqlRuntime): Promise<GeneratedFile[]> {
+/** Generate the skill files for a runtime (used by init and doctor). */
+export async function skillsFor(runtime: OpenApiRuntime | SqlRuntime): Promise<GeneratedFile[]> {
   if (runtime.sourceType === 'openapi') return generateOpenApiSkill(runtime as OpenApiRuntime);
   const sql = runtime as SqlRuntime;
   const tables = await sql.tables();

@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
 import { addToCommand, CLIENTS } from './cli/commands/add-to.js';
+import { doctorCommand } from './cli/commands/doctor.js';
 import { initCommand } from './cli/commands/init.js';
 import { inspectCommand } from './cli/commands/inspect.js';
 import { serveCommand } from './cli/commands/serve.js';
@@ -68,6 +69,16 @@ program
   .option('--live', 'call the real API instead of a local mock (read operations only)')
   .option('--json', 'machine readable output')
   .action(testCommand);
+
+program
+  .command('doctor')
+  .description(
+    'Check the setup: config, environment, connectivity, credentials, skills and clients',
+  )
+  .option('-c, --config <path>', 'config file', 'apitame.config.yaml')
+  .option('--offline', 'skip checks that contact the API or database')
+  .option('--json', 'machine readable output')
+  .action(doctorCommand);
 
 program
   .command('add-to')
