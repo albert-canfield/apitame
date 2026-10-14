@@ -22,6 +22,8 @@ The server runs in **read-only mode**: 11 write operations are blocked.
 
 Grouped tools take `{"operation": "<operation id>", "params": {...}}`. Results are JSON: `{"status": <http status>, "data": <body>}`.
 
+Add `"fields"` with dot paths to keep only what you need, for example `"fields": ["id", "name", "items.owner.login"]`. Arrays are handled for you, so `items.name` keeps `name` in every item. It saves a lot of context on large responses.
+
 ## Workflows
 
 ### Finds Pets by status, then open one
@@ -38,7 +40,7 @@ Grouped tools take `{"operation": "<operation id>", "params": {...}}`. Results a
 ## Safety rules
 
 - Write operations are blocked by the server. Do not look for workarounds. If the user needs one, name the operation and tell them it must be enabled in `apitame.config.yaml` (`mode: read-write` and `writes.allow`).
-- Responses over 50 KB are cut. Use filters and pagination rather than fetching everything.
+- Responses over 50 KB are cut. Use filters, pagination and `fields` rather than fetching everything.
 - Never ask the user for API keys or tokens: the server already holds them, and they are never shown to you.
 - A non-2xx `status` is an API error: read `data` for the reason before retrying.
 
