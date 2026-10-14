@@ -28,7 +28,7 @@ That is the whole setup. Your agent now has a small set of task-level tools for 
 Giving an agent an API is easy. Giving it one safely, without flooding its context, is not. Most generators map every endpoint to a tool and expose every write operation. apitame makes the opposite choices:
 
 - **Safe by default.** Read-only out of the box. Writes need `mode: read-write` and an explicit allowlist. Destructive operations stop for human approval. Every write has a dry run.
-- **A curated tool surface.** Endpoints are grouped into a handful of task-level tools, with `search_operations` and `call_operation` for the long tail. The GitHub example goes from 38 endpoints to 8 tools and about 65% fewer tokens.
+- **A curated tool surface.** Endpoints are grouped into a handful of task-level tools, with `search_operations` and `call_operation` for the long tail. The GitHub example goes from 38 endpoints to 8 tools and about 65% fewer tokens. Responses can be trimmed to the fields the agent needs with `"fields": ["items.full_name"]`.
 - **Skills that match the server.** Generated `SKILL.md` files use the real tool names, argument shapes, workflows and safety rules. They are installed where Claude Code, Codex, Cursor and VS Code look for them, and served over MCP.
 - **SQL without the usual footguns.** PostgreSQL and SQLite with `list_tables`, `describe_table` and a SELECT-only `query`, checked by a lexer and a real SQL parser, then run in a read-only transaction with a row limit and a timeout.
 - **One config file you can review in a pull request.** `apitame.config.yaml` holds the tool groups, the allowlist, limits and auth. No daemon, no account, no code generation.

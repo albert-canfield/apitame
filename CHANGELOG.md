@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - Swagger 2.0 documents are converted to OpenAPI 3 in memory: servers, body and form parameters, `collectionFormat`, responses and security definitions.
+- Response field selection: read tools accept `"fields": ["id", "items.name"]` (dot paths, arrays mapped) to return only what the agent needs. Applied before the response size cap.
 
 ### Security
 
