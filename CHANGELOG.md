@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Security
+
+- SQL lexer: PostgreSQL ends a `--` comment at a carriage return as well as a newline, but the lexer only stopped at a newline, so in `SELECT 1 --\r; DELETE FROM orders WHERE true --\nAND true` the lexer layer saw one statement where PostgreSQL runs two. The parser layer refused the query and the read-only transaction and single-statement protocol would have stopped the DELETE, so nothing ran; the lexer now agrees with the server. Found by a differential test against DuckDB, which shares PostgreSQL's rule.
+
 ### Added
 
 - OAuth 2.1 for the HTTP transport (`http.oauth` in the config): apitame acts as a resource server for your own authorization server (Keycloak, Auth0, Okta, Entra ID and others that issue JWT access tokens). It serves RFC 9728 protected resource metadata, answers requests without a valid token with a 401 that points MCP clients to the sign-in, and checks each access token locally: signature against the issuer's published keys, issuer, audience, expiry and required scopes (403 `insufficient_scope`). Keys are discovered through RFC 8414 or OpenID Connect metadata and refreshed when the issuer rotates them. ID and refresh tokens are refused, `http.oauth.clients` limits tokens to known clients, and `http.oauth.requireAccessTokenType` requires `typ: at+jwt`. With `--sessions`, a session belongs to the client and user who started it, with at most 10 sessions per user, and the audit log records the token's client and subject. `APITAME_HTTP_TOKEN` and `http.oauth` cannot be combined (#28).
