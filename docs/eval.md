@@ -125,9 +125,9 @@ It calls the Messages API with client-side tool use over plain `fetch` (no SDK d
 
 A rough estimate for the full phase 1 set (24 tasks, 3 surfaces, 5 runs: 360 runs per model). It is an estimate, not a quote.
 
-The scripted model makes the fewest possible calls, so pricing its token counts gives a floor: `pnpm eval --provider fake --model <id> --runs 5` prints it. At October 2026 list prices, without caching, that floor is about $3.40 for `claude-sonnet-5`, $1.70 for `claude-haiku-4-5-20251001` and $8.60 for `claude-opus-5`.
+The scripted model makes the fewest possible calls, so pricing its token counts gives a floor: `pnpm eval --provider fake --model <id> --runs 5` prints it. At October 2026 list prices ([pricing](https://platform.claude.com/docs/en/about-claude/pricing)), without caching, that floor is about $3.40 for `claude-sonnet-5`, $1.70 for `claude-haiku-4-5-20251001` and $6.90 for `claude-opus-5-5`.
 
-Real models take extra turns, write longer answers and may think before calling a tool. Plan for two to four times the floor: roughly $7 to $14 for Sonnet 5, $3.50 to $7 for Haiku 4.5 and $17 to $35 for Opus 5. Prompt caching lowers the input part. Try `--runs 1` on one API first and scale from its real cost.
+Real models take extra turns, write longer answers and may think before calling a tool. Plan for two to four times the floor: roughly $7 to $14 for Sonnet 5, $3.50 to $7 for Haiku 4.5 and $14 to $28 for Opus 5.5. Prompt caching lowers the input part. Try `--runs 1` on one API first and scale from its real cost.
 
 List prices live in `scripts/eval/pricing.ts`. Check the provider's pricing page before publishing, and report the cost from the provider's usage report.
 
