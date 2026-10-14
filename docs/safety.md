@@ -30,6 +30,8 @@ You can override the classification:
 
 - `writes.treatAsRead: [searchInvoices]` for POST endpoints that only read (search, query, preview).
 - `writes.destructive: [archiveProject]` for writes that are worse than they look.
+
+Both lists accept the same `*` patterns as `writes.allow` (`archive*`).
 - `x-apitame-access: read | write | destructive` on the operation in the spec.
 
 Classification never downgrades on its own. A POST named `searchSomething` is still a write until you say otherwise; `init` lists such operations in a comment so you can decide.
@@ -68,6 +70,10 @@ Be clear about the limit of the token flow: an agent that ignores its instructio
 ### Dry run
 
 Every tool that can write accepts `"dryRun": true`. For HTTP operations the result is the exact method, URL, headers and body that would be sent, with credentials hidden and nothing sent. Dry runs do not need confirmation.
+
+`dryRun` must be `true` or `false` (the strings `"true"` and `"false"` are accepted too); any other value is refused, so a preview is never sent by mistake. `dryRun` and `confirm` always mean what they say here: if an API has its own parameter with one of these names, a single-operation tool exposes it as `api_dryRun` or `api_confirm`.
+
+A call that would exceed `limits.maxWritesPerMinute` is refused before the human is asked, so a rate limit never uses up an approval.
 
 ### Validation and limits
 
@@ -181,5 +187,6 @@ The test suite checks that a bearer token echoed back by an API, OAuth client se
 - **Side effects of reads.** Some APIs change state on GET (counters, "mark as read"). apitame classifies by HTTP method; mark such operations with `writes.destructive` or `x-apitame-access`.
 - **A client that auto-approves and an agent that self-confirms.** See the token flow note above. Use elicitation or client-side approval when it matters.
 - **Your config file.** Whoever can edit `apitame.config.yaml` can allow anything. Review changes to it like code.
+- **The spec.** The OpenAPI document decides which operations exist and can mark them with `x-apitame-access` (for example `read` on an endpoint that deletes). A spec loaded from a URL is trusted like the config: point `source.spec` at a URL you control or pin to a version, or keep a reviewed copy next to the config.
 
 Found a gap? Please report it privately: see [SECURITY.md](../SECURITY.md).

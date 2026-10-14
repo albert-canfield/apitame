@@ -1,3 +1,4 @@
+import { matchesAny } from '../../safety/policy.js';
 import type { Access, JsonSchema } from '../../types.js';
 import type { OpenApiDocument } from './load.js';
 import { compactSchema, isObject, truncate, typeLabel } from './schema.js';
@@ -135,8 +136,9 @@ export function classifyAccess(
   op: { id: string; method: HttpMethod; path: string; summary: string; extension?: unknown },
   opts: ClassifyOptions = {},
 ): Access {
-  if (opts.destructive?.includes(op.id)) return 'destructive';
-  if (opts.treatAsRead?.includes(op.id)) return 'read';
+  // Same `*` patterns as writes.allow and writes.confirm.
+  if (opts.destructive && matchesAny(op.id, opts.destructive)) return 'destructive';
+  if (opts.treatAsRead && matchesAny(op.id, opts.treatAsRead)) return 'read';
   if (op.extension === 'read' || op.extension === 'write' || op.extension === 'destructive') {
     return op.extension;
   }

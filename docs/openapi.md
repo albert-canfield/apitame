@@ -91,7 +91,7 @@ Every tool that reads JSON accepts an optional `fields` argument: a list of dot 
 { "operation": "search/repos", "params": { "q": "mcp language:typescript" }, "fields": ["total_count", "items.full_name", "items.stargazers_count"] }
 ```
 
-returns `total_count` and, for every item, only `full_name` and `stargazers_count`. Selection happens before the size cap, so more items fit. If an operation has its own parameter called `fields` (common in Google and JSON:API style APIs), the API parameter wins in single-operation tools; in grouped tools it lives inside `params` and there is no clash.
+returns `total_count` and, for every item, only `full_name` and `stargazers_count`. Selection happens before the size cap, so more items fit. If an operation has its own parameter called `fields` (common in Google and JSON:API style APIs), the API parameter wins in single-operation tools; in grouped tools it lives inside `params` and there is no clash. `dryRun` and `confirm` are different: they always control apitame, and an API parameter with one of those names is exposed as `api_dryRun` or `api_confirm`.
 
 Results are compact JSON: `{"status": 200, "data": ...}`. Non-2xx statuses are returned with `isError: true` and the API's error body, so the agent can read the reason. Responses larger than `limits.maxResponseBytes` are trimmed (arrays are cut to the items that fit) with a `note` explaining what happened.
 

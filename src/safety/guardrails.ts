@@ -36,14 +36,19 @@ export class RateLimiter {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** Returns 0 when the call may proceed, else the milliseconds to wait. */
+  /** Returns 0 when the call may proceed (and counts it), else the milliseconds to wait. */
   take(): number {
+    const wait = this.peek();
+    if (wait === 0 && this.perMinute > 0) this.hits.push(this.now());
+    return wait;
+  }
+
+  /** Like {@link take}, without counting the call. */
+  peek(): number {
     if (this.perMinute <= 0) return 0;
     const t = this.now();
     while (this.hits.length > 0 && (this.hits[0] as number) <= t - 60_000) this.hits.shift();
-    if (this.hits.length >= this.perMinute) return (this.hits[0] as number) + 60_000 - t;
-    this.hits.push(t);
-    return 0;
+    return this.hits.length >= this.perMinute ? (this.hits[0] as number) + 60_000 - t : 0;
   }
 }
 
@@ -121,7 +126,18 @@ export class Guardrails {
 
   /** Check the per-minute write budget. Returns an error message when exceeded. */
   checkWrite(): string | undefined {
-    const wait = this.writes.take();
+    return this.writeLimitMessage(this.writes.take());
+  }
+
+  /**
+   * The write limit, without using up a slot. Checked before asking a human,
+   * so a call that would be rate-limited never uses up an approval.
+   */
+  peekWrite(): string | undefined {
+    return this.writeLimitMessage(this.writes.peek());
+  }
+
+  private writeLimitMessage(wait: number): string | undefined {
     return wait > 0
       ? `Rate limit: more than ${this.writes.perMinute} writes per minute. Try again in ${Math.ceil(wait / 1000)} s.`
       : undefined;

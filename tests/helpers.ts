@@ -8,6 +8,9 @@ import type { Config, ConfigInput } from '../src/config/schema.js';
 import { groupOperations } from '../src/sources/openapi/grouping.js';
 import { loadSpec, type LoadedSpec } from '../src/sources/openapi/load.js';
 import { extractOperations } from '../src/sources/openapi/operations.js';
+import { Logger } from '../src/log.js';
+import { Redactor } from '../src/safety/redact.js';
+import { OpenApiRuntime } from '../src/server/openapi-runtime.js';
 
 export const ROOT = resolve(import.meta.dirname, '..');
 export const PETSTORE = join(ROOT, 'examples/petstore/openapi.yaml');
@@ -162,4 +165,73 @@ export async function setupMysqlServer(
   ro.username = 'apitame_ro';
   ro.password = 'apitame_ro_pw';
   return { url: url.toString(), readOnlyUrl: ro.toString(), close: async () => {} };
+}
+
+export interface SentRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body?: unknown;
+}
+
+/**
+ * An OpenAPI runtime over an in-memory spec, with a fake fetch: every request
+ * is recorded in `sent`, and `respond` decides the response (200 `{"ok":true}`
+ * by default). Logs are captured in `logs`.
+ */
+export function fakeApi(opts: {
+  paths: Record<string, unknown>;
+  config?: Record<string, unknown>;
+  env?: Record<string, string>;
+  baseUrl?: string;
+  respond?: (s: SentRequest) => Response;
+}): { rt: OpenApiRuntime; sent: SentRequest[]; logs: string[] } {
+  const sent: SentRequest[] = [];
+  const logs: string[] = [];
+  const fetchImpl = (async (input: string | URL, init: RequestInit = {}) => {
+    const s: SentRequest = {
+      method: init.method ?? 'GET',
+      url: String(input),
+      headers: { ...(init.headers as Record<string, string>) },
+      body: init.body,
+    };
+    sent.push(s);
+    return opts.respond
+      ? opts.respond(s)
+      : new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  const config = parseConfig({
+    name: 't',
+    source: {
+      type: 'openapi',
+      spec: 'x.yaml',
+      baseUrl: opts.baseUrl ?? 'https://api.example.com/v1',
+    },
+    ...opts.config,
+  });
+  const spec = {
+    doc: { openapi: '3.0.0', info: { title: 't', version: '1' }, paths: opts.paths },
+    location: '/x.yaml',
+    isUrl: false,
+  } as unknown as LoadedSpec;
+  const redactor = new Redactor();
+  const logger = new Logger(redactor, 'debug', (l) => logs.push(l));
+  const rt = new OpenApiRuntime(config, spec, {
+    configDir: '.',
+    env: opts.env ?? {},
+    fetchImpl,
+    redactor,
+    logger,
+  });
+  return { rt, sent, logs };
+}
+
+/** Call an operation through the long-tail tool (for configs without tool groups). */
+export function callOperation(
+  rt: OpenApiRuntime,
+  operationId: string,
+  params: Record<string, unknown> = {},
+  flags: Record<string, unknown> = {},
+) {
+  return rt.callTool('call_operation', { operationId, params, ...flags });
 }

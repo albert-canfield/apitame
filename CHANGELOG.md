@@ -11,6 +11,11 @@ All notable changes to this project are documented here. The format follows [Kee
 - Each variable inside a composite value is registered on its own (`SSWS ${OKTA_TOKEN}`, `tenant-${KEY}`), and so is a Basic auth username that comes from the environment (Stripe sends the key as the username).
 - The redactor also catches query-string encoded secrets, `Authorization: <scheme> <value>` pairs, lowercase schemes, object keys and non-string values under sensitive keys, and no longer backtracks quadratically on long dotted input (a 200,000-character argument took about 20 seconds and blocked the server).
 - Static header values are hidden in previews, including literal ones.
+- `dryRun` must be a boolean (or `"true"`/`"false"`). Before, `"dryRun": "true"` or `1` sent the real request; destructive operations still stopped at confirmation, but allowlisted writes ran.
+- `dryRun` and `confirm` always control apitame. In single-operation tools an API parameter with the same name took them over, so a "dry run" could be sent to the API for real; such parameters are now exposed as `api_dryRun` and `api_confirm`.
+- The write rate limit is checked before confirmation, so a rate-limited call no longer uses up the human's approval token.
+- `writes.destructive` and `writes.treatAsRead` accept `*` patterns like `allow` and `confirm`. Before, `destructive: [archive*]` was ignored at runtime (while `doctor` reported it as matching), so those operations ran without confirmation.
+- `confirmation.method: elicitation` refuses when there is no way to ask the human, instead of falling back to a token (library use only; the MCP server always offers elicitation).
 
 ### Added
 
