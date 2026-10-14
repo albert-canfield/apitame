@@ -1,3 +1,5 @@
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { createAuth } from '../../src/auth/index.js';
 import { Redactor } from '../../src/safety/redact.js';
@@ -166,9 +168,14 @@ describe('redirects', () => {
   });
 
   it('applies the timeout to the whole chain, not to each hop', async () => {
+    // Collect garbage mid-request: on Node 20 a timeout signal reachable only through
+    // AbortSignal.any() was collected and never fired, so requests had no deadline at all.
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
     let hops = 0;
     const impl = (async (input: URL | string, init: RequestInit = {}) => {
       hops++;
+      gc();
       await new Promise((resolve, reject) => {
         const t = setTimeout(resolve, 120);
         init.signal?.addEventListener('abort', () => {

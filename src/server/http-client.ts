@@ -370,17 +370,34 @@ export async function sendRequest(
   auth: AuthProvider | undefined,
   opts: SendOptions,
 ): Promise<HttpResult> {
+  // One deadline for the whole exchange: every redirect hop, the 401 retry and the body.
+  // A timer holds the controller: on Node 20 a timeout signal reachable only through
+  // AbortSignal.any() can be garbage collected and then never fires.
+  const deadline = new AbortController();
+  const timer = setTimeout(
+    () => deadline.abort(new DOMException('The operation timed out.', 'TimeoutError')),
+    opts.timeoutMs,
+  );
+  try {
+    const signal = opts.signal ? AbortSignal.any([deadline.signal, opts.signal]) : deadline.signal;
+    return await exchange(req, auth, opts, signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function exchange(
+  req: BuiltRequest,
+  auth: AuthProvider | undefined,
+  opts: SendOptions,
+  signal: AbortSignal,
+): Promise<HttpResult> {
   const doFetch = opts.fetchImpl ?? fetch;
   const origin = new URL(req.url).origin;
   const basePath = (opts.basePath ?? '').replace(/\/+$/, '');
   const underBase = (u: URL) =>
     u.origin === origin &&
     (basePath === '' || u.pathname === basePath || u.pathname.startsWith(`${basePath}/`));
-  // One deadline for the whole exchange: every redirect hop, the 401 retry and the body.
-  const signal = AbortSignal.any([
-    AbortSignal.timeout(opts.timeoutMs),
-    ...(opts.signal ? [opts.signal] : []),
-  ]);
   const timedOut = () => new Error(`Request timed out after ${opts.timeoutMs} ms.`);
 
   /**
