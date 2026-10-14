@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import {
   DEFAULT_CONFIG_FILE,
@@ -55,9 +55,10 @@ function writeFiles(root: string, files: GeneratedFile[]): string[] {
   return written;
 }
 
+/** Relative path with forward slashes, so configs work on every OS when committed. */
 function rel(from: string, to: string): string {
-  const r = relative(from, to) || '.';
-  return r.startsWith('.') ? r : `./${r}`;
+  const r = (relative(from, to) || '.').split(sep).join('/');
+  return r.startsWith('.') || /^[A-Za-z]:\//.test(r) ? r : `./${r}`;
 }
 
 function ensureEnvExample(dir: string, vars: string[]): void {
