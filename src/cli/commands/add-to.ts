@@ -1,6 +1,8 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { loadConfig } from '../../config/load.js';
+import { zip } from '../../generator/zip.js';
 import { loadSkills } from '../../server/skills.js';
 import { VERSION } from '../../version.js';
 import { c, ok, warn } from '../ui.js';
@@ -12,7 +14,14 @@ export interface AddToOptions {
   command?: string;
 }
 
-export const CLIENTS = ['claude-code', 'codex', 'cursor', 'vscode'] as const;
+export const CLIENTS = [
+  'claude-code',
+  'codex',
+  'cursor',
+  'vscode',
+  'gemini',
+  'claude-desktop',
+] as const;
 type Client = (typeof CLIENTS)[number];
 
 interface ServerCommand {
@@ -68,11 +77,60 @@ function copySkills(skillsDir: string, target: string): string[] {
   return skills.map((s) => s.name);
 }
 
+/** Where Claude Desktop keeps its MCP config on this platform. */
+export function claudeDesktopConfigPath(): string {
+  if (process.env.APITAME_CLAUDE_DESKTOP_CONFIG) return process.env.APITAME_CLAUDE_DESKTOP_CONFIG;
+  if (process.platform === 'darwin') {
+    return join(
+      homedir(),
+      'Library',
+      'Application Support',
+      'Claude',
+      'claude_desktop_config.json',
+    );
+  }
+  if (process.platform === 'win32') {
+    return join(
+      process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'),
+      'Claude',
+      'claude_desktop_config.json',
+    );
+  }
+  return join(homedir(), '.config', 'Claude', 'claude_desktop_config.json');
+}
+
+/** Absolute path of a command on PATH, if any. */
+function which(command: string): string | undefined {
+  const exts = process.platform === 'win32' ? ['.cmd', '.exe', ''] : [''];
+  for (const dir of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
+    for (const ext of exts) {
+      const candidate = join(dir, command + ext);
+      try {
+        if (statSync(candidate).isFile()) return candidate;
+      } catch {
+        // not here
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Package each skill folder as <skillsDir>/<name>.zip, ready to upload. */
+function zipSkills(skillsDir: string): string[] {
+  return loadSkills(skillsDir).map((s) => {
+    const file = join(skillsDir, `${s.name}.zip`);
+    writeFileSync(file, zip(s.files.map((f) => ({ path: `${s.name}/${f.path}`, data: f.bytes }))));
+    return file;
+  });
+}
+
 export async function addToCommand(clientArg: string, opts: AddToOptions): Promise<void> {
   const client = clientArg
     .toLowerCase()
     .replace(/^claude$/, 'claude-code')
-    .replace(/^code$/, 'vscode') as Client;
+    .replace(/^code$/, 'vscode')
+    .replace(/^gemini-cli$/, 'gemini')
+    .replace(/^(claude-app|desktop)$/, 'claude-desktop') as Client;
   if (!CLIENTS.includes(client))
     throw new Error(`Unknown client "${clientArg}". Use one of: ${CLIENTS.join(', ')}.`);
 
@@ -207,6 +265,65 @@ export async function addToCommand(clientArg: string, opts: AddToOptions): Promi
             `\nSkills: copy ${relative(cwd, skillsDir) || '.'}/* into .agents/skills/ (or run with --write).`,
           ),
         );
+      break;
+    }
+    case 'gemini': {
+      // Gemini CLI documents no project variable for args, so the path is absolute.
+      const cmd = launcher(opts, loaded.path);
+      console.log(c.bold('Gemini CLI'));
+      console.log(c.dim('Put this in .gemini/settings.json (or ~/.gemini/settings.json):'));
+      console.log(JSON.stringify({ mcpServers: { [name]: cmd } }, null, 2));
+      if (opts.write) {
+        mergeJson(join(cwd, '.gemini', 'settings.json'), 'mcpServers', name, cmd);
+        console.log(ok('Updated .gemini/settings.json'));
+        if (hasSkills)
+          console.log(
+            ok(
+              `Installed skills in .agents/skills: ${copySkills(skillsDir, join(cwd, '.agents', 'skills')).join(', ')}`,
+            ),
+          );
+      } else if (hasSkills)
+        console.log(
+          c.dim(
+            `\nSkills: copy ${relative(cwd, skillsDir) || '.'}/* into .agents/skills/ (or run with --write).`,
+          ),
+        );
+      break;
+    }
+    case 'claude-desktop': {
+      // Desktop apps start servers from an unknown folder with a minimal PATH, so everything
+      // is absolute and PATH includes the folder of the npx that was found now.
+      const base = launcher(opts, loaded.path);
+      const npx = !opts.command ? which('npx') : undefined;
+      const entry = npx
+        ? {
+            command: npx,
+            args: base.args,
+            env: { PATH: `${dirname(npx)}${delimiter}${process.env.PATH ?? ''}` },
+          }
+        : base;
+      const file = claudeDesktopConfigPath();
+      console.log(c.bold('Claude Desktop'));
+      console.log(
+        c.dim(
+          `Add this to ${file} (Settings, Developer, Edit Config), then restart Claude Desktop:`,
+        ),
+      );
+      console.log(JSON.stringify({ mcpServers: { [name]: entry } }, null, 2));
+      if (opts.write) {
+        mergeJson(file, 'mcpServers', name, entry);
+        console.log(ok(`Updated ${file}. Restart Claude Desktop to load it.`));
+        if (hasSkills) {
+          const zips = zipSkills(skillsDir).map((z) => relative(cwd, z) || z);
+          console.log(
+            ok(
+              `Packaged skills: ${zips.join(', ')}. Upload them in Claude Desktop settings (Capabilities, Skills).`,
+            ),
+          );
+        }
+      } else if (hasSkills) {
+        console.log(c.dim('\nSkills: run with --write to package them as .zip files for upload.'));
+      }
       break;
     }
   }

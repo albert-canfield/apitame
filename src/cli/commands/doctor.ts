@@ -11,6 +11,7 @@ import { createRuntime, type AnyRuntime } from '../../server/runtime.js';
 import type { SqlRuntime } from '../../server/sql-runtime.js';
 import type { GeneratedFile } from '../../generator/skills.js';
 import { c } from '../ui.js';
+import { claudeDesktopConfigPath } from './add-to.js';
 import { skillsFor } from './init.js';
 import { toolCallFor } from './test.js';
 
@@ -250,6 +251,15 @@ function checkClients(
   if (json('.mcp.json', 'mcpServers')) found.push('Claude Code (.mcp.json)');
   if (json('.cursor/mcp.json', 'mcpServers')) found.push('Cursor');
   if (json('.vscode/mcp.json', 'servers')) found.push('VS Code');
+  if (json('.gemini/settings.json', 'mcpServers')) found.push('Gemini CLI');
+  try {
+    const desktop = JSON.parse(readFileSync(claudeDesktopConfigPath(), 'utf8')) as {
+      mcpServers?: Record<string, unknown>;
+    };
+    if (desktop.mcpServers?.[name]) found.push('Claude Desktop');
+  } catch {
+    // no Claude Desktop config
+  }
   try {
     if (readFileSync(join(cwd, '.codex/config.toml'), 'utf8').includes(`[mcp_servers.${name}]`)) {
       found.push('Codex (.codex/config.toml)');

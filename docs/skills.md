@@ -52,6 +52,8 @@ The output is deterministic (no model is involved), so regenerated skills produc
 | Codex | `.agents/skills/` (or `~/.agents/skills/`) |
 | Cursor | `.agents/skills/` (Cursor also reads `.cursor/skills/` and `.claude/skills/`) |
 | VS Code | `.agents/skills/` (also `.github/skills/` and `.claude/skills/`) |
+| Gemini CLI | `.agents/skills/` |
+| Claude Desktop | upload `skills/<name>.zip` (created by `add-to claude-desktop --write`) in the app's settings |
 
 ## Skills over MCP
 

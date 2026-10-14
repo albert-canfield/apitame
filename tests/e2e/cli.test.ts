@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
@@ -111,6 +111,24 @@ describe('CLI: OpenAPI flow', () => {
     expect(
       readFileSync(join(t.dir, '.codex/config.toml'), 'utf8').match(/\[mcp_servers\.petstore\]/g),
     ).toHaveLength(1);
+
+    expect(run(['add-to', 'gemini', '--write'], t.dir).code).toBe(0);
+    const gemini = JSON.parse(readFileSync(join(t.dir, '.gemini/settings.json'), 'utf8'));
+    expect(gemini.mcpServers.petstore.args).toContain(
+      join(realpathSync(t.dir), 'apitame.config.yaml'),
+    );
+
+    const desktopConfig = join(t.dir, 'desktop', 'claude_desktop_config.json');
+    const desktop = run(['add-to', 'claude-desktop', '--write'], t.dir, {
+      APITAME_CLAUDE_DESKTOP_CONFIG: desktopConfig,
+    });
+    expect(desktop.code, desktop.stderr).toBe(0);
+    const entry = JSON.parse(readFileSync(desktopConfig, 'utf8')).mcpServers.petstore;
+    expect(entry.command).toMatch(/npx(\.cmd)?$/);
+    expect(entry.args).toContain(join(realpathSync(t.dir), 'apitame.config.yaml'));
+    expect(entry.env.PATH).toBeTruthy();
+    expect(existsSync(join(t.dir, 'skills/petstore-api.zip'))).toBe(true);
+    expect(desktop.stdout).toMatch(/Upload them in Claude Desktop/);
 
     expect(run(['add-to', 'notepad'], t.dir).code).toBe(1);
   });

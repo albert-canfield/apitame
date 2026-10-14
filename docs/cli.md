@@ -146,6 +146,8 @@ Prints, or writes with `--write`, the configuration for an MCP client, and insta
 | `codex` | `.codex/config.toml` (appended once; Codex reads it for trusted projects) | `.agents/skills/` |
 | `cursor` | `.cursor/mcp.json` (merged), and prints an install link | `.agents/skills/` |
 | `vscode` | `.vscode/mcp.json` (merged) | `.agents/skills/` |
+| `gemini` | `.gemini/settings.json` (merged) | `.agents/skills/` |
+| `claude-desktop` | `claude_desktop_config.json` in the app's settings folder (merged, absolute paths, `PATH` set) | `skills/<name>.zip`, to upload in the app |
 
 | Option | Default | Description |
 | --- | --- | --- |

@@ -82,6 +82,43 @@ Skills: `.agents/skills/` in the repository, or `~/.agents/skills/`.
 
 Skills: `.agents/skills/`, `.github/skills/` or `.claude/skills/`.
 
+## Gemini CLI
+
+`.gemini/settings.json` in the project (or `~/.gemini/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "apitame@0.1", "serve", "--config", "/abs/path/apitame.config.yaml"]
+    }
+  }
+}
+```
+
+Skills: `.agents/skills/`.
+
+## Claude Desktop
+
+Claude Desktop reads `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`; open it from Settings, Developer, Edit Config). It starts servers from an unknown folder with a minimal `PATH`, so `add-to claude-desktop` writes absolute paths and adds the folder of your `npx` to `PATH`:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "/Users/you/.nvm/versions/node/v22.22.2/bin/npx",
+      "args": ["-y", "apitame@0.1", "serve", "--config", "/Users/you/project/apitame.config.yaml"],
+      "env": { "PATH": "/Users/you/.nvm/versions/node/v22.22.2/bin:..." }
+    }
+  }
+}
+```
+
+Restart Claude Desktop after changing the file. If you later remove that Node version, run `add-to claude-desktop --write` again.
+
+Claude Desktop takes skills as uploads rather than folders. `--write` packages each skill as `skills/<name>.zip`; upload it in Claude Desktop settings (Capabilities, Skills).
+
 ## Other clients
 
 Any MCP client that can launch a stdio server works with:
