@@ -117,7 +117,7 @@ is a SELECT of the string `\` followed by a DELETE. A parser that treats `\'` as
 Named queries in `sql.queries` are written by you, not the agent, and are exposed as their own tools with typed parameters. Parameter values are always bound by the driver, never interpolated into SQL.
 
 - Read queries go through the same lexer and parser checks when the server starts. If the parser cannot read a query you wrote, apitame still serves it (with a warning) because the lexer and database layers still apply.
-- Write queries (`write: true`) are hidden unless `mode: read-write` and the query name is in `writes.allow`. DELETE, DROP, TRUNCATE, ALTER, MERGE and UPDATE without WHERE are destructive and always need confirmation. The confirmation preview includes the number of rows the statement would affect right now, measured in a rolled-back transaction. `dryRun: true` reports the same number without changing anything.
+- Write queries (`write: true`) are hidden unless `mode: read-write` and the query name is in `writes.allow`. DELETE, DROP, TRUNCATE, ALTER, MERGE and UPDATE without WHERE are destructive and always need confirmation. The confirmation preview includes the number of rows the statement would affect right now, measured in a rolled-back transaction. `dryRun: true` reports the same number without changing anything; as for HTTP operations, anything but `true` or `false` is refused. Named query parameters cannot be called `dryRun` or `confirm`.
 
 ### Limits
 

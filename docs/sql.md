@@ -113,7 +113,7 @@ sql:
         order_id: { type: integer }
 ```
 
-- Parameters use `:name` in the SQL and are declared under `params` with a `type` (`string`, `number`, `integer`, `boolean`), an optional `description` and `required` (default `true`). Values are bound by the driver (`$1` on PostgreSQL, named binding on SQLite), never pasted into the SQL. Casts such as `::int` and text inside strings are left alone.
+- Parameters use `:name` in the SQL and are declared under `params` with a `type` (`string`, `number`, `integer`, `boolean`), an optional `description` and `required` (default `true`). Values are bound by the driver (`$1` on PostgreSQL, `?` on MySQL, named binding on SQLite), never pasted into the SQL. `dryRun` and `confirm` are reserved and cannot be parameter names. Casts such as `::int` and text inside strings are left alone.
 - A query that uses an undeclared parameter, or a "read" query that is really a write, is skipped with a warning at startup. Run `apitame inspect` to see warnings.
 - Write queries need `write: true`, `mode: read-write` and an entry in `writes.allow`. Until then they are reported as blocked by `inspect` and are invisible to the agent.
 - DELETE, DROP, TRUNCATE, ALTER, MERGE and UPDATE without WHERE are destructive and always need confirmation. Other writes can be added to `writes.confirm`.
