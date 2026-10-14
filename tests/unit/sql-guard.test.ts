@@ -338,3 +338,28 @@ describe('guardSelect: MySQL specifics', () => {
     });
   });
 });
+
+describe('MySQL dry runs of DDL', () => {
+  it('are refused even when a comment or CTE comes first (MySQL commits DDL implicitly)', async () => {
+    const { MysqlDriver } = await import('../../src/sources/sql/mysql.js');
+    // No server is needed: the refusal happens before connecting.
+    const driver = new MysqlDriver('mysql://user:pass@127.0.0.1:1/none');
+    try {
+      for (const sql of [
+        'DROP TABLE orders',
+        '/* note */ DROP TABLE orders',
+        '-- note\nDROP TABLE orders',
+        '# note\nTRUNCATE orders',
+        '  CREATE TABLE t (id int)',
+        'RENAME TABLE a TO b',
+      ]) {
+        await expect(
+          driver.writeQuery(sql, [], { timeoutMs: 1_000, dryRun: true }),
+          sql,
+        ).rejects.toThrow(/DDL/);
+      }
+    } finally {
+      await driver.close();
+    }
+  });
+});

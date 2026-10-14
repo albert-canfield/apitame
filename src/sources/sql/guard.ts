@@ -311,7 +311,7 @@ export function guardSelect(sql: string, opts: GuardOptions): GuardResult {
 
   const first = stmt[0];
   const firstWord = first?.type === 'word' ? first.value.toUpperCase() : '';
-  if (!['SELECT', 'WITH', 'VALUES', 'TABLE'].includes(firstWord) && first?.type !== 'lparen') {
+  if (!['SELECT', 'WITH', 'VALUES'].includes(firstWord) && first?.type !== 'lparen') {
     return fail(`Only SELECT queries are allowed (query starts with "${first?.value ?? ''}").`);
   }
   const extraKeywords = new Set(DIALECT_KEYWORDS[opts.dialect]);
