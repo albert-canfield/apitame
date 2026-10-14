@@ -41,6 +41,7 @@ No Docker is needed for the test suite: PostgreSQL tests run against PGlite (Pos
 | `pnpm format` | Prettier write. |
 | `pnpm typecheck` | `tsc --noEmit`. |
 | `node scripts/render-demo.mjs` | Regenerate the README demo from real output (after `pnpm build`). |
+| `pnpm eval` | Run the tool-selection eval ([docs/eval.md](docs/eval.md)). `pnpm eval --provider fake` needs no key. |
 
 ## Conventions
 
