@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="t d">
+<title id="t">apitame: tame any API or database for AI agents</title>
+<desc id="d">One command turns an OpenAPI or Swagger spec, a REST API or a PostgreSQL, MySQL or SQLite database into a safe MCP server plus agent skills for Claude Code, Codex, Cursor, VS Code and Gemini CLI. Stripe's full API goes from 612 endpoints to 12 tools with 99% fewer tokens. Read-only by default, human approval for destructive writes, a dry run for every write, and secrets never reach the agent.</desc>
+<style>
+text{font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif}
+.mono,.tool,.cmd{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+.word{font-size:40px;font-weight:700;letter-spacing:-0.8px}
+.h1{font-size:62px;font-weight:800;letter-spacing:-2px;fill:#f8fafc}
+.sub{font-size:20px;fill:#9fb0c7}
+.eyebrow{font-size:12px;font-weight:700;letter-spacing:1.6px;fill:#64748b}
+.stat{font-size:52px;font-weight:800;letter-spacing:-1.5px}
+.arrow{fill:#64748b;font-weight:400}
+.cap{font-size:15px;fill:#94a3b8}
+.chip{fill:#ffffff;fill-opacity:0.05;stroke:#ffffff;stroke-opacity:0.16}
+.chipt{font-size:14px;font-weight:600;fill:#e2e8f0}
+.chip2{fill:#ffffff;fill-opacity:0.04;stroke:#ffffff;stroke-opacity:0.12}
+.chipt2{font-size:13.5px;font-weight:500;fill:#cbd5e1}
+.wire{fill:none;stroke:#2dd4bf;stroke-opacity:0.22;stroke-width:1.5}
+.flow{fill:none;stroke:#5eead4;stroke-opacity:0.75;stroke-width:1.5;stroke-dasharray:3 9;stroke-linecap:round;animation:flow 1.4s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-24}}
+@media (prefers-reduced-motion:reduce){.flow{animation:none}}
+.cmd{font-size:14px;fill:#5eead4}
+.card{fill:#0f1a2f;stroke:#ffffff;stroke-opacity:0.1}
+.cardh{font-size:15px;font-weight:700;fill:#f1f5f9}
+.pill{font-size:11.5px;font-weight:600;fill:#5eead4}
+.pill.v{fill:#c4b5fd}
+.tool{font-size:14px;fill:#e2e8f0}
+.row{font-size:14px;fill:#cbd5e1}
+.ico{fill:none;stroke:#5eead4;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.safe{font-size:15px;font-weight:500;fill:#cbd5e1}
+.foot{font-size:12.5px;fill:#94a3b8}
+.ico.amber{stroke:#fbbf24}
+.ico.violet{stroke:#a78bfa}
+</style>
+<defs>
+<clipPath id="r"><rect width="1280" height="640" rx="28"/></clipPath>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a1020"/><stop offset="0.55" stop-color="#0c1428"/><stop offset="1" stop-color="#121035"/></linearGradient>
+<radialGradient id="glowV" cx="0.12" cy="0.1" r="0.55"><stop offset="0" stop-color="#7c3aed" stop-opacity="0.22"/><stop offset="1" stop-color="#7c3aed" stop-opacity="0"/></radialGradient>
+<radialGradient id="glowT" cx="0.72" cy="0.42" r="0.45"><stop offset="0" stop-color="#14b8a6" stop-opacity="0.16"/><stop offset="1" stop-color="#14b8a6" stop-opacity="0"/></radialGradient>
+<radialGradient id="hubGlow"><stop offset="0" stop-color="#2dd4bf" stop-opacity="0.35"/><stop offset="1" stop-color="#2dd4bf" stop-opacity="0"/></radialGradient>
+<linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#22d3ee"/></linearGradient>
+<linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.25"/><stop offset="0.6" stop-color="#ffffff" stop-opacity="0"/></linearGradient>
+<linearGradient id="brandText" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#38bdf8"/></linearGradient>
+<pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#ffffff" fill-opacity="0.09"/></pattern>
+<radialGradient id="fadeG" cx="0.5" cy="0.45" r="0.6"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></radialGradient>
+<mask id="fade"><rect x="600" width="680" height="640" fill="url(#fadeG)"/></mask>
+<filter id="shadow" x="-20%" y="-20%" width="140%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.35"/></filter>
+</defs>
+<g clip-path="url(#r)">
+<rect width="1280" height="640" fill="url(#bg)"/>
+<rect width="1280" height="640" fill="url(#glowV)"/>
+<rect width="1280" height="640" fill="url(#glowT)"/>
+<rect x="600" width="680" height="640" fill="url(#dots)" mask="url(#fade)"/>
+<g transform="translate(72 42) scale(0.46)"><path d="M50 4 L92 18 V52 C92 80 74 98 50 108 C26 98 8 80 8 52 V18 Z" fill="url(#brand)"/><path d="M50 4 L92 18 V52 C92 80 74 98 50 108 C26 98 8 80 8 52 V18 Z" fill="url(#sheen)"/><path d="M40 34 C33 34 31 37 31 43 V50 C31 54 29 56 25 56 C29 56 31 58 31 62 V69 C31 75 33 78 40 78 M60 34 C67 34 69 37 69 43 V50 C69 54 71 56 75 56 C71 56 69 58 69 62 V69 C69 75 67 78 60 78" fill="none" stroke="#06231f" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="50" cy="56" r="4.5" fill="#06231f"/></g>
+<text class="word" x="132" y="80"><tspan fill="url(#brandText)">api</tspan><tspan fill="#f8fafc">tame</tspan></text>
+<text class="h1" x="69" y="178">Tame any API</text>
+<text class="h1" x="69" y="246">or database</text>
+<text class="h1" x="69" y="314" fill="url(#brandText)">for AI agents</text>
+<text class="sub" x="72" y="362">One command turns an API spec or a SQL database</text>
+<text class="sub" x="72" y="390">into a safe MCP server plus agent skills.</text>
+<text class="eyebrow" x="72" y="438">STRIPE&#8217;S FULL API</text>
+<text class="stat" x="70" y="488"><tspan fill="#cbd5e1">612</tspan><tspan class="arrow" dx="10">→</tspan><tspan dx="10" fill="url(#brandText)">12</tspan></text>
+<text class="cap" x="72" y="512">endpoints become tools</text>
+<text class="stat" x="360" y="488" fill="url(#brandText)">99%</text>
+<text class="cap" x="362" y="512">fewer tokens in context</text>
+<rect x="632" y="40" width="584" height="484" rx="22" fill="#0b1224" fill-opacity="0.55" stroke="#ffffff" stroke-opacity="0.09"/>
+<text class="eyebrow" x="924" y="72" text-anchor="middle">YOUR SPEC, API OR DATABASE</text>
+<rect class="chip" x="682" y="86" width="92" height="32" rx="16"/><text class="chipt" x="728" y="107" text-anchor="middle">OpenAPI</text>
+<rect class="chip" x="784" y="86" width="90" height="32" rx="16"/><text class="chipt" x="829" y="107" text-anchor="middle">Swagger</text>
+<rect class="chip" x="884" y="86" width="108" height="32" rx="16"/><text class="chipt" x="938" y="107" text-anchor="middle">PostgreSQL</text>
+<rect class="chip" x="1002" y="86" width="78" height="32" rx="16"/><text class="chipt" x="1041" y="107" text-anchor="middle">MySQL</text>
+<rect class="chip" x="1090" y="86" width="76" height="32" rx="16"/><text class="chipt" x="1128" y="107" text-anchor="middle">SQLite</text>
+<path class="wire" d="M728 118 C728 144, 900 126, 900 156"/><path class="flow" d="M728 118 C728 144, 900 126, 900 156"/>
+<path class="wire" d="M829 118 C829 144, 912 126, 912 156"/><path class="flow" d="M829 118 C829 144, 912 126, 912 156"/>
+<path class="wire" d="M938 118 C938 144, 924 126, 924 156"/><path class="flow" d="M938 118 C938 144, 924 126, 924 156"/>
+<path class="wire" d="M1041 118 C1041 144, 936 126, 936 156"/><path class="flow" d="M1041 118 C1041 144, 936 126, 936 156"/>
+<path class="wire" d="M1128 118 C1128 144, 948 126, 948 156"/><path class="flow" d="M1128 118 C1128 144, 948 126, 948 156"/>
+<circle cx="924" cy="196" r="78" fill="url(#hubGlow)"/>
+<rect x="884" y="156" width="80" height="80" rx="24" fill="#0d1a2e" stroke="url(#brand)" stroke-width="1.5" filter="url(#shadow)"/>
+<g transform="translate(901 170) scale(0.46)"><path d="M50 4 L92 18 V52 C92 80 74 98 50 108 C26 98 8 80 8 52 V18 Z" fill="url(#brand)"/><path d="M50 4 L92 18 V52 C92 80 74 98 50 108 C26 98 8 80 8 52 V18 Z" fill="url(#sheen)"/><path d="M40 34 C33 34 31 37 31 43 V50 C31 54 29 56 25 56 C29 56 31 58 31 62 V69 C31 75 33 78 40 78 M60 34 C67 34 69 37 69 43 V50 C69 54 71 56 75 56 C71 56 69 58 69 62 V69 C69 75 67 78 60 78" fill="none" stroke="#06231f" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="50" cy="56" r="4.5" fill="#06231f"/></g>
+<text class="cmd" x="982" y="201"><tspan fill="#64748b">$ </tspan>npx apitame init</text>
+<path class="wire" d="M910 236 C910 260, 784 246, 784 270"/><path class="flow" d="M910 236 C910 260, 784 246, 784 270"/>
+<path class="wire" d="M938 236 C938 260, 1064 246, 1064 270"/><path class="flow" d="M938 236 C938 260, 1064 246, 1064 270"/>
+<rect class="card" x="656" y="270" width="256" height="166" rx="14" filter="url(#shadow)"/>
+<rect class="card" x="936" y="270" width="256" height="166" rx="14" filter="url(#shadow)"/>
+<g transform="translate(672 284)"><rect width="7" height="7" rx="1.5" fill="#2dd4bf"/><rect x="9" width="7" height="7" rx="1.5" fill="#2dd4bf" fill-opacity="0.6"/><rect y="9" width="7" height="7" rx="1.5" fill="#2dd4bf" fill-opacity="0.6"/><rect x="9" y="9" width="7" height="7" rx="1.5" fill="#2dd4bf" fill-opacity="0.35"/></g>
+<text class="cardh" x="698" y="297">MCP tools</text>
+<rect x="818" y="282" width="78" height="20" rx="10" fill="#2dd4bf" fill-opacity="0.14"/><text class="pill" x="857" y="296" text-anchor="middle">read-only</text>
+<rect x="674" y="319" width="5" height="5" rx="1" fill="#5eead4" fill-opacity="0.8"/>
+<text class="tool" x="688" y="327">repos</text>
+<rect x="674" y="340" width="5" height="5" rx="1" fill="#5eead4" fill-opacity="0.8"/>
+<text class="tool" x="688" y="348">issues</text>
+<rect x="674" y="361" width="5" height="5" rx="1" fill="#5eead4" fill-opacity="0.8"/>
+<text class="tool" x="688" y="369">search_operations</text>
+<rect x="674" y="382" width="5" height="5" rx="1" fill="#5eead4" fill-opacity="0.8"/>
+<text class="tool" x="688" y="390">call_operation</text>
+<rect x="657" y="404" width="254" height="0.75" fill="#ffffff" fill-opacity="0.08"/>
+<g transform="translate(671 410) scale(0.85)" class="ico amber"><rect x="3" y="8" width="12" height="9" rx="2"/><path d="M5.5 8 V5.5 a3.5 3.5 0 0 1 7 0 V8"/></g>
+<text class="foot" x="692" y="425">writes need an allowlist</text>
+<g transform="translate(952 281)" fill="none" stroke="#a78bfa" stroke-width="1.6" stroke-linejoin="round"><path d="M2 1.5 H10 L14 5.5 V18.5 H2 Z"/><path d="M10 1.5 V5.5 H14"/></g>
+<text class="cardh mono" x="976" y="297">SKILL.md</text>
+<rect x="1090" y="282" width="86" height="20" rx="10" fill="#a78bfa" fill-opacity="0.16"/><text class="pill v" x="1133" y="296" text-anchor="middle">agent skill</text>
+<g transform="translate(952 315)"><circle cx="8" cy="8" r="8" fill="#2dd4bf" fill-opacity="0.16"/><path d="M4.6 8.2 l2.3 2.3 l4.5-4.8" fill="none" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text class="row" x="976" y="327">real tool names</text>
+<g transform="translate(952 336)"><circle cx="8" cy="8" r="8" fill="#2dd4bf" fill-opacity="0.16"/><path d="M4.6 8.2 l2.3 2.3 l4.5-4.8" fill="none" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text class="row" x="976" y="348">argument shapes</text>
+<g transform="translate(952 357)"><circle cx="8" cy="8" r="8" fill="#2dd4bf" fill-opacity="0.16"/><path d="M4.6 8.2 l2.3 2.3 l4.5-4.8" fill="none" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text class="row" x="976" y="369">workflows</text>
+<g transform="translate(952 378)"><circle cx="8" cy="8" r="8" fill="#2dd4bf" fill-opacity="0.16"/><path d="M4.6 8.2 l2.3 2.3 l4.5-4.8" fill="none" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text class="row" x="976" y="390">safety rules</text>
+<rect x="937" y="404" width="254" height="0.75" fill="#ffffff" fill-opacity="0.08"/>
+<g transform="translate(951 410) scale(0.85)" class="ico violet"><path d="M3 3 H15 V12 H8 L4.5 15 V12 H3 Z"/></g>
+<text class="foot" x="972" y="425">also served over MCP</text>
+<text class="eyebrow" x="924" y="463" text-anchor="middle">WORKS WITH</text>
+<rect class="chip2" x="705" y="473" width="104" height="30" rx="15"/><text class="chipt2" x="757" y="493" text-anchor="middle">Claude Code</text>
+<rect class="chip2" x="817" y="473" width="64" height="30" rx="15"/><text class="chipt2" x="849" y="493" text-anchor="middle">Codex</text>
+<rect class="chip2" x="889" y="473" width="66" height="30" rx="15"/><text class="chipt2" x="922" y="493" text-anchor="middle">Cursor</text>
+<rect class="chip2" x="963" y="473" width="78" height="30" rx="15"/><text class="chipt2" x="1002" y="493" text-anchor="middle">VS Code</text>
+<rect class="chip2" x="1049" y="473" width="94" height="30" rx="15"/><text class="chipt2" x="1096" y="493" text-anchor="middle">Gemini CLI</text>
+<rect x="0" y="552" width="1280" height="88" fill="#050913" fill-opacity="0.45"/>
+<rect x="0" y="552" width="1280" height="1" fill="#ffffff" fill-opacity="0.07"/>
+<g transform="translate(72 587)" class="ico"><rect x="3" y="8" width="12" height="9" rx="2"/><path d="M5.5 8 V5.5 a3.5 3.5 0 0 1 7 0 V8"/></g>
+<text class="safe" x="100" y="601">read-only by default</text>
+<g transform="translate(327 587)" class="ico"><circle cx="7" cy="5.5" r="3.2"/><path d="M1.5 16.5 c0-3.6 2.5-5.6 5.5-5.6 c1.3 0 2.4 0.4 3.3 1"/><path d="M10.8 14.2 l2 2 l3.8-4.2"/></g>
+<text class="safe" x="355" y="601">human approval for destructive writes</text>
+<g transform="translate(705 587)" class="ico"><path d="M1 9 C3.5 4.6 6 3 9 3 C12 3 14.5 4.6 17 9 C14.5 13.4 12 15 9 15 C6 15 3.5 13.4 1 9 Z"/><circle cx="9" cy="9" r="2.6"/></g>
+<text class="safe" x="733" y="601">dry run for every write</text>
+<g transform="translate(973 587)" class="ico"><circle cx="5.5" cy="12.5" r="3.6"/><path d="M8.2 10 L15.5 2.7 M12.4 5.8 l2.2 2.2 M14.2 4 l1.8 1.8"/></g>
+<text class="safe" x="1001" y="601">secrets never reach the agent</text>
+</g>
+</svg>
