@@ -58,7 +58,7 @@ Blocked operations are not listed in any tool, so they cost no tokens. If the ag
 
 Confirmation is enforced by the server, not requested politely in a description.
 
-- **Elicitation (preferred).** When the MCP client supports elicitation, apitame sends a form to the human with a preview of the exact request and an approve checkbox. Declining or cancelling stops the call.
+- **Elicitation (preferred).** When the MCP client supports elicitation, apitame sends a form to the human with a preview of the exact request and an approve checkbox. Declining or cancelling stops the call, and so does a prompt that fails or is not answered within 5 minutes: once the client has said it can ask the human, apitame never falls back to a token the agent could send back on its own.
 - **One-time token (fallback).** Otherwise the first call returns `CONFIRMATION REQUIRED` with a preview and a token. The agent must show the preview to the user and call again with the same arguments plus `"confirm": "<token>"`. Tokens are random, bound to the operation and a hash of the exact arguments, expire after `confirmation.ttlSeconds` (default 300), and work once. A token used with different arguments is rejected and burned.
 
 Elicitation needs a stateful connection: it is used over stdio (how Claude Code, Codex, Cursor, VS Code and Gemini CLI run apitame) and over HTTP with `serve --transport http --sessions`. The default stateless HTTP transport uses the token flow.
