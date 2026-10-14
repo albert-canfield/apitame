@@ -130,6 +130,10 @@ sql:
 
 The lists apply to `list_tables`, `describe_table`, `query` (including joins, subqueries and CTE bodies) and the schema in the generated skill. Entries can be bare (`orders`) or schema-qualified (`sales.orders`). For PostgreSQL, `source.schemas` (default `[public]`) limits which schemas are introspected and searched.
 
+CTE names are resolved the way the database does, so `WITH customers AS (SELECT * FROM customers)` still counts as reading the real `customers` table. Functions that run a SQL string or read a table by name (`ts_stat`, `crosstab`, `pgstattuple` and similar) are refused, and so are planner statistics (`pg_stats`, `sqlite_stat4`, MySQL's `column_statistics`), which hold sampled values.
+
+The lists hide data, not structure. Catalog queries (`information_schema.columns`, `sqlite_master`, `pragma_table_info`) still show the names and columns of denied tables. A view, partition or child table of a denied table is a table of its own: deny it too, or better, keep sensitive tables out of reach with the database role.
+
 ## Limits
 
 | Setting | Default | Meaning |
