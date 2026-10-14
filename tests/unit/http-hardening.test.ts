@@ -107,6 +107,90 @@ describe('redirects', () => {
     expect(JSON.stringify(hop.headers)).not.toContain('secret-token-123');
   });
 
+  it('never re-attaches credentials after the chain has left the origin', async () => {
+    const { impl, calls } = stubFetch((url) => {
+      if (url.host === 'api.test' && url.pathname === '/v1/files/1')
+        return new Response(null, { status: 302, headers: { location: 'https://cdn.test/x' } });
+      if (url.host === 'cdn.test')
+        return new Response(null, { status: 302, headers: { location: 'https://api.test/v1/me' } });
+      return Response.json({ ok: true });
+    });
+    await sendRequest(
+      {
+        method: 'GET',
+        url: new URL('https://api.test/v1/files/1'),
+        headers: { 'X-Api-Key': 'k-123456' },
+      },
+      auth(),
+      { ...opts, basePath: '/v1', fetchImpl: impl },
+    );
+    expect(calls.map((c) => c.url)).toEqual([
+      'https://api.test/v1/files/1',
+      'https://cdn.test/x',
+      'https://api.test/v1/me',
+    ]);
+    expect(calls[2]!.headers.Authorization).toBeUndefined();
+    expect(calls[2]!.headers['X-Api-Key']).toBeUndefined();
+  });
+
+  it('does not resend a write (307, 308) outside the base path', async () => {
+    for (const location of ['https://cdn.test/upload', 'https://api.test/admin/purge-all']) {
+      const { impl, calls } = stubFetch(
+        () => new Response(null, { status: 307, headers: { location } }),
+      );
+      await expect(
+        sendRequest(
+          { method: 'POST', url: new URL('https://api.test/v1/uploads'), headers: {}, body: '{}' },
+          auth(),
+          { ...opts, basePath: '/v1', fetchImpl: impl },
+        ),
+      ).rejects.toThrow(/not resent outside https:\/\/api\.test\/v1/);
+      expect(calls).toHaveLength(1);
+    }
+  });
+
+  it('still follows a write redirect under the base path, with credentials', async () => {
+    const { impl, calls } = stubFetch((url) =>
+      url.pathname === '/v1/uploads'
+        ? new Response(null, { status: 308, headers: { location: '/v1/uploads/' } })
+        : Response.json({ ok: true }),
+    );
+    const res = await sendRequest(
+      { method: 'POST', url: new URL('https://api.test/v1/uploads'), headers: {}, body: '{}' },
+      auth(),
+      { ...opts, basePath: '/v1', fetchImpl: impl },
+    );
+    expect(res.status).toBe(200);
+    expect(calls[1]!.method).toBe('POST');
+    expect(calls[1]!.headers.Authorization).toBe('Bearer secret-token-123');
+  });
+
+  it('applies the timeout to the whole chain, not to each hop', async () => {
+    let hops = 0;
+    const impl = (async (input: URL | string, init: RequestInit = {}) => {
+      hops++;
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(resolve, 120);
+        init.signal?.addEventListener('abort', () => {
+          clearTimeout(t);
+          reject(init.signal?.reason as Error);
+        });
+      });
+      return new URL(String(input)).pathname === '/v1/end'
+        ? Response.json({ ok: true })
+        : new Response(null, { status: 302, headers: { location: `/v1/hop${hops}` } });
+    }) as unknown as typeof fetch;
+    const started = Date.now();
+    await expect(
+      sendRequest(
+        { method: 'GET', url: new URL('https://api.test/v1/start'), headers: {} },
+        undefined,
+        { ...opts, timeoutMs: 300, fetchImpl: impl },
+      ),
+    ).rejects.toThrow('Request timed out after 300 ms.');
+    expect(Date.now() - started).toBeLessThan(600);
+  });
+
   it('turns POST into GET on 303 and drops the body', async () => {
     const { impl, calls } = stubFetch((url) =>
       url.pathname === '/jobs'
@@ -143,7 +227,71 @@ describe('redirects', () => {
   });
 });
 
+describe('base URL and query parameters', () => {
+  it('keeps a query string on the base URL as query parameters', async () => {
+    const getPet = await op(PETSTORE, 'getPetById');
+    const req = buildRequest(getPet, { petId: 7 }, 'https://api.test/v1?api-version=2024-01-01');
+    expect(req.url.toString()).toBe('https://api.test/v1/pet/7?api-version=2024-01-01');
+  });
+
+  it('refuses keys an exploded object query parameter does not declare', () => {
+    const search = {
+      id: 'search',
+      method: 'post',
+      path: '/search',
+      params: [
+        {
+          name: 'filter',
+          key: 'filter',
+          in: 'query',
+          required: false,
+          schema: { type: 'object', properties: { status: { type: 'string' } } },
+          rawSchema: {},
+          description: '',
+          style: 'form',
+          explode: true,
+        },
+      ],
+    } as unknown as Operation;
+    expect(
+      buildRequest(search, { filter: { status: 'open' } }, 'https://api.test').url.search,
+    ).toBe('?status=open');
+    expect(() =>
+      buildRequest(search, { filter: { status: 'open', _method: 'DELETE' } }, 'https://api.test'),
+    ).toThrow(/does not accept "_method"/);
+    const open = {
+      ...search,
+      params: [
+        {
+          ...search.params[0]!,
+          schema: { type: 'object', additionalProperties: { type: 'string' } },
+        },
+      ],
+    } as Operation;
+    expect(buildRequest(open, { filter: { any: 'x' } }, 'https://api.test').url.search).toBe(
+      '?any=x',
+    );
+  });
+});
+
 describe('binary responses', () => {
+  it('treats +json and +xml types as text', async () => {
+    const { impl } = stubFetch(() =>
+      Response.json(
+        { data: [{ id: '1' }] },
+        {
+          headers: { 'content-type': 'application/vnd.api+json' },
+        },
+      ),
+    );
+    const res = await sendRequest(
+      { method: 'GET', url: new URL('https://api.test/articles'), headers: {} },
+      undefined,
+      { ...opts, fetchImpl: impl },
+    );
+    expect(res.data).toEqual({ data: [{ id: '1' }] });
+  });
+
   it('describes binary bodies instead of returning bytes', async () => {
     const { impl } = stubFetch(
       () =>

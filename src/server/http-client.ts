@@ -9,6 +9,12 @@ const USER_AGENT = `apitame/${VERSION} (+https://github.com/albert-canfield/apit
 /** Content types returned to the agent as a short description instead of bytes. */
 const BINARY =
   /^(image|audio|video|font)\/|^application\/(octet-stream|pdf|zip|gzip|x-tar|x-7z-compressed|vnd\.|msword|x-protobuf|wasm)/i;
+/** Structured syntax suffixes: `application/vnd.api+json` and `application/vnd.github+json` are JSON. */
+const TEXT_SUFFIX = /\+(json|xml)\b/i;
+
+function isBinary(contentType: string): boolean {
+  return BINARY.test(contentType) && !TEXT_SUFFIX.test(contentType);
+}
 
 const MAX_REDIRECTS = 5;
 
@@ -92,6 +98,19 @@ function addQuery(url: URL, p: ParamSpec, value: unknown): void {
     if (p.style === 'deepObject') {
       for (const [k, v] of entries) url.searchParams.append(`${p.name}[${k}]`, scalar(v));
     } else if (explode) {
+      // Each key becomes a query parameter of its own. When the schema lists its keys and does
+      // not allow others, nothing else may be added: an agent must not be able to slip in
+      // parameters such as _method=DELETE, which some frameworks honor.
+      const props = p.schema.properties as Record<string, unknown> | undefined;
+      const extra = p.schema.additionalProperties;
+      if (props && (extra === undefined || extra === false)) {
+        const unknown = entries.map(([k]) => k).filter((k) => !(k in props));
+        if (unknown.length > 0) {
+          throw new RequestBuildError(
+            `Query parameter "${p.key}" does not accept ${unknown.map((k) => `"${k}"`).join(', ')}. Allowed keys: ${Object.keys(props).join(', ')}.`,
+          );
+        }
+      }
       for (const [k, v] of entries) url.searchParams.append(k, scalar(v));
     } else {
       url.searchParams.append(p.name, entries.flatMap(([k, v]) => [k, scalar(v)]).join(','));
@@ -124,10 +143,12 @@ export function buildRequest(
     path = path.split(`{${p.name}}`).join(values.map((x) => encodeURIComponent(x)).join(','));
   }
 
-  const base = new URL(baseUrl.replace(/\/+$/, ''));
-  const url = new URL(base.toString().replace(/\/+$/, '') + path);
-  // Defense in depth: the request must stay under the base path, exactly as built.
+  const base = new URL(baseUrl);
   const basePath = base.pathname.replace(/\/+$/, '');
+  const url = new URL(base.origin + basePath + path);
+  // A query string on the base URL (?api-version=2024-01-01) is kept as query parameters.
+  for (const [k, v] of base.searchParams) url.searchParams.append(k, v);
+  // Defense in depth: the request must stay under the base path, exactly as built.
   if (
     url.origin !== base.origin ||
     (!url.pathname.startsWith(`${basePath}/`) && url.pathname !== basePath)
@@ -339,6 +360,8 @@ export interface SendOptions {
    * trimming would let a cut leave part of a secret behind.
    */
   redactor?: Redactor;
+  /** Path of the API base URL. A write is only resent (307, 308) to a location under it. */
+  basePath?: string;
 }
 
 /** Send a request with auth, timeout and response size limits. */
@@ -349,32 +372,43 @@ export async function sendRequest(
 ): Promise<HttpResult> {
   const doFetch = opts.fetchImpl ?? fetch;
   const origin = new URL(req.url).origin;
-  const signal = () =>
-    AbortSignal.any([AbortSignal.timeout(opts.timeoutMs), ...(opts.signal ? [opts.signal] : [])]);
+  const basePath = (opts.basePath ?? '').replace(/\/+$/, '');
+  const underBase = (u: URL) =>
+    u.origin === origin &&
+    (basePath === '' || u.pathname === basePath || u.pathname.startsWith(`${basePath}/`));
+  // One deadline for the whole exchange: every redirect hop, the 401 retry and the body.
+  const signal = AbortSignal.any([
+    AbortSignal.timeout(opts.timeoutMs),
+    ...(opts.signal ? [opts.signal] : []),
+  ]);
+  const timedOut = () => new Error(`Request timed out after ${opts.timeoutMs} ms.`);
 
   /**
    * One request with manual redirects. Same-origin redirects keep credentials;
    * a redirect to another origin is followed without credentials or custom
-   * headers, so an API key can never be handed to a third party.
+   * headers, so an API key can never be handed to a third party. Once a hop
+   * has left the origin, the rest of the chain never gets credentials again,
+   * even if it comes back (an open redirect must not be a way in).
    */
   const attempt = async (forceRefresh: boolean): Promise<Response> => {
     let url = new URL(req.url);
     let method = req.method;
     let body = req.body;
+    let trusted = true;
     for (let hop = 0; ; hop++) {
-      const sameOrigin = url.origin === origin;
-      const headers: Record<string, string> = sameOrigin
+      trusted &&= url.origin === origin;
+      const headers: Record<string, string> = trusted
         ? { ...req.headers }
         : { Accept: req.headers.Accept ?? '*/*', 'User-Agent': USER_AGENT };
-      if (!sameOrigin && body !== undefined && req.headers['Content-Type']) {
+      if (!trusted && body !== undefined && req.headers['Content-Type']) {
         headers['Content-Type'] = req.headers['Content-Type'];
       }
-      if (auth && sameOrigin) await auth.apply({ url, headers }, { forceRefresh });
+      if (auth && trusted) await auth.apply({ url, headers }, { forceRefresh });
       const res = await doFetch(url, {
         method,
         headers,
         ...(body !== undefined ? { body } : {}),
-        signal: signal(),
+        signal,
         redirect: 'manual',
       });
       const location = res.headers.get('location');
@@ -392,6 +426,11 @@ export async function sendRequest(
       ) {
         method = 'GET';
         body = undefined;
+      } else if (method !== 'GET' && method !== 'HEAD' && !underBase(next)) {
+        // 307 and 308 resend the method and body. A write only goes where it was previewed.
+        throw new Error(
+          `The API redirected this ${method} to ${next.origin}${next.pathname}. A write is not resent outside ${origin}${basePath}.`,
+        );
       }
       url = next;
     }
@@ -408,7 +447,7 @@ export async function sendRequest(
     const e = err as Error;
     // Original errors are not attached as `cause`: they may hold URLs with credentials.
     // eslint-disable-next-line preserve-caught-error
-    if (e.name === 'TimeoutError') throw new Error(`Request timed out after ${opts.timeoutMs} ms.`);
+    if (e.name === 'TimeoutError') throw timedOut();
     // eslint-disable-next-line preserve-caught-error
     throw new Error(
       `Request failed: ${e.message}${e.cause instanceof Error ? ` (${e.cause.message})` : ''}`,
@@ -416,7 +455,7 @@ export async function sendRequest(
   }
 
   const contentType = res.headers.get('content-type') ?? '';
-  if (BINARY.test(contentType)) {
+  if (isBinary(contentType)) {
     await res.body?.cancel().catch(() => {});
     const length = Number(res.headers.get('content-length') ?? NaN);
     return {
@@ -429,7 +468,15 @@ export async function sendRequest(
   }
   // Read more than the budget so JSON can still be parsed and trimmed cleanly.
   const hardCap = Math.max(opts.maxResponseBytes * 20, 5_000_000);
-  const { text, complete } = await readCapped(res, hardCap);
+  let read: { text: string; complete: boolean };
+  try {
+    read = await readCapped(res, hardCap);
+  } catch (err) {
+    // eslint-disable-next-line preserve-caught-error
+    if ((err as Error).name === 'TimeoutError') throw timedOut();
+    throw err;
+  }
+  const { text, complete } = read;
   const redactor = opts.redactor;
   const clean = (t: string) => (redactor ? redactor.text(t) : t);
 

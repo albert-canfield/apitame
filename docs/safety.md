@@ -78,15 +78,17 @@ A call that would exceed `limits.maxWritesPerMinute` is refused before the human
 ### Validation and limits
 
 - Arguments are validated against the operation's JSON Schema before anything is sent. Unknown parameters are rejected (they are usually typos), and obvious type mismatches such as `"42"` for an integer are coerced.
-- `limits.timeoutMs` (default 15 s) aborts slow requests.
+- `limits.timeoutMs` (default 15 s) aborts slow requests. It covers the whole exchange: every redirect, a retry after a token refresh, and reading the response.
 - `limits.maxResponseBytes` (default 50 KB) caps what goes back to the agent. JSON arrays are trimmed to the number of items that fit, with a note such as "showing 37 of 500 items", so the agent gets valid data and knows to paginate.
 
 ### Outgoing requests
 
 - Path parameters are percent-encoded, and the values `.` and `..` are refused: URL parsing would resolve them and turn `/repos/{owner}/{repo}` into a different endpoint. The final URL must also stay under the base URL's path.
-- Redirects are followed manually, at most five hops, and only to `http` or `https`. Credentials and custom headers are sent only to the API's own origin; a redirect to another host (for example a download URL on a CDN) is followed with a bare request, so an API key is never handed to a third party.
+- Redirects are followed manually, at most five hops, and only to `http` or `https`. Credentials and custom headers are sent only to the API's own origin; a redirect to another host (for example a download URL on a CDN) is followed with a bare request, so an API key is never handed to a third party. Once a chain has left the origin it never gets credentials back, even if a later hop returns to the API.
+- A write is never resent to another place: a 307 or 308 redirect (which repeats the method and body) is only followed when the target stays under the base URL. 301, 302 and 303 after a write become a plain GET, as in browsers.
+- Object query parameters with `explode` (each key becomes its own query parameter) only accept the keys their schema lists, unless the schema allows additional properties, so an agent cannot add parameters such as `_method=DELETE` that some frameworks honor.
 - File uploads take content inline (base64 or text) and never a local path, so an agent cannot be talked into uploading files from the machine. Total upload size is capped by `limits.maxUploadBytes`.
-- Binary responses (images, PDFs, archives and similar) are described (`{"binary": true, "contentType", "bytes"}`) instead of being returned to the agent.
+- Binary responses (images, PDFs, archives and similar, but not `+json` or `+xml` types such as `application/vnd.api+json`) are described (`{"binary": true, "contentType", "bytes"}`) instead of being returned to the agent.
 
 ## SQL sources
 

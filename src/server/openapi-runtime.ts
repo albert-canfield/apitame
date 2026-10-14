@@ -647,6 +647,7 @@ export class OpenApiRuntime implements Runtime {
         maxResponseBytes: this.config.limits.maxResponseBytes,
         fields: flags.fields,
         redactor: this.redactor,
+        basePath: new URL(this.baseUrl).pathname,
         ...(this.opts.fetchImpl ? { fetchImpl: this.opts.fetchImpl } : {}),
         ...(ctx?.signal ? { signal: ctx.signal } : {}),
       });
