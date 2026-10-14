@@ -63,12 +63,12 @@ $ apitame inspect
 github  openapi · read-only · ./openapi.yaml
 
 TOOL               OPS  ACCESS  TOKENS
-repos               11  read       535
-issues               4  read       292
+repos               11  read       550
+issues               4  read       307
 ...
-8 tools, ~1,954 tokens (includes 94 for server instructions; estimate)
-  one tool per endpoint (38 tools): ~5,522 tokens, apitame saves 65%
-  search + call only: ~218 tokens (smallest, but every task needs extra round trips)
+8 tools, ~2,087 tokens (includes 122 for server instructions; estimate)
+  one tool per endpoint (38 tools): ~5,522 tokens, apitame saves 62%
+  search + call only: ~233 tokens (smallest, but every task needs extra round trips)
 
 ! 13 operations blocked by read-only mode: repos/update, repos/delete, ...
 ✔ Skills: github-api

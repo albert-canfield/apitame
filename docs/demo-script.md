@@ -4,7 +4,7 @@ The README shows `docs/assets/demo.svg`, an animated terminal built from the rea
 
 ## The story (30 seconds)
 
-1. **0 to 8 s.** `npx apitame init ./openapi.yaml --name github`: 38 GitHub endpoints become 8 tools, writes are blocked, about 65% fewer tokens, config and skills written.
+1. **0 to 8 s.** `npx apitame init ./openapi.yaml --name github`: 38 GitHub endpoints become 8 tools, writes are blocked, about 60% fewer tokens, config and skills written.
 2. **8 to 15 s.** `npx apitame inspect`: the tool table, the token comparison, blocked operations, the skill.
 3. **15 to 22 s.** `npx apitame test`: every read operation passes against the mock, and the blocked-write safety check passes.
 4. **22 to 30 s.** `npx apitame add-to claude-code --write`, then in Claude Code ask: "Which open issues in octocat/hello-world mention docs?" The agent calls `issues`, then asks to close one and is told the server is read-only.
