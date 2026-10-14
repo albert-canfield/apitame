@@ -1,8 +1,9 @@
-import { existsSync } from 'node:fs';
+import { accessSync, constants, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { Worker } from 'node:worker_threads';
 import {
   SqlError,
+  type PrivilegeInfo,
   type QueryResult,
   type ReadOptions,
   type SqlDriver,
@@ -243,6 +244,18 @@ export class SqliteDriver implements SqlDriver {
       { op: 'write', sql, params, dryRun: opts.dryRun },
       opts.timeoutMs,
     );
+  }
+
+  async privileges(): Promise<PrivilegeInfo> {
+    try {
+      accessSync(this.file, constants.W_OK);
+      return {
+        canWrite: true,
+        detail: 'the database file is writable by this user (apitame still opens it read-only)',
+      };
+    } catch {
+      return { canWrite: false, detail: 'the database file is read-only for this user' };
+    }
   }
 
   async close(): Promise<void> {

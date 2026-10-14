@@ -55,6 +55,12 @@ export interface WriteOptions {
 
 export type SqlParams = unknown[] | Record<string, unknown>;
 
+/** Whether the connection could write, independently of apitame's own checks. */
+export interface PrivilegeInfo {
+  canWrite: boolean;
+  detail: string;
+}
+
 /** What the SQL runtime needs from a database. Every read runs in read-only mode at the database level. */
 export interface SqlDriver {
   readonly dialect: Dialect;
@@ -63,6 +69,8 @@ export interface SqlDriver {
   readQuery(sql: string, params: SqlParams, opts: ReadOptions): Promise<QueryResult>;
   /** Run a named write query in a transaction. With dryRun the transaction is rolled back. */
   writeQuery(sql: string, params: SqlParams, opts: WriteOptions): Promise<{ rowCount: number }>;
+  /** Check what the underlying credentials allow (used by `apitame doctor`). */
+  privileges(): Promise<PrivilegeInfo>;
   close(): Promise<void>;
 }
 

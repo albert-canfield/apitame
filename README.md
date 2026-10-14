@@ -67,6 +67,7 @@ The Postgres connection string is saved to `.env` (never to the config file). Us
 ```bash
 npx apitame inspect                     # tools, modes and estimated token cost
 npx apitame test                        # call every read tool against a mock and run safety checks
+npx apitame doctor                      # if something does not work, this says what to fix
 npx apitame add-to claude-code --write  # writes .mcp.json and installs the skill
 ```
 
@@ -210,6 +211,7 @@ Read [docs/safety.md](docs/safety.md) for the full model, including what apitame
 | `apitame inspect` | List tools, access levels and estimated token cost. `--max-tokens <n>` fails CI when the tool list grows past a budget. |
 | `apitame test` | Call every read tool against a local mock built from the spec (or `--live`), validate responses, and prove that blocked writes are refused. For SQL, check every table and try known injection payloads. |
 | `apitame add-to <client>` | Print or `--write` the config for `claude-code`, `codex`, `cursor` or `vscode`, and install the skills. |
+| `apitame doctor` | Check the setup end to end: config, environment variables, `.env` safety, API or database connectivity and credentials, whether the database role could write, skills and client configs. |
 
 Full reference: [docs/cli.md](docs/cli.md).
 

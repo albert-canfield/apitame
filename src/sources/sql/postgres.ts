@@ -1,6 +1,7 @@
 import pg from 'pg';
 import {
   SqlError,
+  type PrivilegeInfo,
   type QueryResult,
   type ReadOptions,
   type SqlDriver,
@@ -253,6 +254,34 @@ export class PostgresDriver implements SqlDriver {
       if (open && !failed) await client.query('ROLLBACK').catch(() => (failed = true));
       done(failed);
     }
+  }
+
+  async privileges(): Promise<PrivilegeInfo> {
+    const who = await this.pool.query<{ role: string; superuser: boolean; ro: boolean }>(
+      `SELECT current_user AS role,
+              coalesce((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false) AS superuser,
+              current_setting('default_transaction_read_only') = 'on' AS ro`,
+    );
+    const w = await this.pool.query<{ name: string }>(
+      `SELECT n.nspname || '.' || c.relname AS name
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind IN ('r', 'p') AND n.nspname = ANY($1)
+          AND (has_table_privilege(c.oid, 'INSERT') OR has_table_privilege(c.oid, 'UPDATE')
+               OR has_table_privilege(c.oid, 'DELETE') OR has_table_privilege(c.oid, 'TRUNCATE'))
+        ORDER BY 1`,
+      [this.schemas],
+    );
+    const { role, superuser, ro } = who.rows[0] ?? { role: '?', superuser: false, ro: false };
+    const writable = w.rows.map((r) => r.name);
+    if (superuser) return { canWrite: true, detail: `role "${role}" is a superuser` };
+    if (writable.length > 0) {
+      const list = writable.slice(0, 5).join(', ') + (writable.length > 5 ? ', ...' : '');
+      return {
+        canWrite: true,
+        detail: `role "${role}" can write to ${writable.length} table${writable.length === 1 ? '' : 's'} (${list})${ro ? ', although default_transaction_read_only is on' : ''}`,
+      };
+    }
+    return { canWrite: false, detail: `role "${role}" has no write privileges` };
   }
 
   async close(): Promise<void> {
