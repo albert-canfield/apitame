@@ -118,6 +118,7 @@ sql:
 - Write queries need `write: true`, `mode: read-write` and an entry in `writes.allow`. Until then they are reported as blocked by `inspect` and are invisible to the agent.
 - DELETE, DROP, TRUNCATE, ALTER, MERGE and UPDATE without WHERE are destructive and always need confirmation. Other writes can be added to `writes.confirm`.
 - `"dryRun": true` runs the write inside a transaction that is rolled back and returns `wouldAffectRows`. The confirmation preview includes the same count.
+- On MySQL, a rollback only undoes changes to transactional tables. A dry run, and the row count in the confirmation preview, is therefore refused (the preview shows "unknown") unless every table the statement touches uses InnoDB (or NDB) and has no triggers. DDL is never dry-run on MySQL, because it commits implicitly.
 
 ## Limiting what can be seen
 

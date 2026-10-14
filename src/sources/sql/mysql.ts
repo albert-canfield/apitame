@@ -1,5 +1,5 @@
 import mysql from 'mysql2/promise';
-import { analyzeWrite } from './guard.js';
+import { analyzeWrite, statementTables } from './guard.js';
 import {
   SqlError,
   type PrivilegeInfo,
@@ -14,6 +14,8 @@ import {
 
 /** Statements MySQL commits implicitly, so they can never run inside a rolled-back transaction. */
 const DDL_KINDS = new Set(['CREATE', 'DROP', 'ALTER', 'TRUNCATE', 'RENAME']);
+/** Storage engines whose changes ROLLBACK undoes. */
+const TRANSACTIONAL_ENGINES = new Set(['innodb', 'ndbcluster', 'ndb']);
 const WRITE_GRANTS = /\b(ALL PRIVILEGES|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|SUPER)\b/i;
 
 function wrap(err: unknown, timeoutMs: number): SqlError {
@@ -224,6 +226,7 @@ export class MysqlDriver implements SqlDriver {
     const values = Array.isArray(params) ? params : [];
     try {
       return await this.withConnection(async (conn) => {
+        if (opts.dryRun) await this.assertRollbackable(conn, sql);
         await conn.query('START TRANSACTION');
         try {
           const [res] = await conn.execute<mysql.ResultSetHeader>({
@@ -240,6 +243,43 @@ export class MysqlDriver implements SqlDriver {
       });
     } catch (err) {
       throw wrap(err, opts.timeoutMs);
+    }
+  }
+
+  /**
+   * A dry run executes the statement and rolls back, which only undoes changes to
+   * transactional tables. MyISAM, MEMORY and similar engines keep the change, and a
+   * trigger can write anywhere, so a dry run (and the row count shown before a human
+   * approves) is refused unless every table is InnoDB (or NDB) without triggers.
+   */
+  private async assertRollbackable(conn: mysql.PoolConnection, sql: string): Promise<void> {
+    const tables = statementTables(sql, 'mysql');
+    if (!tables || tables.length === 0) {
+      throw new SqlError(
+        'A dry run is not possible: the tables this statement changes are unknown.',
+      );
+    }
+    for (const t of tables) {
+      const [rows] = await conn.query<mysql.RowDataPacket[]>(
+        `SELECT t.ENGINE AS engine,
+                (SELECT COUNT(*) FROM information_schema.TRIGGERS g
+                  WHERE g.EVENT_OBJECT_SCHEMA = t.TABLE_SCHEMA AND g.EVENT_OBJECT_TABLE = t.TABLE_NAME) AS triggers
+           FROM information_schema.TABLES t
+          WHERE t.TABLE_SCHEMA = COALESCE(?, DATABASE()) AND t.TABLE_NAME = ?`,
+        [t.schema, t.table],
+      );
+      const row = rows[0];
+      const engine = String(row?.engine ?? '').toLowerCase();
+      if (!row || !TRANSACTIONAL_ENGINES.has(engine)) {
+        throw new SqlError(
+          `A dry run is not possible: table "${t.table}" ${row ? `uses the ${String(row.engine ?? 'unknown')} engine, which` : 'is a view or unknown table, and'} cannot be rolled back.`,
+        );
+      }
+      if (Number(row.triggers) > 0) {
+        throw new SqlError(
+          `A dry run is not possible: table "${t.table}" has triggers, which could change tables that cannot be rolled back.`,
+        );
+      }
     }
   }
 
