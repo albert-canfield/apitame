@@ -124,7 +124,7 @@ $ apitame doctor
 
 | Check | What it looks at |
 | --- | --- |
-| Node.js | 22 or later. |
+| Node.js | 22.14 or later. |
 | Config | The config file validates; unknown operation ids and skipped named queries. |
 | .env | If present, that git ignores it (a committed `.env` leaks secrets). |
 | Environment | Every `${VAR}` the config needs is set (after loading `.env`). |

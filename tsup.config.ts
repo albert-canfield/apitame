@@ -4,7 +4,7 @@ export default defineConfig({
   // One build for the CLI and the library, so both share chunks (the SQL code loads on demand).
   entry: { cli: 'src/cli.ts', index: 'src/index.ts' },
   format: ['esm'],
-  target: 'node20',
+  target: 'node22',
   platform: 'node',
   splitting: true,
   clean: true,
