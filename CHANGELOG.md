@@ -20,6 +20,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Security
 
+- The HTTP transport is covered by tests: loopback-only default, bearer token, Host and Origin checks, and confirmation (stateless HTTP uses the token flow).
 - Path parameters can no longer be `.` or `..`, which URL parsing would resolve into a different endpoint. Built URLs must stay under the base path.
 - Redirects are followed manually: credentials and custom headers are only sent to the API's own origin, never to a redirect target on another host.
 

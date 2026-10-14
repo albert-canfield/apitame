@@ -147,6 +147,8 @@ APITAME_HTTP_TOKEN=$(openssl rand -hex 24) npx apitame serve --transport http --
 
 Clients then send `Authorization: Bearer <token>`. Put TLS in front of it (a reverse proxy) before exposing it beyond a private network.
 
+The HTTP transport is stateless, so destructive operations are confirmed with the one-time token flow rather than an elicitation prompt (see [safety.md](safety.md#confirmation)).
+
 ## Pinning and local builds
 
 `add-to` pins the minor version (`apitame@0.1`) so a new release cannot change your server's behavior without you noticing. To run a local checkout instead:
