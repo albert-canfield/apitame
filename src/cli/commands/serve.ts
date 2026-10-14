@@ -1,4 +1,4 @@
-import type { Server } from '@modelcontextprotocol/server';
+import { InMemoryServerEventBus, type Server } from '@modelcontextprotocol/server';
 import { DEFAULT_CONFIG_FILE } from '../../config/load.js';
 import { Logger, type LogLevel } from '../../log.js';
 import { Redactor } from '../../safety/redact.js';
@@ -32,16 +32,19 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
   for (const w of live.runtime.warnings) logger.warn(w);
 
   const watching = opts.watch === true;
+  const buildServer = () =>
+    createMcpServer(() => live.runtime, { skills: () => live.skills, listChanged: watching });
   // Live servers, so a reload can tell every connected client that the tool list changed.
   const servers = new Set<Server>();
   const makeServer = () => {
-    const server = createMcpServer(() => live.runtime, {
-      skills: () => live.skills,
-      listChanged: watching,
-    });
+    const server = buildServer();
     servers.add(server);
     return server;
   };
+  // Over HTTP, protocol 2026-07-28 clients get list changes on their subscriptions/listen
+  // streams, which the SDK handler serves from this bus. Over stdio the connection's own server
+  // delivers them on those streams.
+  const events = new InMemoryServerEventBus((err) => logger.debug(`--watch: ${err.message}`));
 
   if (watching) {
     live.onReload(({ toolsChanged, skillsChanged }) => {
@@ -49,6 +52,8 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
         if (toolsChanged) void s.sendToolListChanged().catch(() => {});
         if (skillsChanged) void s.sendResourceListChanged().catch(() => {});
       }
+      if (toolsChanged) events.publish({ kind: 'tools_list_changed' });
+      if (skillsChanged) events.publish({ kind: 'resources_list_changed' });
     });
     live.watch();
   }
@@ -69,9 +74,8 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
   const transport = opts.transport ?? 'stdio';
 
   if (transport === 'stdio') {
-    const server = makeServer();
-    servers.add(server);
-    await serveStdio(server);
+    // Both protocol eras: the client's first message decides, and one server serves the connection.
+    await serveStdio(makeServer, { logger });
     process.stdin.on('end', () => void shutdown(0));
     logger.info(`serving ${summary} over stdio`);
     if (process.stdin.isTTY) {
@@ -100,11 +104,14 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
     });
   }
   // Every server reads the runtime through `live`, so stateless requests and sessions alike see reloads.
-  await serveHttp(makeServer, {
+  // A 2026-07-28 request gets a server of its own that lives for that request only, so it is not
+  // kept in `servers`: list changes reach those clients through `events`.
+  await serveHttp(({ era }) => (era === 'modern' ? buildServer() : makeServer()), {
     host,
     port,
     logger,
     sessions,
+    events,
     onServerClosed: (s) => servers.delete(s),
     ...(token ? { token } : {}),
     ...(oauthConfig && verifier

@@ -5,16 +5,24 @@ import {
   type Server as HttpServer,
   type ServerResponse,
 } from 'node:http';
+import { Readable } from 'node:stream';
 import {
   hostHeaderValidation,
   localhostHostValidation,
   localhostOriginValidation,
   NodeStreamableHTTPServerTransport,
   originValidation,
+  toNodeHandler,
 } from '@modelcontextprotocol/node';
 import {
   bearerAuthChallengeResponse,
+  createMcpHandler,
+  DEFAULT_MAX_REQUEST_BODY_SIZE,
   isInitializeRequest,
+  isJSONRPCNotification,
+  isJSONRPCRequest,
+  isJSONRPCResponse,
+  isLegacyRequest,
   localhostAllowedHostnames,
   localhostAllowedOrigins,
   OAuthError,
@@ -22,9 +30,15 @@ import {
   verifyBearerToken,
   type AuthInfo,
   type OAuthTokenVerifier,
+  type ProtocolEra,
   type Server,
+  type ServerEventBus,
+  type Transport,
 } from '@modelcontextprotocol/server';
-import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import {
+  serveStdio as serveStdioEntry,
+  StdioServerTransport,
+} from '@modelcontextprotocol/server/stdio';
 import type { Logger } from '../log.js';
 import {
   identityOf,
@@ -34,9 +48,52 @@ import {
   type OAuthOptions,
 } from './oauth.js';
 
-export async function serveStdio(server: Server): Promise<void> {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+/**
+ * Builds a server for one connection or request. `era` is the protocol era it will serve:
+ * `legacy` for 2025-era clients (`initialize`), `modern` for protocol 2026-07-28.
+ */
+export type ServerFactory = (ctx: { era: ProtocolEra }) => Server;
+
+export interface StdioOptions {
+  logger?: Logger;
+  /** Serve over this transport instead of the process's stdin and stdout (used by tests). */
+  transport?: Transport;
+}
+
+/**
+ * Serve MCP over stdio.
+ *
+ * Given a factory, both protocol eras are served: the client's first message selects the era,
+ * and one server from the factory serves the whole connection. A 2025-era client is served
+ * exactly as by a server connected to the transport directly. Given a server, it is connected
+ * as is, which serves 2025-era clients only.
+ */
+export async function serveStdio(
+  server: Server | ServerFactory,
+  opts: StdioOptions = {},
+): Promise<{ close: () => Promise<void> }> {
+  if (typeof server !== 'function') {
+    await server.connect(opts.transport ?? new StdioServerTransport());
+    return { close: () => server.close() };
+  }
+  const { logger } = opts;
+  return serveStdioEntry(
+    ({ era }) => {
+      const instance = server({ era });
+      if (era === 'modern') logger?.debug('stdio: the client uses protocol 2026-07-28');
+      else {
+        instance.oninitialized = () =>
+          logger?.debug(
+            `stdio: the client negotiated protocol ${instance.getNegotiatedProtocolVersion() ?? 'unknown'} (2025 era)`,
+          );
+      }
+      return instance;
+    },
+    {
+      ...(opts.transport ? { transport: opts.transport } : {}),
+      onerror: (err) => logger?.debug(`stdio: ${err.message}`),
+    },
+  );
 }
 
 /** OAuth 2.1 access tokens from an external authorization server (`http.oauth`). */
@@ -60,9 +117,10 @@ export interface HttpOptions {
   oauth?: HttpOAuth;
   logger: Logger;
   /**
-   * Keep one MCP session per client (`Mcp-Session-Id`) instead of a fresh
-   * server per request. Needed for elicitation: the server can ask the human
-   * in the middle of a tool call and receive the answer.
+   * Keep one MCP session per 2025-era client (`Mcp-Session-Id`) instead of a
+   * fresh server per request. Needed for elicitation on that protocol: the
+   * server asks the human in the middle of a tool call and receives the answer.
+   * Protocol 2026-07-28 requests are stateless either way.
    */
   sessions?: boolean;
   /** Close sessions without requests or open streams for this long. Default 30 minutes. */
@@ -74,8 +132,16 @@ export interface HttpOptions {
    * among their own idle sessions, never by closing someone else's. Default 10.
    */
   maxSessionsPerOwner?: number;
-  /** Called whenever a server built by `makeServer` is closed. */
+  /**
+   * Called whenever a 2025-era server built by `makeServer` is closed. Servers for protocol
+   * 2026-07-28 live for one request and are not reported.
+   */
   onServerClosed?: (server: Server) => void;
+  /**
+   * Where `serve --watch` publishes list changes for protocol 2026-07-28 clients, which receive
+   * them on `subscriptions/listen` streams. 2025-era clients are notified by their own server.
+   */
+  events?: ServerEventBus;
 }
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -138,6 +204,8 @@ function ownerOf(auth: AuthInfo | undefined): string | undefined {
 
 /** Largest body read before the transport sees a request that wants to start a session. */
 const MAX_INIT_BODY_BYTES = 1_000_000;
+/** Largest request body. The same limit the SDK transports apply, with the same answer. */
+const MAX_BODY_BYTES = DEFAULT_MAX_REQUEST_BODY_SIZE;
 /** setTimeout cannot wait longer than this. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
@@ -167,6 +235,64 @@ function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   });
 }
 
+/**
+ * A copy of a request whose body was already read, which a handler can read again. Everything
+ * else (method, URL, headers, socket, the OAuth result) is the original request's.
+ */
+function replay(req: IncomingMessage, body: Buffer): IncomingMessage {
+  const copy = Readable.from(body.length > 0 ? [body] : [], { objectMode: false });
+  return Object.assign(copy, {
+    method: req.method,
+    url: req.url,
+    headers: req.headers,
+    rawHeaders: req.rawHeaders,
+    httpVersion: req.httpVersion,
+    socket: req.socket,
+    auth: (req as IncomingMessage & { auth?: AuthInfo }).auth,
+  }) as unknown as IncomingMessage;
+}
+
+/**
+ * Whether a request is 2025-era traffic, decided by the SDK's own classification (the one its
+ * dual-era handler uses), so this routing never disagrees with the SDK.
+ */
+async function isLegacy(req: IncomingMessage, body: Buffer | undefined): Promise<boolean> {
+  let parsed: unknown;
+  if (body !== undefined && body.length > 0) {
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(body));
+    } catch {
+      // Not JSON: the SDK sends it to 2025-era serving too.
+      return true;
+    }
+    // JSON that is not a JSON-RPC message belongs to neither era: the 2025-era wiring refuses it
+    // as it always has (and, with sessions, before it can touch the session table).
+    const rpc =
+      Array.isArray(parsed) ||
+      isJSONRPCRequest(parsed) ||
+      isJSONRPCNotification(parsed) ||
+      isJSONRPCResponse(parsed);
+    if (!rpc) return true;
+  }
+  let probe: Request;
+  try {
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(req.headers)) {
+      if (value === undefined) continue;
+      for (const v of Array.isArray(value) ? value : [value]) headers.append(name, v);
+    }
+    // Only the method, headers and body matter, so the URL is not taken from the request.
+    probe = new Request(new URL('/mcp', 'http://localhost'), {
+      method: req.method ?? 'GET',
+      headers,
+    });
+  } catch {
+    // A request the Fetch API cannot represent (a TRACE, say) is not 2026-07-28 traffic.
+    return true;
+  }
+  return isLegacyRequest(probe, parsed, { maxRequestBodySize: MAX_BODY_BYTES });
+}
+
 interface Session {
   server: Server;
   transport: NodeStreamableHTTPServerTransport;
@@ -179,15 +305,17 @@ interface Session {
 
 /**
  * Streamable HTTP transport. Stateless by default: a fresh MCP server per
- * request, all sharing one runtime (so confirmation tokens survive across
- * requests). With `sessions`, each client keeps its own server between
- * requests, which elicitation needs.
+ * request, all sharing one runtime (so confirmation tokens and approvals
+ * survive across requests). With `sessions`, each 2025-era client keeps its
+ * own server between requests, which elicitation needs on that protocol.
+ * Protocol 2026-07-28 requests are always served statelessly: the human is
+ * asked between two requests, so no session is needed.
  *
  * Safe defaults: loopback only, Host and Origin checks against DNS rebinding,
  * and authentication (a static bearer token or OAuth access tokens) required
  * as soon as the server listens beyond loopback.
  */
-export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Promise<HttpServer> {
+export async function serveHttp(makeServer: ServerFactory, opts: HttpOptions): Promise<HttpServer> {
   const loopback = isLoopback(opts.host);
   if (opts.token && opts.oauth) {
     throw new Error(
@@ -316,7 +444,7 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
     }
     const full = makeRoom(owner);
     if (full) return rpcError(res, 503, full);
-    const server = makeServer();
+    const server = makeServer({ era: 'legacy' });
     const transport: NodeStreamableHTTPServerTransport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
@@ -335,11 +463,52 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
   };
 
   const handleStateless = async (req: IncomingMessage, res: ServerResponse) => {
-    const server = makeServer();
+    const server = makeServer({ era: 'legacy' });
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => closeServer(server, transport));
     await server.connect(transport);
     await transport.handleRequest(req, res);
+  };
+
+  // Protocol 2026-07-28: every request carries what it needs (client capabilities, protocol
+  // version) and is served by a fresh server, sessions or not. 2025-era requests never reach
+  // this handler ('reject'); they keep the wiring above. The SDK handler checks no Host, Origin
+  // or token: everything in `handler` below runs first.
+  const modern = createMcpHandler(() => makeServer({ era: 'modern' }), {
+    legacy: 'reject',
+    maxRequestBodySize: MAX_BODY_BYTES,
+    ...(opts.events ? { bus: opts.events } : {}),
+    onerror: (err) => opts.logger.debug(`HTTP (protocol 2026-07-28): ${err.message}`),
+  });
+  const serveModern = toNodeHandler(modern, {
+    maxRequestBodySize: MAX_BODY_BYTES,
+    onerror: (err) => opts.logger.error(`HTTP request failed: ${err.message}`),
+  });
+
+  /** Send each request to the wiring for its protocol era. */
+  const route = async (req: IncomingMessage, res: ServerResponse, auth?: AuthInfo) => {
+    let body: Buffer | undefined;
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      try {
+        body = await readBody(req, MAX_BODY_BYTES);
+      } catch (err) {
+        if (!(err instanceof BodyTooLarge)) throw err;
+        return rpcError(
+          res,
+          413,
+          `Payload Too Large: Request body must not exceed ${MAX_BODY_BYTES} bytes`,
+        );
+      }
+    }
+    // Handlers read the body again from a copy, exactly as they would have from the socket.
+    const fresh = () => (body === undefined ? req : replay(req, body));
+    const legacy = await isLegacy(req, body);
+    const version = req.headers['mcp-protocol-version'];
+    opts.logger.debug(
+      `HTTP ${req.method ?? 'GET'}: ${legacy ? '2025-era' : 'protocol 2026-07-28'} request${typeof version === 'string' ? ` (MCP-Protocol-Version: ${version})` : ''}`,
+    );
+    if (!legacy) return serveModern(fresh(), res);
+    return opts.sessions ? handleSession(fresh(), res, auth) : handleStateless(fresh(), res);
   };
 
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
@@ -383,7 +552,7 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
     }
 
     try {
-      await (opts.sessions ? handleSession(req, res, auth) : handleStateless(req, res));
+      await route(req, res, auth);
     } catch (err) {
       opts.logger.error(`HTTP request failed: ${(err as Error).message}`);
       if (!res.headersSent) send(res, 500, { error: 'Internal error' });
@@ -391,6 +560,7 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
   };
 
   const http = createServer((req, res) => void handler(req, res));
+  http.on('close', () => void modern.close().catch(() => {}));
   if (opts.sessions) {
     const timer = setInterval(sweep, Math.max(50, Math.min(60_000, idleMs / 4)));
     timer.unref();

@@ -148,10 +148,10 @@ Destructive operations always need confirmation; there is no setting to turn tha
 ```yaml
 confirmation:
   method: auto       # auto | elicitation | token
-  ttlSeconds: 300    # confirmation token lifetime, 10 to 3600
+  ttlSeconds: 300    # lifetime of confirmation tokens and approval ids, 10 to 3600
 ```
 
-- `auto`: ask the human through MCP elicitation when the client supports it, otherwise return a one-time token.
+- `auto`: ask the human through MCP elicitation when the client supports it (in the middle of the call for 2025-era clients, in two rounds for clients on protocol 2026-07-28, see [safety.md](safety.md#protocol-eras)), otherwise return a one-time token.
 - `elicitation`: refuse destructive calls when the client cannot elicit.
 - `token`: always use tokens.
 

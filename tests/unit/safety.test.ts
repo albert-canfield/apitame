@@ -6,6 +6,7 @@ import {
 } from '../../src/safety/confirm.js';
 import { decide, matchesAny } from '../../src/safety/policy.js';
 import { REDACTED, Redactor } from '../../src/safety/redact.js';
+import type { ApprovalRound } from '../../src/types.js';
 
 describe('policy.decide', () => {
   const readOnly = { mode: 'read-only' as const, writes: { allow: ['*'], confirm: [] } };
@@ -188,6 +189,146 @@ describe('confirmOrChallenge', () => {
     });
     expect(out.proceed).toBe(false);
     expect(elicit).not.toHaveBeenCalled();
+  });
+});
+
+describe('approvals (protocol 2026-07-28)', () => {
+  const base = { id: 'deletePet', preview: 'DELETE /pet/1', args: { petId: 1 } };
+  const ask = (store: ConfirmationStore, approval: ApprovalRound, extra: object = {}) =>
+    confirmOrChallenge({
+      ...base,
+      confirmToken: undefined,
+      method: 'auto',
+      store,
+      ctx: { approval },
+      ...extra,
+    });
+  const stateOf = (out: Awaited<ReturnType<typeof confirmOrChallenge>>) => {
+    if (out.proceed) throw new Error('expected a prompt');
+    return out.result.inputRequired?.requestState ?? '';
+  };
+
+  it('keeps approval ids in a store of their own, apart from confirm tokens', () => {
+    const store = new ConfirmationStore(60_000);
+    const approval = store.approvals.issue('deletePet', { petId: 1 }).token;
+    expect(approval).toMatch(/^approval_[\w-]{43}$/);
+    const token = store.issue('deletePet', { petId: 1 }).token;
+    expect(store.consume(approval, 'deletePet', { petId: 1 })).toMatchObject({ ok: false });
+    expect(store.approvals.consume(token, 'deletePet', { petId: 1 })).toMatchObject({
+      ok: false,
+    });
+    // Both still work where they belong: the failed attempts above were for unknown ids.
+    expect(store.consume(token, 'deletePet', { petId: 1 })).toEqual({ ok: true });
+    expect(store.approvals.consume(approval, 'deletePet', { petId: 1 })).toEqual({ ok: true });
+  });
+
+  it('expires approval ids', () => {
+    let now = 1_000;
+    const store = new ConfirmationStore(5_000, () => now);
+    const { token } = store.approvals.issue('x', {});
+    now += 6_000;
+    expect(store.approvals.consume(token, 'x', {})).toEqual({
+      ok: false,
+      reason: 'The approval expired.',
+    });
+  });
+
+  it('asks in a first round, and runs only on an approved second round', async () => {
+    const store = new ConfirmationStore(60_000);
+    const elicit = vi.fn();
+    const first = await confirmOrChallenge({
+      ...base,
+      confirmToken: undefined,
+      method: 'auto',
+      store,
+      ctx: { approval: { canAsk: true }, elicit },
+    });
+    expect(first.proceed).toBe(false);
+    if (first.proceed) return;
+    expect(first.result.isError).toBeUndefined();
+    expect(first.result.inputRequired?.message).toContain('DELETE /pet/1');
+    const state = stateOf(first);
+    expect(state).toMatch(/^approval_/);
+    expect(elicit).not.toHaveBeenCalled();
+
+    expect((await ask(store, { canAsk: true, state, answer: 'accept' })).proceed).toBe(true);
+    const again = await ask(store, { canAsk: true, state, answer: 'accept' });
+    expect(again.proceed).toBe(false);
+    if (!again.proceed) expect(again.result.content[0]!.text).toMatch(/already used approval/);
+  });
+
+  it('refuses and burns the id when the human did not approve', async () => {
+    for (const answer of ['decline', 'cancel', undefined] as const) {
+      const store = new ConfirmationStore(60_000);
+      const state = stateOf(await ask(store, { canAsk: true }));
+      const out = await ask(store, { canAsk: true, state, ...(answer ? { answer } : {}) });
+      expect(out.proceed).toBe(false);
+      if (!out.proceed) {
+        expect(out.result.isError).toBe(true);
+        expect(out.result.content[0]!.text).toMatch(/did not approve/);
+      }
+      expect(store.approvals.consume(state, base.id, { args: base.args, caller: null })).toEqual({
+        ok: false,
+        reason: 'Unknown or already used approval.',
+      });
+    }
+  });
+
+  it('binds an approval to the arguments and to the caller', async () => {
+    const store = new ConfirmationStore(60_000);
+    const alice = { caller: { subject: 'alice' } };
+    const state = stateOf(
+      await confirmOrChallenge({
+        ...base,
+        confirmToken: undefined,
+        method: 'auto',
+        store,
+        ctx: { approval: { canAsk: true }, ...alice },
+      }),
+    );
+    const bob = await confirmOrChallenge({
+      ...base,
+      confirmToken: undefined,
+      method: 'auto',
+      store,
+      ctx: { approval: { canAsk: true, state, answer: 'accept' }, caller: { subject: 'bob' } },
+    });
+    expect(bob.proceed).toBe(false);
+    if (!bob.proceed) expect(bob.result.content[0]!.text).toMatch(/a different user/);
+
+    const state2 = stateOf(await ask(store, { canAsk: true }));
+    const other = await ask(
+      store,
+      { canAsk: true, state: state2, answer: 'accept' },
+      { args: { petId: 2 } },
+    );
+    expect(other.proceed).toBe(false);
+  });
+
+  it('without a form, uses the token under auto and refuses under elicitation', async () => {
+    const store = new ConfirmationStore(60_000);
+    const auto = await ask(store, { canAsk: false });
+    expect(auto.proceed).toBe(false);
+    if (!auto.proceed) {
+      expect(auto.result.inputRequired).toBeUndefined();
+      expect(auto.result.content[0]!.text).toMatch(/CONFIRMATION REQUIRED/);
+    }
+    const strict = await ask(store, { canAsk: false }, { method: 'elicitation' });
+    expect(strict.proceed).toBe(false);
+    if (!strict.proceed) {
+      expect(strict.result.isError).toBe(true);
+      expect(strict.result.content[0]!.text).toMatch(/does not support elicitation/);
+    }
+  });
+
+  it('method "token" never asks, even when the client could', async () => {
+    const store = new ConfirmationStore(60_000);
+    const out = await ask(store, { canAsk: true }, { method: 'token' });
+    expect(out.proceed).toBe(false);
+    if (!out.proceed) {
+      expect(out.result.inputRequired).toBeUndefined();
+      expect(out.result.content[0]!.text).toMatch(/CONFIRMATION REQUIRED/);
+    }
   });
 });
 

@@ -40,7 +40,7 @@ Runs the MCP server.
 ```bash
 apitame serve                                  # stdio, for clients that launch the server
 apitame serve --transport http --port 3333     # streamable HTTP on http://127.0.0.1:3333/mcp
-apitame serve --transport http --sessions      # one session per client, so confirmations use elicitation
+apitame serve --transport http --sessions      # sessions for 2025-era clients, so they can elicit
 APITAME_HTTP_TOKEN=... apitame serve --transport http --host 0.0.0.0
 ```
 
@@ -50,11 +50,11 @@ APITAME_HTTP_TOKEN=... apitame serve --transport http --host 0.0.0.0
 | `-t, --transport <stdio\|http>` | `stdio` | Transport. |
 | `-p, --port <port>` | `3333` | HTTP port. |
 | `--host <host>` | `127.0.0.1` | HTTP host. Anything other than loopback needs `APITAME_HTTP_TOKEN` or `http.oauth` in the config (OAuth access tokens, see [clients.md](clients.md#oauth)). |
-| `--sessions` | | HTTP only. Keep one MCP session per client (`Mcp-Session-Id`), so destructive operations can be confirmed by the human through elicitation. Without it the HTTP transport is stateless and uses the token flow. |
-| `-w, --watch` | | Reload when `apitame.config.yaml`, a local spec, the skills folder or `.env` change, and notify clients that the tool list changed. |
-| `--log-level <level>` | `info` | `debug`, `info`, `warn`, `error` or `silent`. Logs go to stderr. |
+| `--sessions` | | HTTP only. Keep one MCP session per 2025-era client (`Mcp-Session-Id`), so destructive operations can be confirmed by the human through elicitation. Without it the HTTP transport is stateless and those clients use the token flow. Clients on protocol 2026-07-28 are asked through elicitation either way, without a session. |
+| `-w, --watch` | | Reload when `apitame.config.yaml`, a local spec, the skills folder or `.env` change, and notify clients that the tool list changed (2026-07-28 clients on their `subscriptions/listen` stream). |
+| `--log-level <level>` | `info` | `debug`, `info`, `warn`, `error` or `silent`. Logs go to stderr. `debug` also logs the protocol era of each stdio connection and HTTP request. |
 
-The server exposes `tools/list` and `tools/call`. When the config has skills, it also declares the MCP Skills extension (`io.modelcontextprotocol/skills`) and answers `skills/list`, `skills/get`, `resources/list` and `resources/read` for `skill://` URIs. The HTTP server also answers `GET /health`, and with `http.oauth` it serves its protected resource metadata at `/.well-known/oauth-protected-resource`.
+Both MCP protocol eras are served on stdio and HTTP: 2025-era clients (which start with `initialize`) and clients on protocol 2026-07-28. The server exposes `tools/list` and `tools/call`. When the config has skills, it also declares the MCP Skills extension (`io.modelcontextprotocol/skills`) and answers `skills/list`, `skills/get`, `resources/list` and `resources/read` for `skill://` URIs. The HTTP server also answers `GET /health`, and with `http.oauth` it serves its protected resource metadata at `/.well-known/oauth-protected-resource`.
 
 Missing credentials do not stop the server: it starts, logs a warning, and tool calls explain which variable is missing.
 
