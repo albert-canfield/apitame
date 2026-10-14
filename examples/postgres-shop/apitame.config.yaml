@@ -7,7 +7,7 @@ name: shop
 description: Sample online shop with customers, products, orders and order items.
 
 # The connection string comes from an environment variable (or .env next to this file).
-# Use a read-only database role: see docs/sql.md for a two-line setup.
+# Use a read-only database role: https://github.com/albert-canfield/apitame/blob/main/docs/sql.md#a-read-only-role
 source:
   type: postgres
   url: ${DATABASE_URL}

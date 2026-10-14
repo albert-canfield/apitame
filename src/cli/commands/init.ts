@@ -339,7 +339,9 @@ async function initSql(
     if (privileges?.canWrite) {
       console.log(
         warn(
-          `${privileges.detail}. apitame stays read-only anyway, but a read-only role is safer: see docs/sql.md.`,
+          runtime.sourceType === 'sqlite'
+            ? `${privileges.detail}. apitame stays read-only anyway; making the file read-only for this user adds a layer.`
+            : `${privileges.detail}. apitame stays read-only anyway, but a read-only role is safer: https://github.com/albert-canfield/apitame/blob/main/docs/sql.md#a-read-only-role`,
         ),
       );
     } else if (privileges) console.log(ok(`Read-only credentials: ${privileges.detail}`));
@@ -361,7 +363,7 @@ function printNext(outDir: string): void {
   const steps: Array<[string, string]> = [
     [`npx apitame inspect${flag}`, 'tools, modes and token cost'],
     [`npx apitame test${flag}`, 'check every read tool and the safety rules'],
-    [`npx apitame add-to claude-code${flag}`, 'or codex, cursor, vscode'],
+    [`npx apitame add-to claude-code${flag}`, 'or codex, cursor, vscode, gemini, claude-desktop'],
     [`npx apitame serve${flag}`, 'run the MCP server (stdio)'],
   ];
   const width = Math.max(...steps.map(([cmd]) => cmd.length));

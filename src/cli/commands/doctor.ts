@@ -179,7 +179,9 @@ async function checkDatabase(
       add(
         'warn',
         'Database role',
-        `${p.detail}. apitame enforces read-only access itself, but a read-only role is the layer nothing can bypass (docs/sql.md).`,
+        rt.sourceType === 'sqlite'
+          ? `${p.detail}. apitame enforces read-only access itself; a read-only file adds a layer nothing can bypass.`
+          : `${p.detail}. apitame enforces read-only access itself, but a read-only role is the layer nothing can bypass: https://github.com/albert-canfield/apitame/blob/main/docs/sql.md#a-read-only-role`,
       );
     } else add('ok', 'Database role', p.detail);
   } catch (err) {

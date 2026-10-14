@@ -34,6 +34,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- `APITAME_CONFIG` was documented but ignored: the CLI gave `--config` a default, so the variable was never read. It now works for every command, and `--config` still wins.
 - `serve --watch`: a reload that failed after reading `.env` left the new values set and untracked, so later edits to them were ignored. One invalid `SKILL.md` stopped the server from starting; such folders are now skipped with a warning. An audit log inside the skills folder no longer triggers a reload (and a rate limit reset) on every call.
 - On Node 20, request timeouts could silently stop working after a garbage collection: a timeout signal reachable only through `AbortSignal.any()` is collected there and never fires, so a slow API could hold a tool call indefinitely (0.1.0 is affected too). The deadline is now an explicit timer.
 

@@ -8,13 +8,14 @@ Every command except `init` reads `apitame.config.yaml` from the current folder.
 
 ## `apitame init [source]`
 
-Introspects a source and writes `apitame.config.yaml`, `skills/` and, when needed, `.env.example` (and `.env` for a Postgres URL given on the command line).
+Introspects a source and writes `apitame.config.yaml`, `skills/` and, when needed, `.env.example` (and `.env` for a PostgreSQL or MySQL URL given on the command line).
 
 ```bash
 apitame init ./openapi.yaml
 apitame init https://api.example.com/openapi.json
 apitame init https://api.example.com                # finds the spec
 apitame init postgres://user:pass@host:5432/db
+apitame init mysql://user:pass@host:3306/db
 apitame init '$DATABASE_URL'                        # or env:DATABASE_URL
 apitame init ./shop.db
 apitame init --skills-only                          # regenerate skills from the existing config
@@ -26,8 +27,8 @@ apitame init --skills-only                          # regenerate skills from the
 | `-n, --name <name>` | from the spec title or database name | Server name. |
 | `--base-url <url>` | | API base URL, overrides the servers in the spec. |
 | `--max-tools <n>` | `12` | Tool budget, including `search_operations` and `call_operation`. |
-| `--env-var <name>` | `DATABASE_URL` | Variable that holds the Postgres URL. |
-| `--schema <names...>` | `public` | Postgres schemas to expose. |
+| `--env-var <name>` | `DATABASE_URL` | Variable that holds the database URL. |
+| `--schema <names...>` | `public` | PostgreSQL schemas to expose. |
 | `-f, --force` | | Overwrite an existing config. |
 | `--skills-only` | | Regenerate skills from the existing config (for example after switching to read-write). |
 | `-c, --config <path>` | | Config to use with `--skills-only`. |
@@ -98,10 +99,10 @@ apitame test --json
 For OpenAPI sources it:
 
 1. calls every read operation through the tool an agent would use, with sample arguments built from the spec;
-2. validates successful responses against the response schema;
+2. with `--live`, validates successful responses against the response schema (against the mock that would only test the sample generator);
 3. calls every blocked write through `call_operation` and checks that each one is refused and that nothing reached the server.
 
-For SQL sources it lists tables, describes each one, runs `SELECT * ... LIMIT 1` on each, runs every named read query with sample parameters, and sends known write and injection payloads (`DELETE`, `COMMIT; DROP SCHEMA ...`, stacked statements, the backslash string trick, a data-modifying CTE) that must all be refused.
+For SQL sources it lists tables, describes each one, runs `SELECT * ... LIMIT 1` on each, runs every named read query with sample parameters, and sends known write and injection payloads (`DELETE`, `COMMIT; DROP SCHEMA ...`, stacked statements, a data-modifying CTE, and for PostgreSQL and SQLite the backslash string trick) that must all be refused.
 
 Exit code 1 when any check fails. Warnings (for example HTTP 404 for a sample id in `--live` mode) do not fail the run.
 

@@ -297,7 +297,7 @@ export function renderSqlConfig(input: SqlConfigInput): string {
     doc,
     'source',
     input.type !== 'sqlite'
-      ? 'The connection string comes from an environment variable (or .env next to this file).\nUse a read-only database role: see docs/sql.md for a two-line setup.'
+      ? 'The connection string comes from an environment variable (or .env next to this file).\nUse a read-only database role: https://github.com/albert-canfield/apitame/blob/main/docs/sql.md#a-read-only-role'
       : 'Path to the database file, relative to this config. It is opened read-only.',
   );
   comment(

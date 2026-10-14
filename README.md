@@ -206,7 +206,7 @@ For SQL, every free-form query passes four independent layers:
 
 1. **A lexer that follows the database's own quoting rules**: exactly one statement, no write keywords, no side-effect functions (`pg_sleep`, `pg_read_file`, `dblink`, `load_extension` and others), no credential catalogs.
 2. **A real SQL parser**: the statement must be a SELECT, with no `SELECT INTO` and no row locks. Anything the parser cannot read is refused.
-3. **The database itself**: PostgreSQL runs the query inside `BEGIN READ ONLY` with `statement_timeout`, through the extended protocol (which accepts one statement only) and a cursor that stops at the row limit. SQLite uses a read-only connection, `query_only`, a per-statement read-only check and a worker thread that is killed on timeout.
+3. **The database itself**: PostgreSQL runs the query inside `BEGIN READ ONLY` with `statement_timeout`, through the extended protocol (which accepts one statement only) and a cursor that stops at the row limit. MySQL uses `START TRANSACTION READ ONLY`, `max_execution_time`, `sql_select_limit` and single-statement prepared statements. SQLite uses a read-only connection, `query_only`, a per-statement read-only check and a worker thread that is killed on timeout.
 4. **Your read-only database role**, which nothing can bypass.
 
 The layers exist because parsers and databases disagree. `SELECT '\'; DELETE FROM orders; --'` is one harmless string to a typical SQL parser and two statements to PostgreSQL. apitame's lexer reads it the way PostgreSQL does, and the test suite includes that case and the `COMMIT; DROP SCHEMA` escape that affected the archived reference Postgres server.
@@ -217,10 +217,10 @@ Read [docs/safety.md](docs/safety.md) for the full model, including what apitame
 
 | Command | What it does |
 | --- | --- |
-| `apitame init <source>` | Introspect an OpenAPI file or URL, a `postgres://` URL or a SQLite file. Writes `apitame.config.yaml` and `skills/`. |
+| `apitame init <source>` | Introspect an OpenAPI or Swagger file or URL, a `postgres://` or `mysql://` URL, or a SQLite file. Writes `apitame.config.yaml` and `skills/`. |
 | `apitame serve` | Run the MCP server over stdio (default) or `--transport http`. With `--watch`, config and spec edits apply live and clients are told the tools changed. |
 | `apitame inspect` | List tools, access levels and estimated token cost. `--max-tokens <n>` fails CI when the tool list grows past a budget. |
-| `apitame test` | Call every read tool against a local mock built from the spec (or `--live`), validate responses, and prove that blocked writes are refused. For SQL, check every table and try known injection payloads. |
+| `apitame test` | Call every read tool against a local mock built from the spec (or `--live`, which also validates responses), and prove that blocked writes are refused. For SQL, check every table and try known injection payloads. |
 | `apitame add-to <client>` | Print or `--write` the config for `claude-code`, `codex`, `cursor`, `vscode`, `gemini` or `claude-desktop`, and install the skills. |
 | `apitame doctor` | Check the setup end to end: config, environment variables, `.env` safety, API or database connectivity and credentials, whether the database role could write, skills and client configs. |
 
