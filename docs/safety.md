@@ -77,6 +77,7 @@ Every tool that can write accepts `"dryRun": true`. For HTTP operations the resu
 
 - Path parameters are percent-encoded, and the values `.` and `..` are refused: URL parsing would resolve them and turn `/repos/{owner}/{repo}` into a different endpoint. The final URL must also stay under the base URL's path.
 - Redirects are followed manually, at most five hops, and only to `http` or `https`. Credentials and custom headers are sent only to the API's own origin; a redirect to another host (for example a download URL on a CDN) is followed with a bare request, so an API key is never handed to a third party.
+- File uploads take content inline (base64 or text) and never a local path, so an agent cannot be talked into uploading files from the machine. Total upload size is capped by `limits.maxUploadBytes`.
 - Binary responses (images, PDFs, archives and similar) are described (`{"binary": true, "contentType", "bytes"}`) instead of being returned to the agent.
 
 ## SQL sources

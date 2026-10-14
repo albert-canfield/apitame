@@ -93,6 +93,7 @@ auth:
 | `timeoutMs` | 15000 | all | Request or query timeout, 100 to 600000. |
 | `maxResponseBytes` | 50000 | all | Size cap for what goes back to the agent. JSON is trimmed to fit. |
 | `rowLimit` | 200 | SQL | Maximum rows per query result. |
+| `maxUploadBytes` | 10000000 | OpenAPI | Total size of file content in one call (multipart and binary bodies). |
 | `maxCallsPerMinute` | 120 | all | Tool calls per minute across all tools. `0` means unlimited. |
 | `maxWritesPerMinute` | 20 | all | Writes per minute, counted just before they are sent. `0` means unlimited. |
 

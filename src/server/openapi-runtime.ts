@@ -533,7 +533,9 @@ export class OpenApiRuntime implements Runtime {
 
     let req;
     try {
-      req = buildRequest(op, params, this.baseUrl, this.staticHeaders);
+      req = buildRequest(op, params, this.baseUrl, this.staticHeaders, {
+        maxUploadBytes: this.config.limits.maxUploadBytes,
+      });
     } catch (err) {
       if (err instanceof RequestBuildError) return errorResult(err.message);
       throw err;
@@ -546,7 +548,7 @@ export class OpenApiRuntime implements Runtime {
         method: req.method,
         url: this.redactor.text(req.url.toString()),
         headers: this.redactor.headers(req.headers),
-        ...(req.body !== undefined ? { body: this.redactor.value(tryParse(req.body)) } : {}),
+        ...(req.body !== undefined ? { body: this.redactor.value(req.bodyPreview) } : {}),
         ...(this.config.auth.type !== 'none' && !op.noAuth
           ? { auth: `${this.config.auth.type} (added when sent)` }
           : {}),
@@ -624,14 +626,6 @@ function asObject(v: unknown): Record<string, unknown> {
     }
   }
   return {};
-}
-
-function tryParse(body: string): unknown {
-  try {
-    return JSON.parse(body);
-  } catch {
-    return body;
-  }
 }
 
 export async function createOpenApiRuntime(opts: OpenApiRuntimeOptions): Promise<OpenApiRuntime> {

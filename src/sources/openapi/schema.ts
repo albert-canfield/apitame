@@ -200,6 +200,8 @@ function mergeAllOf(target: JsonSchema, parts: JsonSchema[]): void {
 /** A short, human readable type label used in tool descriptions and skills. */
 export function typeLabel(schema: JsonSchema | undefined, depth = 0): string {
   if (!schema || Object.keys(schema).length === 0) return 'any';
+  const props = schema.properties as Record<string, unknown> | undefined;
+  if (props && 'base64' in props && 'filename' in props) return 'file';
   if (Array.isArray(schema.enum)) {
     const vals = schema.enum.slice(0, 5).map((v) => JSON.stringify(v));
     return vals.join('|') + (schema.enum.length > 5 ? '|…' : '');

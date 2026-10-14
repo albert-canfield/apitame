@@ -45,7 +45,17 @@ For each operation apitame builds:
 - a compact JSON Schema: `nullable` becomes a type union, `oneOf` is relaxed to `anyOf`, simple `allOf` compositions are merged, `readOnly` properties are dropped from requests, recursive schemas are cut at the first repetition, nesting deeper than six levels collapses, and descriptions are trimmed to 160 characters. This keeps tool definitions small without losing what the agent needs to build a valid call.
 - an access level: read, write or destructive (see [safety.md](safety.md#access-levels)).
 
-Request bodies are sent as JSON, `application/x-www-form-urlencoded` or text. Operations whose only body types are `multipart/form-data` or `application/octet-stream` are marked unsupported for now; they appear in `search_operations` with that status.
+Request bodies are sent according to their content type:
+
+| Content type | What the agent passes in `body` |
+| --- | --- |
+| JSON (`application/json`, `*+json`) | the JSON value |
+| `application/x-www-form-urlencoded` | an object of fields |
+| `multipart/form-data` | an object of fields; file fields take a file object |
+| `application/octet-stream` and other binary types | a file object |
+| `text/*`, XML | a string |
+
+A file object is `{"filename": "photo.png", "contentType": "image/png", "base64": "..."}`, or `"text"` instead of `"base64"` for text content. Local file paths are deliberately not accepted: a path would let a prompt-injected agent upload any file on the machine. Uploads are capped by `limits.maxUploadBytes` (10 MB by default), and dry runs and confirmation previews show file names and sizes, never their content.
 
 ### Grouping
 

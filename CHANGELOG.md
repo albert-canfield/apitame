@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- File uploads: `multipart/form-data` and binary (`application/octet-stream`) request bodies, with files passed inline as base64 or text (never a local path), capped by `limits.maxUploadBytes` (10 MB). Previews show file names and sizes only.
+
 - MySQL and MariaDB sources: `list_tables`, `describe_table`, guarded `query` and named queries, with MySQL-accurate lexing (executable comments refused, `#` and `-- ` comments, backslash strings), read-only transactions, `max_execution_time`, `sql_select_limit` and server-side prepared statements.
 - CI runs the SQL integration suite against real PostgreSQL 17 and MySQL 8.4 servers, in addition to PGlite and SQLite.
 
