@@ -46,7 +46,7 @@ export function withoutGuardrails(loaded: LoadedConfig): LoadedConfig {
     ...loaded,
     config: {
       ...config,
-      limits: { ...config.limits, maxCallsPerMinute: 0, maxWritesPerMinute: 0 },
+      limits: { ...config.limits, maxCallsPerMinute: 0, maxWritesPerMinute: 0, perTool: {} },
       audit: { include: config.audit.include },
     },
   };

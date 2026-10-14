@@ -124,6 +124,15 @@ An agent stuck in a loop can call the same tool hundreds of times. Two per-serve
 | `limits.maxCallsPerMinute` | 120 | every tool call |
 | `limits.maxWritesPerMinute` | 20 | writes that are about to be sent (after dry run and confirmation) |
 
+`limits.perTool` adds limits for individual tools, for endpoints the API itself limits more strictly:
+
+```yaml
+limits:
+  perTool:
+    search: 10          # GitHub's search API allows about 30 requests per minute
+    call_operation: 30
+```
+
 The window slides over the last 60 seconds. A call over the limit is refused with the number of seconds to wait, and nothing is sent. `0` turns a limit off. In HTTP mode the limits are shared by every client of the server.
 
 ## Audit log

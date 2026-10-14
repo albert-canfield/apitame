@@ -124,6 +124,8 @@ export const ConfigSchema = z
         maxCallsPerMinute: z.number().int().min(0).max(100_000).default(120),
         /** Writes per minute (HTTP writes and named write queries). 0 means unlimited. */
         maxWritesPerMinute: z.number().int().min(0).max(100_000).default(20),
+        /** Calls per minute for individual tools, on top of the server-wide limits. */
+        perTool: z.record(z.string(), z.number().int().min(1).max(100_000)).default({}),
       })
       .prefault({}),
     audit: z

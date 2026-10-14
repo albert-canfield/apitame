@@ -56,6 +56,8 @@ export interface GuardrailOptions {
   include: 'writes' | 'all';
   callsPerMinute: number;
   writesPerMinute: number;
+  /** Per-tool limits (calls per minute), keyed by tool name. */
+  perTool?: Record<string, number>;
   redactor: Redactor;
   logger: Logger;
   now?: () => number;
@@ -68,6 +70,7 @@ export interface GuardrailOptions {
 export class Guardrails {
   private readonly calls: RateLimiter;
   private readonly writes: RateLimiter;
+  private readonly tools = new Map<string, RateLimiter>();
   private auditBroken = false;
 
   constructor(private readonly opts: GuardrailOptions) {
@@ -87,6 +90,7 @@ export class Guardrails {
       include: config.audit.include,
       callsPerMinute: config.limits.maxCallsPerMinute,
       writesPerMinute: config.limits.maxWritesPerMinute,
+      perTool: config.limits.perTool,
       redactor,
       logger,
     });
@@ -97,6 +101,21 @@ export class Guardrails {
     const wait = this.calls.take();
     return wait > 0
       ? `Rate limit: more than ${this.calls.perMinute} calls per minute. Try again in ${Math.ceil(wait / 1000)} s, and look for a way to do this with fewer calls.`
+      : undefined;
+  }
+
+  /** Check a tool's own per-minute budget (limits.perTool). Returns an error message when exceeded. */
+  checkTool(name: string): string | undefined {
+    const limit = this.opts.perTool?.[name];
+    if (!limit) return undefined;
+    let limiter = this.tools.get(name);
+    if (!limiter) {
+      limiter = new RateLimiter(limit, this.opts.now);
+      this.tools.set(name, limiter);
+    }
+    const wait = limiter.take();
+    return wait > 0
+      ? `Rate limit: more than ${limit} calls per minute to "${name}". Try again in ${Math.ceil(wait / 1000)} s.`
       : undefined;
   }
 

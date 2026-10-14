@@ -227,3 +227,23 @@ describe('guardrails in the SQL runtime', () => {
     }
   });
 });
+
+describe('per-tool rate limits', () => {
+  it('limit one tool without affecting the others', async () => {
+    const config = await petstoreConfig({ limits: { perTool: { store: 2 } } });
+    const rt = await createOpenApiRuntime({
+      config,
+      configDir: '.',
+      spec: await petstore(),
+      baseUrlOverride: 'http://127.0.0.1:9',
+      env: {},
+    });
+    const store = () => rt.callTool('store', { operation: 'getInventory' });
+    expect(textOf(await store())).not.toMatch(/Rate limit/);
+    expect(textOf(await store())).not.toMatch(/Rate limit/);
+    expect(textOf(await store())).toMatch(/more than 2 calls per minute to "store"/);
+    expect(
+      textOf(await rt.callTool('pet', { operation: 'getPetById', params: { petId: 1 } })),
+    ).not.toMatch(/Rate limit/);
+  });
+});
