@@ -73,6 +73,12 @@ Every tool that can write accepts `"dryRun": true`. For HTTP operations the resu
 - `limits.timeoutMs` (default 15 s) aborts slow requests.
 - `limits.maxResponseBytes` (default 50 KB) caps what goes back to the agent. JSON arrays are trimmed to the number of items that fit, with a note such as "showing 37 of 500 items", so the agent gets valid data and knows to paginate.
 
+### Outgoing requests
+
+- Path parameters are percent-encoded, and the values `.` and `..` are refused: URL parsing would resolve them and turn `/repos/{owner}/{repo}` into a different endpoint. The final URL must also stay under the base URL's path.
+- Redirects are followed manually, at most five hops, and only to `http` or `https`. Credentials and custom headers are sent only to the API's own origin; a redirect to another host (for example a download URL on a CDN) is followed with a bare request, so an API key is never handed to a third party.
+- Binary responses (images, PDFs, archives and similar) are described (`{"binary": true, "contentType", "bytes"}`) instead of being returned to the agent.
+
 ## SQL sources
 
 ### The `query` tool

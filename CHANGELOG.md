@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Security
+
+- Path parameters can no longer be `.` or `..`, which URL parsing would resolve into a different endpoint. Built URLs must stay under the base path.
+- Redirects are followed manually: credentials and custom headers are only sent to the API's own origin, never to a redirect target on another host.
+
+### Changed
+
+- Binary responses are described instead of returned as text.
+- Requests send a `User-Agent: apitame/<version>` header (some APIs, such as GitHub's, require one).
+- The release workflow can be run manually as a dry run, and publishes through npm trusted publishing when configured.
+
 ## [0.1.0] - 2026-10-14
 
 ### Added
