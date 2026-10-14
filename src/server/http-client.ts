@@ -1,5 +1,14 @@
 import type { AuthProvider } from '../auth/index.js';
+import { VERSION } from '../version.js';
 import type { Operation, ParamSpec } from '../sources/openapi/operations.js';
+
+const USER_AGENT = `apitame/${VERSION} (+https://github.com/albert-canfield/apitame)`;
+
+/** Content types returned to the agent as a short description instead of bytes. */
+const BINARY =
+  /^(image|audio|video|font)\/|^application\/(octet-stream|pdf|zip|gzip|x-tar|x-7z-compressed|vnd\.|msword|x-protobuf|wasm)/i;
+
+const MAX_REDIRECTS = 5;
 
 export interface BuiltRequest {
   method: string;
@@ -66,15 +75,28 @@ export function buildRequest(
     if (v === undefined || v === null || v === '') {
       throw new RequestBuildError(`Missing required path parameter "${p.key}".`);
     }
-    const encoded = Array.isArray(v)
-      ? v.map((x) => encodeURIComponent(scalar(x))).join(',')
-      : encodeURIComponent(scalar(v));
-    path = path.split(`{${p.name}}`).join(encoded);
+    const values = (Array.isArray(v) ? v : [v]).map(scalar);
+    // "." and ".." survive encodeURIComponent and would be resolved by URL parsing,
+    // turning /repos/{owner}/{repo} into a different endpoint.
+    if (values.some((x) => /^\.{1,2}$/.test(x))) {
+      throw new RequestBuildError(`Path parameter "${p.key}" cannot be "." or "..".`);
+    }
+    path = path.split(`{${p.name}}`).join(values.map((x) => encodeURIComponent(x)).join(','));
   }
 
-  const url = new URL(baseUrl.replace(/\/+$/, '') + path);
+  const base = new URL(baseUrl.replace(/\/+$/, ''));
+  const url = new URL(base.toString().replace(/\/+$/, '') + path);
+  // Defense in depth: the request must stay under the base path, exactly as built.
+  const basePath = base.pathname.replace(/\/+$/, '');
+  if (
+    url.origin !== base.origin ||
+    (!url.pathname.startsWith(`${basePath}/`) && url.pathname !== basePath)
+  ) {
+    throw new RequestBuildError('The request path escapes the API base URL.');
+  }
   const headers: Record<string, string> = {
     Accept: 'application/json, */*;q=0.5',
+    'User-Agent': USER_AGENT,
     ...staticHeaders,
   };
   const cookies: string[] = [];
@@ -201,18 +223,53 @@ export async function sendRequest(
   opts: SendOptions,
 ): Promise<HttpResult> {
   const doFetch = opts.fetchImpl ?? fetch;
+  const origin = new URL(req.url).origin;
+  const signal = () =>
+    AbortSignal.any([AbortSignal.timeout(opts.timeoutMs), ...(opts.signal ? [opts.signal] : [])]);
+
+  /**
+   * One request with manual redirects. Same-origin redirects keep credentials;
+   * a redirect to another origin is followed without credentials or custom
+   * headers, so an API key can never be handed to a third party.
+   */
   const attempt = async (forceRefresh: boolean): Promise<Response> => {
-    const url = new URL(req.url);
-    const headers = { ...req.headers };
-    if (auth) await auth.apply({ url, headers }, { forceRefresh });
-    const signals = [AbortSignal.timeout(opts.timeoutMs), ...(opts.signal ? [opts.signal] : [])];
-    return doFetch(url, {
-      method: req.method,
-      headers,
-      ...(req.body !== undefined ? { body: req.body } : {}),
-      signal: AbortSignal.any(signals),
-      redirect: 'follow',
-    });
+    let url = new URL(req.url);
+    let method = req.method;
+    let body = req.body;
+    for (let hop = 0; ; hop++) {
+      const sameOrigin = url.origin === origin;
+      const headers: Record<string, string> = sameOrigin
+        ? { ...req.headers }
+        : { Accept: req.headers.Accept ?? '*/*', 'User-Agent': USER_AGENT };
+      if (!sameOrigin && body !== undefined && req.headers['Content-Type']) {
+        headers['Content-Type'] = req.headers['Content-Type'];
+      }
+      if (auth && sameOrigin) await auth.apply({ url, headers }, { forceRefresh });
+      const res = await doFetch(url, {
+        method,
+        headers,
+        ...(body !== undefined ? { body } : {}),
+        signal: signal(),
+        redirect: 'manual',
+      });
+      const location = res.headers.get('location');
+      if (![301, 302, 303, 307, 308].includes(res.status) || !location) return res;
+      if (hop >= MAX_REDIRECTS) throw new Error(`Too many redirects (more than ${MAX_REDIRECTS}).`);
+      await res.body?.cancel().catch(() => {});
+      const next = new URL(location, url);
+      if (next.protocol !== 'https:' && next.protocol !== 'http:') {
+        throw new Error(`Refusing to follow a redirect to ${next.protocol} URL.`);
+      }
+      // 303, and 301/302 after a non-GET, become a GET without body (as browsers do).
+      if (
+        res.status === 303 ||
+        ((res.status === 301 || res.status === 302) && method !== 'GET' && method !== 'HEAD')
+      ) {
+        method = 'GET';
+        body = undefined;
+      }
+      url = next;
+    }
   };
 
   let res: Response;
@@ -234,6 +291,17 @@ export async function sendRequest(
   }
 
   const contentType = res.headers.get('content-type') ?? '';
+  if (BINARY.test(contentType)) {
+    await res.body?.cancel().catch(() => {});
+    const length = Number(res.headers.get('content-length') ?? NaN);
+    return {
+      status: res.status,
+      ok: res.ok,
+      contentType,
+      data: { binary: true, contentType, ...(Number.isFinite(length) ? { bytes: length } : {}) },
+      note: 'Binary content is not returned to the agent.',
+    };
+  }
   // Read more than the budget so JSON can still be parsed and trimmed cleanly.
   const hardCap = Math.max(opts.maxResponseBytes * 20, 5_000_000);
   const { text, complete } = await readCapped(res, hardCap);
