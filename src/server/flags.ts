@@ -4,7 +4,7 @@
  * never be sent for real because an agent wrote "dryRun": 1.
  */
 export function parseDryRun(value: unknown): boolean {
-  if (value === undefined || value === null || value === false || value === 'false') return false;
+  if (value === undefined || value === false || value === 'false') return false;
   if (value === true || value === 'true') return true;
   throw new Error(
     `"dryRun" must be true or false, not ${JSON.stringify(value)}. Nothing was done.`,
