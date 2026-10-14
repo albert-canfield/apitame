@@ -285,7 +285,7 @@ export class SqlRuntime implements Runtime {
     args: Record<string, unknown>,
     ctx?: CallContext,
   ): Promise<ToolResult> {
-    const limited = this.guardrails.checkCall();
+    const limited = this.guardrails.checkCall() ?? this.guardrails.checkTool(name);
     if (limited) return errorResult(limited);
     try {
       switch (name) {

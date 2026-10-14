@@ -376,7 +376,7 @@ export class OpenApiRuntime implements Runtime {
   ): Promise<ToolResult> {
     const tool = this.toolByName.get(name);
     if (!tool) return errorResult(`Unknown tool "${name}".`);
-    const limited = this.guardrails.checkCall();
+    const limited = this.guardrails.checkCall() ?? this.guardrails.checkTool(name);
     if (limited) return errorResult(limited);
     try {
       return await this.dispatch(tool, args ?? {}, ctx);

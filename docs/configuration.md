@@ -96,6 +96,7 @@ auth:
 | `maxUploadBytes` | 10000000 | OpenAPI | Total size of file content in one call (multipart and binary bodies). |
 | `maxCallsPerMinute` | 120 | all | Tool calls per minute across all tools. `0` means unlimited. |
 | `maxWritesPerMinute` | 20 | all | Writes per minute, counted just before they are sent. `0` means unlimited. |
+| `perTool` | `{}` | all | Calls per minute for individual tools, for example `{ search: 10, call_operation: 30 }`, on top of the server-wide limits. |
 
 ## `tools`
 

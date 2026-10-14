@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- Per-tool rate limits: `limits.perTool` (for example `{ search: 10 }`), on top of the server-wide limits. Shown by `inspect`.
+
+### Added
+
 - `serve --watch`: reloads when the config, a local spec, the skills folder or `.env` change, keeps the previous config if the new one is invalid, and sends `notifications/tools/list_changed` so clients refresh without a restart.
 
 - File uploads: `multipart/form-data` and binary (`application/octet-stream`) request bodies, with files passed inline as base64 or text (never a local path), capped by `limits.maxUploadBytes` (10 MB). Previews show file names and sizes only.

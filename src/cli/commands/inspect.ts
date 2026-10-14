@@ -76,6 +76,7 @@ export async function inspectCommand(opts: InspectOptions): Promise<void> {
             limits: {
               callsPerMinute: loaded.config.limits.maxCallsPerMinute,
               writesPerMinute: loaded.config.limits.maxWritesPerMinute,
+              perTool: loaded.config.limits.perTool,
             },
             audit: loaded.config.audit.file
               ? { file: loaded.config.audit.file, include: loaded.config.audit.include }
@@ -152,10 +153,13 @@ export async function inspectCommand(opts: InspectOptions): Promise<void> {
     if (skills.length > 0) console.log(ok(`Skills: ${skills.map((s) => s.name).join(', ')}`));
     const { maxCallsPerMinute: calls, maxWritesPerMinute: writesPm } = loaded.config.limits;
     const rate = (n: number, what: string) => (n > 0 ? `${n} ${what}/min` : `unlimited ${what}`);
+    const perTool = Object.entries(loaded.config.limits.perTool)
+      .map(([tool, n]) => `${tool} ${n}/min`)
+      .join(', ');
     const audit = loaded.config.audit;
     console.log(
       ok(
-        `Limits: ${rate(calls, 'calls')}, ${rate(writesPm, 'writes')}. Audit log: ${audit.file ? `${audit.file} (${audit.include})` : 'off'}`,
+        `Limits: ${rate(calls, 'calls')}, ${rate(writesPm, 'writes')}${perTool ? `, per tool: ${perTool}` : ''}. Audit log: ${audit.file ? `${audit.file} (${audit.include})` : 'off'}`,
       ),
     );
     for (const w of runtime.warnings) console.log(warn(w));
