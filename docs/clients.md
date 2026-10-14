@@ -147,7 +147,13 @@ APITAME_HTTP_TOKEN=$(openssl rand -hex 24) npx apitame serve --transport http --
 
 Clients then send `Authorization: Bearer <token>`. Put TLS in front of it (a reverse proxy) before exposing it beyond a private network.
 
-The HTTP transport is stateless, so destructive operations are confirmed with the one-time token flow rather than an elicitation prompt (see [safety.md](safety.md#confirmation)).
+By default the HTTP transport is stateless, so destructive operations are confirmed with the one-time token flow rather than an elicitation prompt (see [safety.md](safety.md#confirmation)). With `--sessions`, each client keeps a session (`Mcp-Session-Id`) and clients that support elicitation show the approval prompt to the human:
+
+```bash
+npx apitame serve --transport http --sessions
+```
+
+Sessions without requests or open streams are closed after 30 minutes, and at most 100 are kept (the oldest idle one makes room). A client whose session was closed gets a 404 and starts a new one.
 
 ## Pinning and local builds
 

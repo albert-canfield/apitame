@@ -151,7 +151,7 @@ Or: `codex mcp add github -- npx -y apitame@0.1 serve --config /abs/path/apitame
 
 </details>
 
-Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp`. More in [docs/clients.md](docs/clients.md).
+Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp` (add `--sessions` so destructive actions are approved in the client). More in [docs/clients.md](docs/clients.md).
 
 ## What the agent sees
 
@@ -288,7 +288,6 @@ Executor is the closest match on safety and is a great choice if you want a mana
 ## Roadmap
 
 - [A published tool-selection eval](https://github.com/albert-canfield/apitame/issues/24): curated tools vs one tool per endpoint vs search-only.
-- [Stateful HTTP](https://github.com/albert-canfield/apitame/issues/25), so confirmations can use elicitation over HTTP too.
 - [SQL Server and DuckDB](https://github.com/albert-canfield/apitame/issues/27).
 - [OAuth 2.1 for the HTTP transport](https://github.com/albert-canfield/apitame/issues/28).
 - [Require Node 22](https://github.com/albert-canfield/apitame/issues/29) (Node 20 is past end of life).

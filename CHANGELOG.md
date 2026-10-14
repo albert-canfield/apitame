@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `serve --transport http --sessions`: one MCP session per client (`Mcp-Session-Id`), so destructive operations are approved by the human through elicitation over HTTP too, as over stdio. Idle sessions are closed after 30 minutes and at most 100 are kept. Stateless stays the default. With `--watch`, every session is told when the tool list changes.
+
 ### Security
 
 - SQL `query`: `sql.tables.allow` could be bypassed with a CTE named like a real table (`WITH customers AS (SELECT * FROM customers)`, or a CTE inside a subquery hiding the outer table). CTE names are now resolved per scope as the database does.

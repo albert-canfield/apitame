@@ -29,16 +29,32 @@ beforeAll(async () => {
 });
 afterAll(() => mock.close());
 
-async function start(token?: string): Promise<{ http: HttpServer; url: string }> {
+async function start(
+  token?: string,
+  extra: Partial<Parameters<typeof serveHttp>[1]> = {},
+): Promise<{ http: HttpServer; url: string }> {
   const http = await serveHttp(() => createMcpServer(rt), {
     host: '127.0.0.1',
     port: 0,
     logger,
     ...(token ? { token } : {}),
+    ...extra,
   });
   const { port } = http.address() as AddressInfo;
   return { http, url: `http://127.0.0.1:${port}` };
 }
+
+/** A tools/list request on an existing session id. */
+const post = (url: string, sessionId: string) =>
+  fetch(`${url}/mcp`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      'Mcp-Session-Id': sessionId,
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  });
 
 const stop = (http: HttpServer) =>
   new Promise<void>((r) => {
@@ -153,11 +169,128 @@ describe('streamable HTTP transport', () => {
         arguments: { operation: 'deletePet', params: { petId: 4 } },
       });
       const text = JSON.stringify(res.content);
-      // The HTTP transport is stateless, so today the server falls back to a confirmation token.
-      // If the SDK starts delivering elicitation over stateless HTTP, the human is asked instead.
+      // Without --sessions the transport is stateless, so the server falls back to a confirmation
+      // token. If the SDK starts delivering elicitation over stateless HTTP, the human is asked instead.
       expect(asked ? res.isError : text.includes('CONFIRMATION REQUIRED')).toBe(true);
       expect(mock.requests.filter((r) => r.operationId === 'deletePet').length).toBe(before);
       await client.close();
+    } finally {
+      await stop(http);
+    }
+  });
+
+  it('with sessions, asks the human through elicitation and respects the answer', async () => {
+    const { http, url } = await start(undefined, { sessions: true });
+    try {
+      for (const approve of [false, true]) {
+        const client = new Client(
+          { name: 'elicit', version: '1.0.0' },
+          { capabilities: { elicitation: { form: {} } } },
+        );
+        const asked: string[] = [];
+        client.setRequestHandler('elicitation/create', async (req) => {
+          asked.push(String(req.params.message));
+          return { action: 'accept', content: { approve } };
+        });
+        const transport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`));
+        await client.connect(transport);
+        expect(transport.sessionId).toBeTruthy();
+        const before = mock.requests.filter((r) => r.operationId === 'deletePet').length;
+        const res = await client.callTool({
+          name: 'pet',
+          arguments: { operation: 'deletePet', params: { petId: 4 } },
+        });
+        expect(asked).toHaveLength(1);
+        expect(asked[0]).toContain('DELETE');
+        expect(JSON.stringify(res.content)).not.toContain('CONFIRMATION REQUIRED');
+        const after = mock.requests.filter((r) => r.operationId === 'deletePet').length;
+        expect(after - before).toBe(approve ? 1 : 0);
+        expect(Boolean(res.isError)).toBe(!approve);
+        await client.close();
+      }
+    } finally {
+      await stop(http);
+    }
+  });
+
+  it('with sessions, refuses unknown sessions and requests that do not start one', async () => {
+    const { http, url } = await start(undefined, { sessions: true });
+    try {
+      const headers = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      };
+      const list = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+      const unknown = await fetch(`${url}/mcp`, {
+        method: 'POST',
+        headers: { ...headers, 'Mcp-Session-Id': 'not-a-session' },
+        body: list,
+      });
+      expect(unknown.status).toBe(404);
+      const noSession = await fetch(`${url}/mcp`, { method: 'POST', headers, body: list });
+      expect(noSession.status).toBe(400);
+    } finally {
+      await stop(http);
+    }
+  });
+
+  it('with sessions, ends a session on DELETE and closes idle ones', async () => {
+    const closed: unknown[] = [];
+    const { http, url } = await start(undefined, {
+      sessions: true,
+      sessionIdleMs: 150,
+      onServerClosed: (s) => closed.push(s),
+    });
+    try {
+      const connect = async () => {
+        const client = new Client({ name: 't', version: '1.0.0' });
+        const transport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`));
+        await client.connect(transport);
+        return { client, transport };
+      };
+      const a = await connect();
+      const aId = a.transport.sessionId!;
+      await a.transport.terminateSession();
+      expect((await post(url, aId)).status).toBe(404);
+      expect(closed.length).toBeGreaterThanOrEqual(1);
+
+      // A client that went away without DELETE: its streams close, then the session idles out.
+      // A connected client keeps a stream open and is never closed for being idle.
+      const b = await connect();
+      await b.client.listTools();
+      const id = b.transport.sessionId!;
+      const count = closed.length;
+      await new Promise((r) => setTimeout(r, 400));
+      expect(closed.length).toBe(count);
+      await b.transport.close();
+      await new Promise((r) => setTimeout(r, 600));
+      expect(closed.length).toBeGreaterThan(count);
+      expect((await post(url, id)).status).toBe(404);
+    } finally {
+      await stop(http);
+    }
+  });
+
+  it('with sessions, makes room by closing the oldest idle session', async () => {
+    const { http, url } = await start(undefined, { sessions: true, maxSessions: 1 });
+    try {
+      const first = new Client({ name: 'a', version: '1.0.0' });
+      const firstTransport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`));
+      await first.connect(firstTransport);
+      const id = firstTransport.sessionId!;
+      // Still connected: no room for another session.
+      const busy = new Client({ name: 'b', version: '1.0.0' });
+      await expect(
+        busy.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`))),
+      ).rejects.toThrow(/Too many active sessions/);
+      // Gone (streams closed, no DELETE): its session makes room for a new one.
+      await firstTransport.close();
+      await new Promise((r) => setTimeout(r, 50));
+      const second = new Client({ name: 'c', version: '1.0.0' });
+      await second.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`)));
+      await expect(second.listTools()).resolves.toBeTruthy();
+      expect((await post(url, id)).status).toBe(404);
+      await second.close();
     } finally {
       await stop(http);
     }

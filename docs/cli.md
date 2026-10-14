@@ -39,6 +39,7 @@ Runs the MCP server.
 ```bash
 apitame serve                                  # stdio, for clients that launch the server
 apitame serve --transport http --port 3333     # streamable HTTP on http://127.0.0.1:3333/mcp
+apitame serve --transport http --sessions      # one session per client, so confirmations use elicitation
 APITAME_HTTP_TOKEN=... apitame serve --transport http --host 0.0.0.0
 ```
 
@@ -48,6 +49,7 @@ APITAME_HTTP_TOKEN=... apitame serve --transport http --host 0.0.0.0
 | `-t, --transport <stdio\|http>` | `stdio` | Transport. |
 | `-p, --port <port>` | `3333` | HTTP port. |
 | `--host <host>` | `127.0.0.1` | HTTP host. Anything other than loopback needs `APITAME_HTTP_TOKEN`. |
+| `--sessions` | | HTTP only. Keep one MCP session per client (`Mcp-Session-Id`), so destructive operations can be confirmed by the human through elicitation. Without it the HTTP transport is stateless and uses the token flow. |
 | `-w, --watch` | | Reload when `apitame.config.yaml`, a local spec, the skills folder or `.env` change, and notify clients that the tool list changed. |
 | `--log-level <level>` | `info` | `debug`, `info`, `warn`, `error` or `silent`. Logs go to stderr. |
 
