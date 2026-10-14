@@ -6,7 +6,8 @@ apitame is a safety layer between agents and real systems, so security reports a
 
 | Version | Supported |
 | --- | --- |
-| 0.1.x | Yes |
+| 0.2.x | Yes |
+| 0.1.x | No, please upgrade |
 
 ## Reporting a vulnerability
 

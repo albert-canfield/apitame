@@ -66,7 +66,7 @@ A running log of decisions and the reasons behind them. Newest last. Add an entr
 
 ## 012. Config files written by `add-to` are portable
 
-**Decision.** When the config is inside the project, client configs reference it through the client's project variable (`${CLAUDE_PROJECT_DIR:-.}` for Claude Code, `${workspaceFolder}` for Cursor and VS Code) so they can be committed. Codex gets an absolute path because its config does not document interpolation. The launcher pins the minor version (`apitame@0.1`).
+**Decision.** When the config is inside the project, client configs reference it through the client's project variable (`${CLAUDE_PROJECT_DIR:-.}` for Claude Code, `${workspaceFolder}` for Cursor and VS Code) so they can be committed. Codex gets an absolute path because its config does not document interpolation. The launcher pins the minor version (for example `apitame@0.2`).
 
 ## 013. Releases use npm trusted publishing
 
