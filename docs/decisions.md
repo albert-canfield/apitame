@@ -73,3 +73,9 @@ A running log of decisions and the reasons behind them. Newest last. Add an entr
 **Context.** npm requires two-factor authentication to publish and is restricting tokens that bypass it. v0.1.0 was published manually with a short-lived token.
 
 **Decision.** Releases run from `.github/workflows/release.yml` on a version tag, with npm trusted publishing (OIDC from GitHub Actions, npm 11.5.1 or later) and provenance. No long-lived npm token is stored in the repository. The workflow skips publishing when the version is already on npm and skips the GitHub release when it already exists, so a release can be finished by hand without breaking the workflow.
+
+## 014. Bundle only the SQL parsers apitame needs
+
+**Context.** `node-sql-parser` installs about 88 MB (every dialect plus source maps), while apitame uses three dialect builds of about 800 KB. It was most of what every `npx apitame` user downloaded, even for OpenAPI-only use.
+
+**Decision.** Import the PostgreSQL, MySQL and SQLite builds statically and let the bundler include them (with `big-integer`), keep `node-sql-parser` as a development dependency, and load all SQL code lazily so OpenAPI users never parse it. Published builds have no source maps. License texts are shipped in `THIRD_PARTY_NOTICES.md`. Install size went from about 141 MB to 53 MB.

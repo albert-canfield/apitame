@@ -1,4 +1,6 @@
-import { createRequire } from 'node:module';
+import mysqlBuild from 'node-sql-parser/build/mysql.js';
+import postgresBuild from 'node-sql-parser/build/postgresql.js';
+import sqliteBuild from 'node-sql-parser/build/sqlite.js';
 import {
   calledFunctions,
   LexError,
@@ -145,17 +147,24 @@ export function isDeniedFunction(name: string): boolean {
   return DENIED_FUNCTIONS.has(bare) || DENIED_FUNCTION_PREFIXES.some((p) => bare.startsWith(p));
 }
 
-const require = createRequire(import.meta.url);
 type SqlParser = { astify(sql: string, opt: { database: string }): unknown };
+type ParserModule = { Parser: new () => SqlParser };
 const parsers = new Map<Dialect, SqlParser>();
+
+/**
+ * Only the three dialect builds apitame needs are imported, so the bundler
+ * ships about 800 KB instead of the whole node-sql-parser package.
+ */
+const PARSER_BUILDS: Record<Dialect, ParserModule> = {
+  postgres: postgresBuild as unknown as ParserModule,
+  sqlite: sqliteBuild as unknown as ParserModule,
+  mysql: mysqlBuild as unknown as ParserModule,
+};
 
 function parser(dialect: Dialect): SqlParser {
   let p = parsers.get(dialect);
   if (!p) {
-    const mod = require(`node-sql-parser/build/${PARSER_BUILD[dialect]}`) as {
-      Parser: new () => SqlParser;
-    };
-    p = new mod.Parser();
+    p = new PARSER_BUILDS[dialect].Parser();
     parsers.set(dialect, p);
   }
   return p;
@@ -165,11 +174,6 @@ const PARSER_DB: Record<Dialect, string> = {
   postgres: 'PostgresQL',
   sqlite: 'sqlite',
   mysql: 'MySQL',
-};
-const PARSER_BUILD: Record<Dialect, string> = {
-  postgres: 'postgresql',
-  sqlite: 'sqlite',
-  mysql: 'mysql',
 };
 
 /** Extra keywords that only matter in one dialect (MySQL locking reads and file export). */
