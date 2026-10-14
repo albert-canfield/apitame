@@ -25,6 +25,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- Install size down from about 141 MB to 53 MB: only the three SQL parser builds apitame uses are bundled, SQL code loads on demand, and published builds carry no source maps.
+
 - Binary responses are described instead of returned as text.
 - Requests send a `User-Agent: apitame/<version>` header (some APIs, such as GitHub's, require one).
 - The release workflow can be run manually as a dry run, and publishes through npm trusted publishing when configured.

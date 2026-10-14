@@ -3,11 +3,8 @@ import type { LoadedConfig } from '../config/load.js';
 import { Logger } from '../log.js';
 import { Guardrails } from '../safety/guardrails.js';
 import { Redactor } from '../safety/redact.js';
-import { MysqlDriver } from '../sources/sql/mysql.js';
-import { PostgresDriver } from '../sources/sql/postgres.js';
-import { SqliteDriver } from '../sources/sql/sqlite.js';
 import { createOpenApiRuntime, type OpenApiRuntime } from './openapi-runtime.js';
-import { resolveSqlTarget, SqlRuntime } from './sql-runtime.js';
+import type { SqlRuntime } from './sql-runtime.js';
 
 export interface RuntimeOptions {
   env?: NodeJS.ProcessEnv;
@@ -44,13 +41,19 @@ export async function createRuntime(
     });
   }
 
+  // SQL support (parsers and drivers) is loaded on demand, so OpenAPI users never pay for it.
+  const { resolveSqlTarget, SqlRuntime } = await import('./sql-runtime.js');
   const target = resolveSqlTarget(config, loaded.dir, redactor, env);
   const driver =
     target.kind === 'postgres'
-      ? new PostgresDriver(target.url, target.schemas, config.limits.timeoutMs)
+      ? new (await import('../sources/sql/postgres.js')).PostgresDriver(
+          target.url,
+          target.schemas,
+          config.limits.timeoutMs,
+        )
       : target.kind === 'mysql'
-        ? new MysqlDriver(target.url)
-        : new SqliteDriver(target.file);
+        ? new (await import('../sources/sql/mysql.js')).MysqlDriver(target.url)
+        : new (await import('../sources/sql/sqlite.js')).SqliteDriver(target.file);
   return new SqlRuntime(
     config,
     driver,
