@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Security
+
+- Responses are redacted before they are trimmed to `limits.maxResponseBytes`. Before, a secret echoed by an API right at the cut could be partly shown (for example the first 20 characters of an API key), and an oversized JSON object that fell back to text lost key-based masking. The same ordering bug is fixed for SQL results and OAuth token endpoint errors.
+- Values from `${VAR}` in `source.baseUrl` are registered as secrets. Before, a token in the base URL (`https://api.telegram.org/bot${BOT_TOKEN}`) appeared in dry-run and confirmation previews and in the write log line.
+- Each variable inside a composite value is registered on its own (`SSWS ${OKTA_TOKEN}`, `tenant-${KEY}`), and so is a Basic auth username that comes from the environment (Stripe sends the key as the username).
+- The redactor also catches query-string encoded secrets, `Authorization: <scheme> <value>` pairs, lowercase schemes, object keys and non-string values under sensitive keys, and no longer backtracks quadratically on long dotted input (a 200,000-character argument took about 20 seconds and blocked the server).
+- Static header values are hidden in previews, including literal ones.
+
 ### Added
 
 - Per-tool rate limits: `limits.perTool` (for example `{ search: 10 }`), on top of the server-wide limits. Shown by `inspect`.

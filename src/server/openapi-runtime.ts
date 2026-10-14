@@ -1,11 +1,11 @@
 import { createAuth, type AuthProvider } from '../auth/index.js';
-import { resolveEnv } from '../config/env.js';
+import { envValues, resolveEnv } from '../config/env.js';
 import type { Config, ToolGroupConfig } from '../config/schema.js';
 import { Logger } from '../log.js';
 import { ConfirmationStore, confirmOrChallenge } from '../safety/confirm.js';
 import { Guardrails, type AuditEntry, type AuditOutcome } from '../safety/guardrails.js';
 import { decide, type Decision } from '../safety/policy.js';
-import { Redactor } from '../safety/redact.js';
+import { REDACTED, Redactor } from '../safety/redact.js';
 import { loadSpec, resolveBaseUrl, type LoadedSpec } from '../sources/openapi/load.js';
 import {
   extractOperations,
@@ -110,22 +110,21 @@ export class OpenApiRuntime implements Runtime {
     });
     this.byId = new Map(this.operations.map((o) => [o.id, o]));
 
+    // Values that come from environment variables are secrets wherever they are used:
+    // a base URL can carry a token in its path (Telegram bots, webhooks), a static header
+    // a tenant key. Only the variable parts are registered, so previews still show the host.
+    const fromEnv = (template: string, field: string) => {
+      const value = resolveEnv(template, field, env);
+      for (const v of envValues(template, env)) this.redactor.addSecret(v);
+      return value;
+    };
     const override =
       opts.baseUrlOverride ??
-      (config.source.baseUrl
-        ? resolveEnv(config.source.baseUrl, 'source.baseUrl', env)
-        : undefined);
+      (config.source.baseUrl ? fromEnv(config.source.baseUrl, 'source.baseUrl') : undefined);
     this.baseUrl = resolveBaseUrl(spec.doc, spec.location, override);
     this.staticHeaders = Object.fromEntries(
-      Object.entries(config.source.headers).map(([k, v]) => [
-        k,
-        resolveEnv(v, `source.headers.${k}`, env),
-      ]),
+      Object.entries(config.source.headers).map(([k, v]) => [k, fromEnv(v, `source.headers.${k}`)]),
     );
-    for (const v of Object.values(config.source.headers)) {
-      // Static headers may carry secrets (for example a tenant key). Treat values from env as secret.
-      if (/\$\{/.test(v)) this.redactor.addSecret(resolveEnv(v, 'source.headers', env));
-    }
 
     // Resolve credentials now so a missing variable is reported early, but keep serving:
     // tool calls will explain the problem to the agent instead of the server failing to start.
@@ -547,7 +546,7 @@ export class OpenApiRuntime implements Runtime {
       request: {
         method: req.method,
         url: this.redactor.text(req.url.toString()),
-        headers: this.redactor.headers(req.headers),
+        headers: this.previewHeaders(req.headers),
         ...(req.body !== undefined ? { body: this.redactor.value(req.bodyPreview) } : {}),
         ...(this.config.auth.type !== 'none' && !op.noAuth
           ? { auth: `${this.config.auth.type} (added when sent)` }
@@ -594,6 +593,7 @@ export class OpenApiRuntime implements Runtime {
         timeoutMs: this.config.limits.timeoutMs,
         maxResponseBytes: this.config.limits.maxResponseBytes,
         fields: flags.fields,
+        redactor: this.redactor,
         ...(this.opts.fetchImpl ? { fetchImpl: this.opts.fetchImpl } : {}),
         ...(ctx?.signal ? { signal: ctx.signal } : {}),
       });
@@ -608,6 +608,17 @@ export class OpenApiRuntime implements Runtime {
       ...(res.note ? { note: res.note } : {}),
     });
     return res.ok ? jsonResult(payload) : { ...jsonResult(payload), isError: true };
+  }
+
+  /** Request headers as shown in previews: sensitive ones and every static header from the config are hidden. */
+  private previewHeaders(headers: Record<string, string>): Record<string, string> {
+    const fixed = new Set(Object.keys(this.staticHeaders).map((k) => k.toLowerCase()));
+    return Object.fromEntries(
+      Object.entries(this.redactor.headers(headers)).map(([k, v]) => [
+        k,
+        fixed.has(k.toLowerCase()) ? REDACTED : v,
+      ]),
+    );
   }
 
   async close(): Promise<void> {}

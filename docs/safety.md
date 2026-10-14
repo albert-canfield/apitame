@@ -158,12 +158,14 @@ With a file set, apitame appends one JSON object per line:
 
 - Auth secrets must be `${ENV_VAR}` references. A literal secret in the config is a validation error.
 - Values are read from the process environment, or from a `.env` file next to the config (existing variables are never overwritten).
-- Every secret value, its URL-encoded form and derived values (Basic auth headers, OAuth tokens as they are issued) is registered with a redactor. The redactor runs over every tool result, error message, log line and dry-run preview.
-- It also masks credential shapes it was never told about: `Bearer ...`, `Basic ...`, passwords inside URLs, and JSON keys such as `password`, `access_token` or `client_secret`.
-- Sensitive headers (`Authorization`, `Cookie`, `X-API-Key` and your configured API key header) are hidden entirely in previews.
+- Every secret value, its URL-encoded and query-string forms, and derived values (Basic auth headers, OAuth tokens as they are issued) is registered with a redactor. The redactor runs over every tool result, error message, log line and dry-run preview.
+- Anything read from an environment variable for `auth`, `source.baseUrl` or `source.headers` counts as a secret, and so does each variable inside a longer value: with `value: "SSWS ${OKTA_TOKEN}"` or `baseUrl: https://api.telegram.org/bot${BOT_TOKEN}`, the bare token is hidden too, wherever it shows up. Keep values you want visible (such as a plain base URL) literal in the config.
+- It also masks credential shapes it was never told about: `Bearer ...`, `Basic ...`, `Authorization: ...` pairs, passwords inside URLs, and JSON keys such as `password`, `access_token` or `client_secret` (whatever their value type). Object keys are redacted too.
+- Responses are redacted before they are trimmed to `limits.maxResponseBytes`, so a cut can never leave part of a secret behind.
+- Sensitive headers (`Authorization`, `Cookie`, `X-API-Key` and your configured API key header) and every static header from `source.headers` are hidden entirely in previews.
 - Errors are rethrown without the original error attached, so an unredacted message cannot leak through an error chain.
 
-The test suite checks that a bearer token echoed back by an API, OAuth client secrets in token endpoint errors and database passwords in connection errors never reach the agent.
+The test suite checks that a bearer token echoed back by an API, OAuth client secrets in token endpoint errors, database passwords in connection errors, secrets that straddle the response size cut and tokens inside base URLs never reach the agent.
 
 ## HTTP transport
 

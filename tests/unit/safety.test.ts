@@ -224,6 +224,43 @@ describe('Redactor', () => {
     });
   });
 
+  it('catches the form-encoded spelling query strings use', () => {
+    const r = new Redactor();
+    r.addSecret("key with space!'()~");
+    const query = new URLSearchParams({ api_key: "key with space!'()~" }).toString();
+    expect(r.text(`GET /v1?${query}`)).toBe(`GET /v1?api_key=${REDACTED}`);
+  });
+
+  it('masks lowercase schemes when the value looks like a credential, not prose', () => {
+    const r = new Redactor();
+    expect(r.text('authorization: bearer abc123def456')).toBe(`authorization: bearer ${REDACTED}`);
+    expect(r.text('use bearer authentication')).toBe('use bearer authentication');
+    expect(r.text('authorization: bearer abcdefghijklmnop')).toBe(
+      `authorization: bearer ${REDACTED}`,
+    );
+    expect(r.text('{"Authorization":"Basic dXNlcjpwYXNz"}')).toBe(
+      `{"Authorization":"Basic ${REDACTED}"}`,
+    );
+  });
+
+  it('redacts object keys and non-string values under sensitive keys', () => {
+    const r = new Redactor();
+    r.addSecret('acct-key-123456');
+    expect(
+      r.value({ 'acct-key-123456': { owner: 'a' }, pin: { password: 123456, token: { v: 1 } } }),
+    ).toEqual({
+      [REDACTED]: { owner: 'a' },
+      pin: { password: REDACTED, token: REDACTED },
+    });
+  });
+
+  it('stays fast on long dotted input (no quadratic backtracking)', () => {
+    const r = new Redactor();
+    const started = Date.now();
+    r.text('a.'.repeat(100_000));
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
   it('ignores very short secrets that would mangle output', () => {
     const r = new Redactor();
     r.addSecret('ab');

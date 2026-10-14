@@ -22,6 +22,13 @@ export function envRefs(value: string): string[] {
   return [...value.matchAll(ENV_REF_GLOBAL)].map((m) => m[1] as string);
 }
 
+/** The values of the env vars a string references, skipping unset and empty ones. */
+export function envValues(value: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  return envRefs(value)
+    .map((name) => env[name])
+    .filter((v): v is string => v !== undefined && v !== '');
+}
+
 /**
  * Replace `${VAR}` and `${VAR:-default}` references.
  * Throws {@link MissingEnvError} when a variable without default is unset or empty.

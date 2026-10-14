@@ -36,6 +36,8 @@ source:
     X-Tenant: ${TENANT_ID}
 ```
 
+Values from `${VAR}` in `baseUrl` and `headers` are treated as secrets and hidden from all output, so a token in the base URL (`https://api.telegram.org/bot${BOT_TOKEN}`) is safe. Static header values are always hidden in previews.
+
 ### PostgreSQL
 
 ```yaml
