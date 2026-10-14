@@ -91,3 +91,9 @@ A running log of decisions and the reasons behind them. Newest last. Add an entr
 **Context.** Node 20 reached end of life on 30 April 2026 (see 002). Supporting it held back dependency majors (commander 15, better-sqlite3 13, vitest 5) and cost workarounds: on Node 20 a timeout signal reachable only through `AbortSignal.any()` can be garbage collected and never fire, which hid a real bug until 0.2.0.
 
 **Decision.** From 0.3.0, require Node.js 22 or later (`engines.node: ">=22.0.0"`). CI drops Node 20, `doctor` fails on older versions, and Dependabot no longer holds back majors that need Node 22. Contributed by @Enard52 in #48.
+
+## 017. TypeScript 7 and better-sqlite3 13 wait
+
+**Context.** After 016, two majors still cannot be taken. TypeScript 7 is the native compiler and has no JavaScript compiler API: `tsc --noEmit` passes, but typescript-eslint refuses to load ("typescript-eslint does not support TS 7.0") and the tsup declaration build fails (`Cannot read properties of undefined (reading 'useCaseSensitiveFileNames')`). better-sqlite3 13 ships prebuilt Node-API 10 binaries while declaring `node: ">=22"`: on Node 22.0 to 22.13 (Node-API 9) opening a database crashes the process with a segmentation fault, so `apitame init` and `test` on a SQLite file exit with code 139 and no message. CI runs the latest Node 22 and cannot see this.
+
+**Decision.** Stay on TypeScript 5.9 and better-sqlite3 12, and have Dependabot ignore their majors. `@types/node` follows the minimum supported Node (22), so code cannot use APIs that Node 22 lacks. commander 15 declares Node 22.12+ only for `require(esm)`; apitame imports it as ESM and it runs on 22.0, so it is taken. Revisit TypeScript when typescript-eslint and tsup support 7, and better-sqlite3 if the minimum Node is raised to 22.14.
