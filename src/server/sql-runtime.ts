@@ -300,7 +300,7 @@ export class SqlRuntime implements Runtime {
         case 'describe_table':
           return await this.describe(String(args.table ?? ''));
         case 'query':
-          return await this.query(String(args.sql ?? ''), args.limit);
+          return await this.query(String(args.sql ?? ''), args.limit, ctx);
         default: {
           const named = this.named.get(name);
           if (!named) return errorResult(`Unknown tool "${name}".`);
@@ -388,7 +388,7 @@ export class SqlRuntime implements Runtime {
     return jsonResult(out);
   }
 
-  private async query(sql: string, limitArg: unknown): Promise<ToolResult> {
+  private async query(sql: string, limitArg: unknown, ctx?: CallContext): Promise<ToolResult> {
     const g = guardSelect(sql, {
       dialect: this.dialect,
       allowTables: this.config.sql.tables.allow,
@@ -401,6 +401,7 @@ export class SqlRuntime implements Runtime {
         outcome: 'refused',
         reason: g.reason,
         args: { sql },
+        caller: ctx?.caller,
       });
       return errorResult(`Refused: ${g.reason}`);
     }
@@ -425,6 +426,7 @@ export class SqlRuntime implements Runtime {
       outcome: 'sent',
       durationMs: Date.now() - started,
       args: { sql },
+      caller: ctx?.caller,
     });
     return this.format(res, limit);
   }
@@ -461,6 +463,7 @@ export class SqlRuntime implements Runtime {
         access: named.access,
         outcome,
         args: params,
+        caller: ctx?.caller,
         ...extra,
       });
 

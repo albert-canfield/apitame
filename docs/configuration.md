@@ -22,6 +22,7 @@ Values may reference environment variables as `${NAME}` or `${NAME:-default}`. S
 | `audit` | object | `{include: writes}` | Optional JSON Lines audit file. |
 | `sql` | object | see below | Named queries and table filters (SQL only). |
 | `skills` | object | `{dir: ./skills}` | Where generated skills live. |
+| `http` | object | `{}` | Settings for `serve --transport http`: OAuth access tokens. |
 
 ## `source`
 
@@ -189,12 +190,36 @@ skills:
 
 `init` writes skills here, `serve` serves them over MCP, and `add-to --write` copies them into the client's skills folder.
 
+## `http`
+
+Settings for `serve --transport http`. Without them, the HTTP transport needs no authentication on loopback and `APITAME_HTTP_TOKEN` anywhere else.
+
+```yaml
+http:
+  oauth:
+    issuer: https://login.example.com/realms/tools
+    resource: https://mcp.example.com/mcp
+    scopes: [mcp:tools]
+    audiences: []
+    # jwksUri: https://login.example.com/realms/tools/protocol/openid-connect/certs
+```
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `oauth.issuer` | URL | required | The authorization server, exactly as it appears in the tokens' `iss` claim (mind a trailing slash). Its metadata must name the same issuer. |
+| `oauth.resource` | URL | required | The public URL of this MCP endpoint, as clients connect to it. Advertised in the protected resource metadata, and accepted in `aud`. |
+| `oauth.scopes` | list | `[]` | Scopes every token must carry. A token without one gets 403 `insufficient_scope`. Also advertised as `scopes_supported`. |
+| `oauth.audiences` | list | `[]` | Other accepted `aud` values, for authorization servers that do not use the resource URL (for example `api://default` on Okta). |
+| `oauth.jwksUri` | URL | discovered | Where the signing keys are, when the issuer publishes no RFC 8414 or OpenID Connect metadata. |
+
+URLs must use `https`, except on loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) for local testing. `http.oauth` cannot be combined with `APITAME_HTTP_TOKEN`, and changes to it need a restart, even with `--watch`. See [clients.md](clients.md#oauth) for the full picture.
+
 ## Environment variables
 
 | Variable | Used by | Description |
 | --- | --- | --- |
 | `APITAME_CONFIG` | `serve`, `inspect`, `test`, `add-to` | Config path when `--config` is not given. |
 | `APITAME_LOG_LEVEL` | `serve` | `debug`, `info` (default), `warn`, `error` or `silent`. Logs go to stderr. |
-| `APITAME_HTTP_TOKEN` | `serve --transport http` | Required bearer token when listening beyond loopback. |
+| `APITAME_HTTP_TOKEN` | `serve --transport http` | Static bearer token, required when listening beyond loopback unless `http.oauth` is set. Cannot be combined with `http.oauth`. |
 | `APITAME_DEBUG` | all | Print stack traces for errors. |
 | `NO_COLOR` | all | Disable colors. |

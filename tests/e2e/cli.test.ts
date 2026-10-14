@@ -1,12 +1,13 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { Client } from '@modelcontextprotocol/client';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { createSqliteShop, PETSTORE, ROOT, tempDir } from '../helpers.js';
+import { createSqliteShop, freePort, PETSTORE, ROOT, tempDir } from '../helpers.js';
+import { claimsFor, FakeAuthServer, makeKey, signers, signJwt } from '../oauth-fixtures.js';
 
 const CLI = join(ROOT, 'src/cli.ts');
 // Run the TypeScript sources directly; resolve the tsx loader from the repo, not from the temp cwd.
@@ -220,5 +221,86 @@ describe('CLI: SQLite flow', () => {
     const res = run(['init', 'missing.yaml'], t.dir);
     expect(res.code).toBe(1);
     expect(res.stderr).toMatch(/Cannot find "missing.yaml"/);
+  });
+});
+
+describe('CLI: serve over HTTP with OAuth', () => {
+  const t = tempDir('apitame-cli-oauth-');
+  const resource = 'https://mcp.example.com/mcp';
+  let as: FakeAuthServer;
+  beforeAll(async () => {
+    as = await FakeAuthServer.start();
+    copyFileSync(PETSTORE, join(t.dir, 'openapi.yaml'));
+    writeFileSync(
+      join(t.dir, 'apitame.config.yaml'),
+      [
+        'name: petstore',
+        'source: { type: openapi, spec: ./openapi.yaml }',
+        'http:',
+        '  oauth:',
+        `    issuer: ${as.issuer}`,
+        `    resource: ${resource}`,
+        '    scopes: [mcp:tools]',
+        '',
+      ].join('\n'),
+    );
+  });
+  afterAll(async () => {
+    await as.close();
+    t.cleanup();
+  });
+
+  it('refuses to start with APITAME_HTTP_TOKEN set as well', () => {
+    const res = run(['serve', '--transport', 'http'], t.dir, { APITAME_HTTP_TOKEN: 'static' });
+    expect(res.code).toBe(1);
+    expect(res.stderr).toMatch(/APITAME_HTTP_TOKEN and http\.oauth cannot be used together/);
+  });
+
+  it('loads the signing keys at startup and accepts access tokens', async () => {
+    const key = makeKey('ec', 'ec-1');
+    as.publish(key);
+    const port = await freePort();
+    const child = spawn(
+      process.execPath,
+      [...NODE_ARGS, 'serve', '--transport', 'http', '--port', String(port)],
+      {
+        cwd: t.dir,
+        env: { ...process.env, NO_COLOR: '1', APITAME_LOG_LEVEL: 'info', APITAME_HTTP_TOKEN: '' },
+      },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`no startup line:\n${stderr}`)), 30_000);
+        child.stderr.on('data', () => {
+          if (/serving .*\/mcp/.test(stderr)) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+        child.on('exit', (code) => reject(new Error(`exited with ${code}:\n${stderr}`)));
+      });
+      expect(stderr).toContain(`OAuth: 1 signing key from ${as.issuer}`);
+      expect(stderr).toContain(`(OAuth from ${as.issuer})`);
+
+      const token = signJwt(
+        { alg: 'ES256', kid: 'ec-1' },
+        claimsFor(as.issuer, resource),
+        signers.es(key.privateKey),
+      );
+      const client = new Client({ name: 'e2e-oauth', version: '1.0.0' });
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+          requestInit: { headers: { Authorization: `Bearer ${token}` } },
+        }),
+      );
+      expect((await client.listTools()).tools.map((x) => x.name)).toContain('call_operation');
+      await client.close();
+      const anonymous = await fetch(`http://127.0.0.1:${port}/mcp`, { method: 'POST' });
+      expect(anonymous.status).toBe(401);
+    } finally {
+      child.kill();
+    }
   });
 });

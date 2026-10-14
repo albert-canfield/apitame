@@ -155,6 +155,42 @@ npx apitame serve --transport http --sessions
 
 Sessions without requests or open streams are closed after 30 minutes, and at most 100 are kept (the oldest idle one makes room). A client whose session was closed gets a 404 and starts a new one.
 
+### OAuth
+
+Instead of one shared token, apitame can accept OAuth 2.1 access tokens issued by your own authorization server (your identity provider). apitame is only the resource server: it never issues tokens, shows a login page or registers clients. Clients learn from apitame which authorization server to use, sign the user in there, and send the access token with every request. apitame checks each token locally against the authorization server's published keys.
+
+```yaml
+# apitame.config.yaml
+http:
+  oauth:
+    issuer: https://login.example.com/realms/tools   # exactly as in the tokens' iss claim
+    resource: https://mcp.example.com/mcp            # the public URL clients connect to
+    scopes: [mcp:tools]                              # optional: scopes every token must have
+```
+
+```bash
+npx apitame serve --transport http --host 0.0.0.0
+```
+
+All the keys are described in [configuration.md](configuration.md#http). On every request to `/mcp`, apitame checks that:
+
+- the token is a JWT signed by one of the authorization server's keys (RS, PS, ES or EdDSA algorithms; `none` and shared-secret HMAC are refused). The keys come from the JWKS named in the server's metadata (RFC 8414 or OpenID Connect discovery), or from `jwksUri`;
+- `iss` is `issuer`, `aud` contains `resource` (or one of `audiences`), and `exp` has not passed;
+- the token carries every scope in `scopes`. A token without one gets 403 `insufficient_scope`.
+
+A request without a valid token gets a 401 whose `WWW-Authenticate` header points to `https://mcp.example.com/.well-known/oauth-protected-resource/mcp`. That document (RFC 9728) is public and names the authorization server, so MCP clients that support OAuth start the sign-in on their own. Clients register with the authorization server (dynamic client registration, a client ID metadata document, or a client created there by hand), never with apitame.
+
+Which authorization servers work: any that issues JWT access tokens and puts this server in `aud`. That includes Keycloak (with an audience mapper), Auth0 (an API whose identifier is the resource URL), Okta custom authorization servers and Microsoft Entra ID (an exposed API; list its audience in `audiences`). Servers that only issue opaque tokens, which need token introspection, are not supported yet.
+
+Good to know:
+
+- `http.oauth` and `APITAME_HTTP_TOKEN` cannot be used together; apitame refuses to start with both. Either one allows `--host 0.0.0.0`.
+- At startup apitame loads the signing keys and logs how many it found. If the authorization server cannot be reached, it logs the error and keeps running; tokens are refused until the keys load, which it tries again when requests arrive. It fetches the keys again when a token names an unknown key (at most once a minute), so key rotation needs no restart.
+- Changes to `http.oauth` need a restart, even with `--watch`.
+- If apitame listens on `127.0.0.1` behind a reverse proxy on the same machine, the Host check also accepts the host name of `resource`.
+- With `--sessions`, a session belongs to the client and user that started it. The audit log records the token's client id and subject (`client`, `subject`).
+- `--log-level debug` logs why a token was refused. The 401 body says it too.
+
 ## Pinning and local builds
 
 `add-to` pins the minor version (`apitame@0.2`) so a new release cannot change your server's behavior without you noticing. To run a local checkout instead:

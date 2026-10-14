@@ -173,6 +173,21 @@ export const ConfigSchema = z
       })
       .prefault({}),
     skills: z.object({ dir: z.string().default('./skills') }).prefault({}),
+    /** `serve --transport http` settings. */
+    http: z
+      .object({
+        /** Accept OAuth 2.1 access tokens from an external authorization server. */
+        oauth: z
+          .object({
+            issuer: z.string().url(),
+            resource: z.string().url(),
+            scopes: z.array(z.string().min(1)).default([]),
+            audiences: z.array(z.string().min(1)).default([]),
+            jwksUri: z.string().url().optional(),
+          })
+          .optional(),
+      })
+      .prefault({}),
   })
   .superRefine((cfg, ctx) => {
     const seen = new Set<string>();

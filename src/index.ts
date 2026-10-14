@@ -7,7 +7,8 @@ export { ConfigSchema, type Config, type ConfigInput } from './config/schema.js'
 export { createRuntime, type AnyRuntime, type RuntimeOptions } from './server/runtime.js';
 export { createMcpServer } from './server/mcp.js';
 export { LiveRuntime } from './server/live.js';
-export { serveStdio, serveHttp } from './server/transport.js';
+export { serveStdio, serveHttp, type HttpOptions, type HttpOAuth } from './server/transport.js';
+export { JwtVerifier, type OAuthOptions } from './server/oauth.js';
 export { OpenApiRuntime, createOpenApiRuntime } from './server/openapi-runtime.js';
 export { SqlRuntime } from './server/sql-runtime.js';
 export {

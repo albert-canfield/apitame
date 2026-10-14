@@ -155,7 +155,7 @@ Or: `codex mcp add github -- npx -y apitame@0.2 serve --config /abs/path/apitame
 
 </details>
 
-Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp` (add `--sessions` so destructive actions are approved in the client). More in [docs/clients.md](docs/clients.md).
+Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp` (add `--sessions` so destructive actions are approved in the client). To share it with a team, `http.oauth` lets your identity provider sign each user in and apitame check their access tokens. More in [docs/clients.md](docs/clients.md).
 
 ## What the agent sees
 
@@ -201,7 +201,7 @@ apitame assumes the agent will eventually call the wrong thing, and makes that b
 | Validation | Arguments are checked against the operation's schema before anything is sent. Unknown parameters are rejected. |
 | Limits | Per-request timeout and response size cap. Large JSON is trimmed to fit, with a note saying how much was kept. |
 | Secrets | Credentials come only from environment variables (inline secrets in the config are refused) and are redacted from results, errors, logs and previews, even when an API echoes them back. |
-| HTTP transport | Loopback only by default, with Host and Origin checks. Listening on another interface requires a bearer token. |
+| HTTP transport | Loopback only by default, with Host and Origin checks. Listening on another interface requires a bearer token, or OAuth access tokens from your identity provider. |
 | Outgoing requests | Path parameters cannot be `.` or `..`; credentials never follow a redirect to another host; files are passed inline, never as local paths, and uploads are capped. |
 | Rate limits | By default 120 calls and 20 writes per minute, so a looping agent cannot hammer an API or database. |
 | Audit log | Optional JSON Lines record of every write attempt (blocked, dry run, confirmed, sent) and every refused query, with secrets redacted. |
@@ -295,7 +295,6 @@ Executor is the closest match on safety and is a great choice if you want a mana
 
 - [A published tool-selection eval](https://github.com/albert-canfield/apitame/issues/24): curated tools vs one tool per endpoint vs search-only.
 - [SQL Server and DuckDB](https://github.com/albert-canfield/apitame/issues/27).
-- [OAuth 2.1 for the HTTP transport](https://github.com/albert-canfield/apitame/issues/28).
 - [Approvals through multi round-trip input](https://github.com/albert-canfield/apitame/issues/45), ready for the 2026-07-28 protocol and for stateless HTTP.
 - Later: GraphQL sources.
 

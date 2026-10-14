@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import type { Config } from '../config/schema.js';
 import type { Logger } from '../log.js';
-import type { Access } from '../types.js';
+import type { Access, CallContext } from '../types.js';
 import type { Redactor } from './redact.js';
 
 export type AuditOutcome =
@@ -25,6 +25,8 @@ export interface AuditEntry {
   /** Arguments as the agent sent them. Redacted and size-capped before writing. */
   args?: unknown;
   reason?: string;
+  /** The OAuth client and subject behind the call, when the HTTP transport checked a token. */
+  caller?: CallContext['caller'];
 }
 
 /** Sliding one-minute window. A limit of 0 means unlimited. */
@@ -159,10 +161,12 @@ export class Guardrails {
       args =
         text.length > MAX_ARGS_CHARS ? `${text.slice(0, MAX_ARGS_CHARS)}...` : JSON.parse(text);
     }
+    const { caller, ...rest } = entry;
     const line = JSON.stringify({
       time: new Date(this.opts.now?.() ?? Date.now()).toISOString(),
       server: this.opts.server,
-      ...entry,
+      ...caller,
+      ...rest,
       ...(args !== undefined ? { args } : {}),
       ...(entry.reason ? { reason: this.opts.redactor.text(entry.reason) } : {}),
     });

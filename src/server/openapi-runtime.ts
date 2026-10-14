@@ -541,6 +541,7 @@ export class OpenApiRuntime implements Runtime {
         access: op.access,
         outcome,
         args: params,
+        caller: ctx?.caller,
         ...extra,
       });
     if (op.unsupported) return errorResult(`"${op.id}" cannot be called: ${op.unsupported}.`);
