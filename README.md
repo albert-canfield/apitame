@@ -290,6 +290,7 @@ Executor is the closest match on safety and is a great choice if you want a mana
 - [A published tool-selection eval](https://github.com/albert-canfield/apitame/issues/24): curated tools vs one tool per endpoint vs search-only.
 - [SQL Server and DuckDB](https://github.com/albert-canfield/apitame/issues/27).
 - [OAuth 2.1 for the HTTP transport](https://github.com/albert-canfield/apitame/issues/28).
+- [Approvals through multi round-trip input](https://github.com/albert-canfield/apitame/issues/45), ready for the 2026-07-28 protocol and for stateless HTTP.
 - [Require Node 22](https://github.com/albert-canfield/apitame/issues/29) (Node 20 is past end of life).
 - Later: GraphQL sources.
 
