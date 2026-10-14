@@ -61,6 +61,27 @@ describe('config schema', () => {
     ).toThrow(/only apply to OpenAPI/);
   });
 
+  it('reserves dryRun and confirm in named query parameters', () => {
+    const withParam = (name: string) => ({
+      name: 'demo',
+      source: { type: 'sqlite', path: './shop.db' },
+      sql: {
+        queries: [
+          {
+            name: 'q',
+            description: 'd',
+            sql: 'UPDATE t SET x = :x',
+            params: { [name]: { type: 'string' } },
+            write: true,
+          },
+        ],
+      },
+    });
+    expect(() => parseConfig(withParam('confirm'))).toThrow(/reserved for apitame/);
+    expect(() => parseConfig(withParam('dryRun'))).toThrow(/reserved for apitame/);
+    expect(() => parseConfig(withParam('x'))).not.toThrow();
+  });
+
   it('loads YAML from disk and reports a helpful error when missing', () => {
     const { dir, cleanup } = tempDir();
     try {

@@ -347,6 +347,16 @@ describe.each(targets)('SQL runtime on $name', (target) => {
         expect(done.affectedRows).toBe(dry.wouldAffectRows);
         expect(await target.count('order_items')).toBe(itemsBefore - dry.wouldAffectRows);
 
+        // dryRun fails closed: the string "true" is a dry run, other non-booleans are refused.
+        const asString = jsonOf<{ dryRun?: boolean; affectedRows?: number }>(
+          await rt.callTool('cancel_order', { id: 1, dryRun: 'true' }),
+        );
+        expect(asString.dryRun).toBe(true);
+        expect(asString.affectedRows).toBeUndefined();
+        const refused = await rt.callTool('cancel_order', { id: 1, dryRun: 1 });
+        expect(refused.isError).toBe(true);
+        expect(textOf(refused)).toContain('"dryRun" must be true or false');
+
         const updated = jsonOf<{ affectedRows: number }>(
           await rt.callTool('cancel_order', { id: 1 }),
         );

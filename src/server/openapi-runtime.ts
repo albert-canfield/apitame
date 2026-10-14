@@ -27,6 +27,7 @@ import type {
 import { buildRequest, RequestBuildError, sendRequest } from './http-client.js';
 import { errorResult, jsonResult } from './results.js';
 import { parseFields } from './fields.js';
+import { parseDryRun } from './flags.js';
 import { ArgValidator } from './validate.js';
 
 export interface OpenApiRuntimeOptions {
@@ -62,22 +63,10 @@ interface Flags {
   fields: string[] | undefined;
 }
 
-/** Read the control arguments. Anything but a clear true or false for dryRun is refused, so a preview is never sent by mistake. */
+/** Read the control arguments. */
 function parseFlags(args: { dryRun?: unknown; confirm?: unknown; fields?: unknown }): Flags {
-  const { dryRun } = args;
-  if (!(
-    dryRun === undefined ||
-    dryRun === null ||
-    typeof dryRun === 'boolean' ||
-    dryRun === 'true' ||
-    dryRun === 'false'
-  )) {
-    throw new Error(
-      `"dryRun" must be true or false, not ${JSON.stringify(dryRun)}. Nothing was sent.`,
-    );
-  }
   return {
-    dryRun: dryRun === true || dryRun === 'true',
+    dryRun: parseDryRun(args.dryRun),
     confirm: typeof args.confirm === 'string' ? args.confirm : undefined,
     fields: parseFields(args.fields),
   };

@@ -18,6 +18,7 @@ import type {
   ToolResult,
   ToolSummary,
 } from '../types.js';
+import { parseDryRun } from './flags.js';
 import { fitJson } from './http-client.js';
 import { errorResult, jsonResult } from './results.js';
 import { ArgValidator } from './validate.js';
@@ -424,7 +425,13 @@ export class SqlRuntime implements Runtime {
     args: Record<string, unknown>,
     ctx?: CallContext,
   ): Promise<ToolResult> {
-    const { dryRun, confirm, ...params } = args;
+    const { dryRun: dryRunArg, confirm, ...params } = args;
+    let dryRun: boolean;
+    try {
+      dryRun = parseDryRun(dryRunArg);
+    } catch (err) {
+      return errorResult((err as Error).message);
+    }
     const problems = this.validator.check(
       `named:${named.query.name}`,
       { ...named.def.inputSchema },
@@ -462,7 +469,7 @@ export class SqlRuntime implements Runtime {
     }
 
     const timeoutMs = this.config.limits.timeoutMs;
-    if (dryRun === true) {
+    if (dryRun) {
       const res = await this.driver.writeQuery(bound.sql, bound.params, {
         timeoutMs,
         dryRun: true,

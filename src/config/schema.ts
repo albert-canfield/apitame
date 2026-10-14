@@ -98,6 +98,9 @@ export const NamedQuerySchema = z.object({
         required: z.boolean().default(true),
       }),
     )
+    .refine((p) => !('dryRun' in p) && !('confirm' in p), {
+      message: 'dryRun and confirm are reserved for apitame; rename the parameter',
+    })
     .default({}),
   /** A write query (INSERT, UPDATE, DELETE). Needs read-write mode and an allowlist entry. */
   write: z.boolean().default(false),
