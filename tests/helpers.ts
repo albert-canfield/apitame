@@ -16,7 +16,18 @@ export const SHOP_SEED = join(ROOT, 'examples/postgres-shop/seed.sql');
 
 export function tempDir(prefix = 'apitame-test-'): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), prefix));
-  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return {
+    dir,
+    cleanup: () => {
+      // Windows cannot remove the current directory, and releases file handles a little late.
+      if (process.cwd().startsWith(dir)) process.chdir(tmpdir());
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      } catch {
+        // Best effort: it is a temporary folder.
+      }
+    },
+  };
 }
 
 /** Create the sample shop database as a SQLite file. */

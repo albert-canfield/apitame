@@ -41,7 +41,12 @@ function bind(stmt, params, fn) {
 parentPort.on('message', (msg) => {
   try {
     let result;
-    if (msg.op === 'tables') {
+    if (msg.op === 'close') {
+      // Close file handles before the thread stops (Windows keeps open files locked).
+      ro.close();
+      if (rw) rw.close();
+      result = true;
+    } else if (msg.op === 'tables') {
       result = ro.prepare("SELECT name, type FROM sqlite_schema WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
     } else if (msg.op === 'describe') {
       const exists = ro.prepare("SELECT name, type FROM sqlite_schema WHERE type IN ('table', 'view') AND name = ?").get(msg.name);
@@ -259,6 +264,9 @@ export class SqliteDriver implements SqlDriver {
   }
 
   async close(): Promise<void> {
+    if (!this.worker) return;
+    // Ask the worker to close the database cleanly; if it is stuck in a query, terminate it anyway.
+    await this.call({ op: 'close' }, 1_000).catch(() => {});
     const w = this.worker;
     this.worker = undefined;
     if (w) await w.terminate();

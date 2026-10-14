@@ -29,7 +29,7 @@ describe('zip', () => {
           'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print("\\n".join(z.namelist())); print(z.read("demo-api/SKILL.md").decode())',
           file,
         ],
-        { encoding: 'utf8' },
+        { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } },
       );
       if (py.error) return; // python3 not available: nothing to check against
       expect(py.status, py.stderr).toBe(0);
