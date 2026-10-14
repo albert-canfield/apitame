@@ -140,6 +140,12 @@ const BUILTIN_DENIED_TABLES = [
   'pg_largeobject',
   'pg_stat_activity',
   'pg_subscription',
+  // Query texts of other sessions (with their literal values) and stored FDW credentials.
+  'pg_stat_statements',
+  'pg_stat_statements_info',
+  'user_mapping_options',
+  // MySQL: statements other sessions are running.
+  'processlist',
 ];
 
 export function isDeniedFunction(name: string): boolean {
