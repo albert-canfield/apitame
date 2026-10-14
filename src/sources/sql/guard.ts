@@ -178,7 +178,10 @@ export function isDeniedFunction(name: string): boolean {
   return DENIED_FUNCTIONS.has(bare) || DENIED_FUNCTION_PREFIXES.some((p) => bare.startsWith(p));
 }
 
-type SqlParser = { astify(sql: string, opt: { database: string }): unknown };
+type SqlParser = {
+  astify(sql: string, opt: { database: string }): unknown;
+  tableList(sql: string, opt: { database: string }): string[];
+};
 type ParserModule = { Parser: new () => SqlParser };
 const parsers = new Map<Dialect, SqlParser>();
 
@@ -474,6 +477,26 @@ export function guardSelect(sql: string, opts: GuardOptions): GuardResult {
   }
   const names = [...new Set(tables.map((t) => (t.schema ? `${t.schema}.${t.table}` : t.table)))];
   return { ok: true, sql: cleanSql, tables: names };
+}
+
+/** Every table a statement reads or writes, or null when the parser cannot read it. */
+export function statementTables(
+  sql: string,
+  dialect: Dialect,
+): Array<{ schema: string | null; table: string }> | null {
+  try {
+    const entries = parser(dialect).tableList(sql, { database: PARSER_DB[dialect] });
+    const seen = new Map<string, { schema: string | null; table: string }>();
+    for (const e of entries) {
+      const [, db, table] = e.split('::');
+      if (!table) return null;
+      const schema = db && db !== 'null' ? db : null;
+      seen.set(`${schema ?? ''}.${table}`, { schema, table });
+    }
+    return [...seen.values()];
+  } catch {
+    return null;
+  }
 }
 
 export interface WriteAnalysis {

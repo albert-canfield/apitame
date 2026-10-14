@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import mysql from 'mysql2/promise';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parseConfig } from '../../src/config/load.js';
 import type { ConfigInput } from '../../src/config/schema.js';
@@ -492,6 +493,54 @@ describe.runIf(Boolean(PG_SERVER || MYSQL_SERVER))('real database servers', () =
       } finally {
         await admin.close();
         await ro.close();
+      }
+    },
+  );
+});
+
+describe('MySQL dry runs and non-transactional tables', () => {
+  it.runIf(Boolean(MYSQL_SERVER))(
+    'refuses a dry run that ROLLBACK could not undo, and keeps InnoDB dry runs working',
+    async () => {
+      const admin = new MysqlDriver(mysqlServer!.url);
+      const raw = await mysql.createConnection(mysqlServer!.url);
+      try {
+        await raw.query('DROP TABLE IF EXISTS notes_logged, notes_myisam');
+        await raw.query('CREATE TABLE notes_myisam (id INT PRIMARY KEY, body TEXT) ENGINE=MyISAM');
+        await raw.query("INSERT INTO notes_myisam VALUES (1, 'a'), (2, 'b')");
+        await raw.query('CREATE TABLE notes_logged (id INT PRIMARY KEY) ENGINE=InnoDB');
+        await raw.query(
+          "CREATE TRIGGER notes_logged_ai AFTER INSERT ON notes_logged FOR EACH ROW INSERT INTO notes_myisam VALUES (NEW.id + 100, 't')",
+        );
+
+        await expect(
+          admin.writeQuery('DELETE FROM notes_myisam WHERE id > ?', [0], {
+            timeoutMs: 5_000,
+            dryRun: true,
+          }),
+        ).rejects.toThrow(/MyISAM engine, which cannot be rolled back/);
+        expect(await countWith(new MysqlDriver(mysqlServer!.url), 'notes_myisam')).toBe(2);
+
+        await expect(
+          admin.writeQuery('INSERT INTO notes_logged VALUES (?)', [7], {
+            timeoutMs: 5_000,
+            dryRun: true,
+          }),
+        ).rejects.toThrow(/has triggers/);
+        expect(await countWith(new MysqlDriver(mysqlServer!.url), 'notes_myisam')).toBe(2);
+
+        const before = await countWith(new MysqlDriver(mysqlServer!.url), 'order_items');
+        const dry = await admin.writeQuery(
+          'DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE status = ?)',
+          ['cancelled'],
+          { timeoutMs: 5_000, dryRun: true },
+        );
+        expect(dry.rowCount).toBeGreaterThanOrEqual(0);
+        expect(await countWith(new MysqlDriver(mysqlServer!.url), 'order_items')).toBe(before);
+      } finally {
+        await raw.query('DROP TABLE IF EXISTS notes_logged, notes_myisam').catch(() => {});
+        await raw.end();
+        await admin.close();
       }
     },
   );
