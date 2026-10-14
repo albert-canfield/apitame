@@ -48,11 +48,14 @@ APITAME_HTTP_TOKEN=... apitame serve --transport http --host 0.0.0.0
 | `-t, --transport <stdio\|http>` | `stdio` | Transport. |
 | `-p, --port <port>` | `3333` | HTTP port. |
 | `--host <host>` | `127.0.0.1` | HTTP host. Anything other than loopback needs `APITAME_HTTP_TOKEN`. |
+| `-w, --watch` | | Reload when `apitame.config.yaml`, a local spec, the skills folder or `.env` change, and notify clients that the tool list changed. |
 | `--log-level <level>` | `info` | `debug`, `info`, `warn`, `error` or `silent`. Logs go to stderr. |
 
 The server exposes `tools/list` and `tools/call`. When the config has skills, it also declares the MCP Skills extension (`io.modelcontextprotocol/skills`) and answers `skills/list`, `skills/get`, `resources/list` and `resources/read` for `skill://` URIs. The HTTP server also answers `GET /health`.
 
 Missing credentials do not stop the server: it starts, logs a warning, and tool calls explain which variable is missing.
+
+With `--watch`, editing the config takes effect without restarting the client: allow a write, save, and the new tool appears (clients that support `notifications/tools/list_changed`, such as Claude Code, refresh their tool list). A config that does not validate is reported in the log and the previous one keeps serving. Changed `.env` values are picked up too.
 
 ## `apitame inspect`
 

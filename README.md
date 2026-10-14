@@ -218,7 +218,7 @@ Read [docs/safety.md](docs/safety.md) for the full model, including what apitame
 | Command | What it does |
 | --- | --- |
 | `apitame init <source>` | Introspect an OpenAPI file or URL, a `postgres://` URL or a SQLite file. Writes `apitame.config.yaml` and `skills/`. |
-| `apitame serve` | Run the MCP server over stdio (default) or `--transport http`. |
+| `apitame serve` | Run the MCP server over stdio (default) or `--transport http`. With `--watch`, config and spec edits apply live and clients are told the tools changed. |
 | `apitame inspect` | List tools, access levels and estimated token cost. `--max-tokens <n>` fails CI when the tool list grows past a budget. |
 | `apitame test` | Call every read tool against a local mock built from the spec (or `--live`), validate responses, and prove that blocked writes are refused. For SQL, check every table and try known injection payloads. |
 | `apitame add-to <client>` | Print or `--write` the config for `claude-code`, `codex`, `cursor`, `vscode`, `gemini` or `claude-desktop`, and install the skills. |

@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- `serve --watch`: reloads when the config, a local spec, the skills folder or `.env` change, keeps the previous config if the new one is invalid, and sends `notifications/tools/list_changed` so clients refresh without a restart.
+
 - File uploads: `multipart/form-data` and binary (`application/octet-stream`) request bodies, with files passed inline as base64 or text (never a local path), capped by `limits.maxUploadBytes` (10 MB). Previews show file names and sizes only.
 
 - MySQL and MariaDB sources: `list_tables`, `describe_table`, guarded `query` and named queries, with MySQL-accurate lexing (executable comments refused, `#` and `-- ` comments, backslash strings), read-only transactions, `max_execution_time`, `sql_select_limit` and server-side prepared statements.
@@ -40,6 +42,8 @@ All notable changes to this project are documented here. The format follows [Kee
 ## [0.1.0] - 2026-10-14
 
 ### Added
+
+- `serve --watch`: reloads when the config, a local spec, the skills folder or `.env` change, keeps the previous config if the new one is invalid, and sends `notifications/tools/list_changed` so clients refresh without a restart.
 
 - `apitame init` for OpenAPI 3.0/3.1 files and URLs (with spec discovery), PostgreSQL and SQLite.
 - `apitame serve` over stdio and streamable HTTP, built on the MCP TypeScript SDK v2.
