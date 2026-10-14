@@ -10,7 +10,7 @@ apitame assumes that:
 
 - The agent can be wrong. It may pick the wrong operation, invent arguments, or retry something destructive.
 - The agent can be manipulated. Content returned by an API or stored in a database can contain instructions (prompt injection) that try to make the agent call something it should not.
-- The person running apitame controls `apitame.config.yaml` and the environment. The config file is trusted; tool arguments are not.
+- The person running apitame controls `apitame.config.yaml` and the environment, and chose the OpenAPI spec. The config file is trusted, and the spec is trusted to describe the API (which operations exist and how they are classified, see the end of this page). Tool arguments, API responses and database contents are not trusted.
 
 It does not assume that the MCP client asks the user before every tool call. Many people run agents with automatic approval, so every rule below is enforced inside apitame, not left to the client.
 
@@ -30,9 +30,9 @@ You can override the classification:
 
 - `writes.treatAsRead: [searchInvoices]` for POST endpoints that only read (search, query, preview).
 - `writes.destructive: [archiveProject]` for writes that are worse than they look.
-
-Both lists accept the same `*` patterns as `writes.allow` (`archive*`).
 - `x-apitame-access: read | write | destructive` on the operation in the spec.
+
+`treatAsRead` and `destructive` accept the same `*` patterns as `writes.allow` (`archive*`).
 
 Classification never downgrades on its own. A POST named `searchSomething` is still a write until you say otherwise; `init` lists such operations in a comment so you can decide.
 
