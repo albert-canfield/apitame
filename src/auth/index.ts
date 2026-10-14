@@ -1,5 +1,5 @@
 import type { AuthConfig } from '../config/schema.js';
-import { resolveEnv } from '../config/env.js';
+import { envRefs, envValues, resolveEnv } from '../config/env.js';
 import type { Redactor } from '../safety/redact.js';
 
 export interface OutgoingRequest {
@@ -18,6 +18,23 @@ export interface AuthProvider {
 type FetchLike = typeof fetch;
 
 /**
+ * Resolve a config value and register it as a secret, together with every
+ * environment value inside it: an API may echo back the bare token from
+ * `SSWS ${OKTA_TOKEN}`, not only the full header value.
+ */
+function resolveSecret(
+  template: string,
+  field: string,
+  redactor: Redactor,
+  env: NodeJS.ProcessEnv,
+): string {
+  const value = resolveEnv(template, field, env);
+  redactor.addSecret(value);
+  for (const v of envValues(template, env)) redactor.addSecret(v);
+  return value;
+}
+
+/**
  * Build an auth provider from config. Secret values are resolved from the
  * environment here, registered with the redactor, and never stored elsewhere.
  */
@@ -32,8 +49,7 @@ export function createAuth(
       return { type: 'none', canRefresh: false, apply: async () => {} };
 
     case 'bearer': {
-      const token = resolveEnv(cfg.token, 'auth.token', env);
-      redactor.addSecret(token);
+      const token = resolveSecret(cfg.token, 'auth.token', redactor, env);
       return {
         type: 'bearer',
         canRefresh: false,
@@ -44,8 +60,7 @@ export function createAuth(
     }
 
     case 'apiKey': {
-      const value = resolveEnv(cfg.value, 'auth.value', env);
-      redactor.addSecret(value);
+      const value = resolveSecret(cfg.value, 'auth.value', redactor, env);
       if (cfg.in === 'header') redactor.addSensitiveHeader(cfg.name);
       return {
         type: 'apiKey',
@@ -63,9 +78,12 @@ export function createAuth(
     }
 
     case 'basic': {
-      const username = resolveEnv(cfg.username, 'auth.username', env);
-      const password = resolveEnv(cfg.password, 'auth.password', env);
-      redactor.addSecret(password);
+      // A username from the environment can be the credential itself (Stripe sends the key as username).
+      const username =
+        envRefs(cfg.username).length > 0
+          ? resolveSecret(cfg.username, 'auth.username', redactor, env)
+          : resolveEnv(cfg.username, 'auth.username', env);
+      const password = resolveSecret(cfg.password, 'auth.password', redactor, env);
       const encoded = Buffer.from(`${username}:${password}`).toString('base64');
       redactor.addSecret(encoded);
       return {
@@ -101,9 +119,8 @@ class ClientCredentials implements AuthProvider {
     private readonly fetchImpl: FetchLike,
   ) {
     this.clientId = resolveEnv(cfg.clientId, 'auth.clientId', env);
-    this.clientSecret = resolveEnv(cfg.clientSecret, 'auth.clientSecret', env);
+    this.clientSecret = resolveSecret(cfg.clientSecret, 'auth.clientSecret', redactor, env);
     this.tokenUrl = resolveEnv(cfg.tokenUrl, 'auth.tokenUrl', env);
-    redactor.addSecret(this.clientSecret);
     redactor.addSecret(
       Buffer.from(
         `${encodeURIComponent(this.clientId)}:${encodeURIComponent(this.clientSecret)}`,
@@ -159,7 +176,7 @@ class ClientCredentials implements AuthProvider {
     const raw = await res.text();
     if (!res.ok) {
       throw new Error(
-        `OAuth2 token request failed with HTTP ${res.status}: ${this.redactor.text(raw.slice(0, 300))}`,
+        `OAuth2 token request failed with HTTP ${res.status}: ${this.redactor.text(raw).slice(0, 300)}`,
       );
     }
     let json: { access_token?: unknown; expires_in?: unknown };

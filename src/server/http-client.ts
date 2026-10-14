@@ -1,4 +1,5 @@
 import type { AuthProvider } from '../auth/index.js';
+import type { Redactor } from '../safety/redact.js';
 import { VERSION } from '../version.js';
 import { projectFields } from './fields.js';
 import type { Operation, ParamSpec } from '../sources/openapi/operations.js';
@@ -273,6 +274,13 @@ async function readCapped(
  */
 export function fitJson(value: unknown, maxBytes: number): { value: unknown; note?: string } {
   const size = (v: unknown) => Buffer.byteLength(JSON.stringify(v) ?? '', 'utf8');
+  if (typeof value === 'string') {
+    if (Buffer.byteLength(value, 'utf8') <= maxBytes) return { value };
+    return {
+      value: `${value.slice(0, Math.max(0, maxBytes - 3))}...`,
+      note: `Response truncated to ${maxBytes} bytes. Use filters or pagination to get a smaller result.`,
+    };
+  }
   if (size(value) <= maxBytes) return { value };
 
   const trimArray = (arr: unknown[], budget: number): number => {
@@ -326,6 +334,11 @@ export interface SendOptions {
   fields?: string[] | undefined;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
+  /**
+   * Applied to the response before it is trimmed to size. Redacting after
+   * trimming would let a cut leave part of a secret behind.
+   */
+  redactor?: Redactor;
 }
 
 /** Send a request with auth, timeout and response size limits. */
@@ -417,30 +430,29 @@ export async function sendRequest(
   // Read more than the budget so JSON can still be parsed and trimmed cleanly.
   const hardCap = Math.max(opts.maxResponseBytes * 20, 5_000_000);
   const { text, complete } = await readCapped(res, hardCap);
+  const redactor = opts.redactor;
+  const clean = (t: string) => (redactor ? redactor.text(t) : t);
 
-  let data: unknown = text;
-  let note: string | undefined;
+  let fitted: { value: unknown; note?: string };
   if (!complete) {
-    const fitted = fitJson(text, opts.maxResponseBytes);
-    data = fitted.value;
-    note = `Response was larger than ${hardCap} bytes and was cut. Use filters or pagination.`;
+    // Only the first maxResponseBytes are kept, far from the cut at hardCap.
+    fitted = {
+      value: fitJson(clean(text), opts.maxResponseBytes).value,
+      note: `Response was larger than ${hardCap} bytes and was cut. Use filters or pagination.`,
+    };
   } else if (/json/i.test(contentType) || /^\s*[[{]/.test(text)) {
     try {
       const parsed: unknown = JSON.parse(text);
       const selected = opts.fields ? projectFields(parsed, opts.fields) : parsed;
-      const fitted = fitJson(selected, opts.maxResponseBytes);
-      data = fitted.value;
-      note = fitted.note;
+      fitted = fitJson(redactor ? redactor.value(selected) : selected, opts.maxResponseBytes);
     } catch {
-      const fitted = fitJson(text, opts.maxResponseBytes);
-      data = fitted.value;
-      note = fitted.note;
+      fitted = fitJson(clean(text), opts.maxResponseBytes);
     }
-  } else if (text.length > opts.maxResponseBytes) {
-    data = `${text.slice(0, opts.maxResponseBytes)}...`;
-    note = `Response truncated to ${opts.maxResponseBytes} bytes.`;
+  } else {
+    fitted = fitJson(clean(text), opts.maxResponseBytes);
   }
-  if (res.status === 204 || text === '') data = null;
+  const data = res.status === 204 || text === '' ? null : fitted.value;
+  const note = fitted.note;
 
   return { status: res.status, ok: res.ok, contentType, data, ...(note ? { note } : {}) };
 }

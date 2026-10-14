@@ -368,9 +368,14 @@ export class SqlRuntime implements Runtime {
         : {}),
       elapsedMs: result.elapsedMs,
     };
-    const fitted = fitJson(payload, this.config.limits.maxResponseBytes);
-    const out = fitted.note ? { ...(fitted.value as object), note: fitted.note } : fitted.value;
-    return jsonResult(this.redactor.value(out));
+    // Redact before trimming: a cut could otherwise leave part of a secret behind.
+    const fitted = fitJson(this.redactor.value(payload), this.config.limits.maxResponseBytes);
+    const out = !fitted.note
+      ? fitted.value
+      : typeof fitted.value === 'string'
+        ? { result: fitted.value, note: fitted.note }
+        : { ...(fitted.value as object), note: fitted.note };
+    return jsonResult(out);
   }
 
   private async query(sql: string, limitArg: unknown): Promise<ToolResult> {
