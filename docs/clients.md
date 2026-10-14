@@ -14,7 +14,7 @@ Project scope, shared through git (`.mcp.json` at the project root):
     "github": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "apitame@0.1", "serve", "--config", "${CLAUDE_PROJECT_DIR:-.}/apitame.config.yaml"]
+      "args": ["-y", "apitame@0.2", "serve", "--config", "${CLAUDE_PROJECT_DIR:-.}/apitame.config.yaml"]
     }
   }
 }
@@ -23,7 +23,7 @@ Project scope, shared through git (`.mcp.json` at the project root):
 With the CLI:
 
 ```bash
-claude mcp add --transport stdio --scope project github -- npx -y apitame@0.1 serve --config /abs/path/apitame.config.yaml
+claude mcp add --transport stdio --scope project github -- npx -y apitame@0.2 serve --config /abs/path/apitame.config.yaml
 ```
 
 Skills: `.claude/skills/<name>/SKILL.md` for the project, or `~/.claude/skills/` for all projects. Claude Code asks you to approve project servers the first time.
@@ -35,13 +35,13 @@ User scope (`~/.codex/config.toml`), or project scope (`.codex/config.toml`, rea
 ```toml
 [mcp_servers.github]
 command = "npx"
-args = ["-y", "apitame@0.1", "serve", "--config", "/abs/path/apitame.config.yaml"]
+args = ["-y", "apitame@0.2", "serve", "--config", "/abs/path/apitame.config.yaml"]
 ```
 
 With the CLI (writes the user config):
 
 ```bash
-codex mcp add github -- npx -y apitame@0.1 serve --config /abs/path/apitame.config.yaml
+codex mcp add github -- npx -y apitame@0.2 serve --config /abs/path/apitame.config.yaml
 ```
 
 Skills: `.agents/skills/` in the repository, or `~/.agents/skills/`.
@@ -56,7 +56,7 @@ Skills: `.agents/skills/` in the repository, or `~/.agents/skills/`.
     "github": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "apitame@0.1", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
+      "args": ["-y", "apitame@0.2", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
     }
   }
 }
@@ -74,7 +74,7 @@ Skills: `.agents/skills/` in the repository, or `~/.agents/skills/`.
     "github": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "apitame@0.1", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
+      "args": ["-y", "apitame@0.2", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
     }
   }
 }
@@ -91,7 +91,7 @@ Skills: `.agents/skills/`, `.github/skills/` or `.claude/skills/`.
   "mcpServers": {
     "github": {
       "command": "npx",
-      "args": ["-y", "apitame@0.1", "serve", "--config", "/abs/path/apitame.config.yaml"]
+      "args": ["-y", "apitame@0.2", "serve", "--config", "/abs/path/apitame.config.yaml"]
     }
   }
 }
@@ -108,7 +108,7 @@ Claude Desktop reads `claude_desktop_config.json` (macOS: `~/Library/Application
   "mcpServers": {
     "github": {
       "command": "/Users/you/.nvm/versions/node/v22.22.2/bin/npx",
-      "args": ["-y", "apitame@0.1", "serve", "--config", "/Users/you/project/apitame.config.yaml"],
+      "args": ["-y", "apitame@0.2", "serve", "--config", "/Users/you/project/apitame.config.yaml"],
       "env": { "PATH": "/Users/you/.nvm/versions/node/v22.22.2/bin:..." }
     }
   }
@@ -125,7 +125,7 @@ Any MCP client that can launch a stdio server works with:
 
 ```text
 command: npx
-args:    -y apitame@0.1 serve --config /abs/path/apitame.config.yaml
+args:    -y apitame@0.2 serve --config /abs/path/apitame.config.yaml
 ```
 
 ## Streamable HTTP
@@ -157,7 +157,7 @@ Sessions without requests or open streams are closed after 30 minutes, and at mo
 
 ## Pinning and local builds
 
-`add-to` pins the minor version (`apitame@0.1`) so a new release cannot change your server's behavior without you noticing. To run a local checkout instead:
+`add-to` pins the minor version (`apitame@0.2`) so a new release cannot change your server's behavior without you noticing. To run a local checkout instead:
 
 ```bash
 npx apitame add-to claude-code --command "node /path/to/apitame/dist/cli.js"
