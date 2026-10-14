@@ -7,21 +7,6 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
-    # These majors require Node 22 (or, for TypeScript 7, a different compiler API).
-    # Kept while Node 20 is supported; see docs/decisions.md, entry 002.
-    ignore:
-      - dependency-name: commander
-        update-types: ['version-update:semver-major']
-      - dependency-name: better-sqlite3
-        update-types: ['version-update:semver-major']
-      - dependency-name: vitest
-        update-types: ['version-update:semver-major']
-      - dependency-name: '@vitest/coverage-v8'
-        update-types: ['version-update:semver-major']
-      - dependency-name: typescript
-        update-types: ['version-update:semver-major']
-      - dependency-name: '@types/node'
-        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule:
