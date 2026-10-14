@@ -104,6 +104,10 @@ export function sampleFromSchema(
     if (type === 'boolean') return true;
     if (type === 'string' || type === undefined) {
       if (FORMATS[format] !== undefined) return FORMATS[format];
+      if (typeof schema.pattern === 'string') {
+        const fromPattern = sampleForPattern(schema.pattern);
+        if (fromPattern !== undefined) return fromPattern;
+      }
       if (format === 'binary' || format === 'byte') return '';
       const byName = sampleByName(name);
       if (typeof byName === 'string') return byName;
@@ -113,6 +117,25 @@ export function sampleFromSchema(
   } finally {
     stack.delete(schema);
   }
+}
+
+/**
+ * A value for simple patterns such as "^/v1/accounts" or "^cus_": the literal
+ * prefix, kept only if it really matches. Complex patterns fall back to defaults.
+ */
+function sampleForPattern(pattern: string): string | undefined {
+  const literal = /^\^?((?:[^\\[\](){}*+?.|$^]|\\[./-])*)/
+    .exec(pattern)?.[1]
+    ?.replace(/\\(.)/g, '$1');
+  if (!literal) return undefined;
+  for (const candidate of [literal, `${literal}example`, `${literal}1`]) {
+    try {
+      if (new RegExp(pattern).test(candidate)) return candidate;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 function sampleByName(name: string): unknown {

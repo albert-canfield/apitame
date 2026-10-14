@@ -46,7 +46,20 @@ export function suggestAuth(doc: OpenApiDocument, name: string): AuthSuggestion 
   const schemes = isObject(components.securitySchemes) ? components.securitySchemes : {};
   const globalSecurity = Array.isArray(doc.security) ? doc.security : [];
   const preferred = globalSecurity.flatMap((req) => (isObject(req) ? Object.keys(req) : []));
-  const ordered = [...new Set([...preferred, ...Object.keys(schemes)])];
+  // Among the schemes the API accepts, prefer the simplest for an agent: bearer, API key,
+  // OAuth2 client credentials, then basic (Stripe, for example, accepts its key either way).
+  const rank = (key: string) => {
+    const s = schemes[key];
+    if (!isObject(s)) return 9;
+    const scheme = typeof s.scheme === 'string' ? s.scheme.toLowerCase() : '';
+    if (s.type === 'http' && scheme === 'bearer') return 0;
+    if (s.type === 'apiKey') return 1;
+    if (s.type === 'oauth2') return 2;
+    if (s.type === 'http' && scheme === 'basic') return 3;
+    return 9;
+  };
+  const accepted = [...new Set([...preferred, ...Object.keys(schemes)])];
+  const ordered = [...accepted].sort((a, b) => rank(a) - rank(b));
   const prefix = envPrefix(name);
 
   for (const key of ordered) {

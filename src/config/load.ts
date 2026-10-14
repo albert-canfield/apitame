@@ -36,6 +36,22 @@ export function parseConfig(raw: unknown, source = 'config'): Config {
   return result.data;
 }
 
+/**
+ * The same config with rate limits and the audit log turned off, for self-checks
+ * (`test`, `doctor`) that call many tools quickly and must not pollute the audit trail.
+ */
+export function withoutGuardrails(loaded: LoadedConfig): LoadedConfig {
+  const { config } = loaded;
+  return {
+    ...loaded,
+    config: {
+      ...config,
+      limits: { ...config.limits, maxCallsPerMinute: 0, maxWritesPerMinute: 0 },
+      audit: { include: config.audit.include },
+    },
+  };
+}
+
 /** Read and validate `apitame.config.yaml` (or the given path). */
 export function loadConfig(path = DEFAULT_CONFIG_FILE, cwd = process.cwd()): LoadedConfig {
   const abs = resolve(cwd, path);

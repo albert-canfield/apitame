@@ -26,6 +26,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- Untagged APIs: top-level resources (`/v1/customers`) now rank before nested product areas (`/v1/treasury/...`) when choosing which groups become tools. On Stripe's full spec the tools are now customers, accounts, charges, products, quotes, credit notes, invoices, payment intents, transfers and application fees.
+- `init` prefers bearer auth over basic when a spec accepts both.
+- `test` against the mock no longer validates generated responses (that only tested the sample generator, and compiling huge schemas made Stripe's run take 49 s; now about 3 s). `--live` still validates. `test` and `doctor` ignore rate limits and do not write to the audit log.
+- Mock samples honour simple `pattern` prefixes.
+
 - Install size down from about 141 MB to 53 MB: only the three SQL parser builds apitame uses are bundled, SQL code loads on demand, and published builds carry no source maps.
 
 - Binary responses are described instead of returned as text.
