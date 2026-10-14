@@ -390,14 +390,14 @@ function operationsReference(rt: OpenApiRuntime, refOf: Map<string, ToolRef>): s
 /** SKILL.md plus a schema reference for a SQL source. */
 export function generateSqlSkill(input: {
   name: string;
-  engine: 'postgres' | 'sqlite';
+  engine: 'postgres' | 'sqlite' | 'mysql';
   description?: string;
   tables: TableInfo[];
   details: TableDetail[];
   namedQueries: Array<{ name: string; description: string }>;
   rowLimit: number;
 }): GeneratedFile[] {
-  const engine = input.engine === 'postgres' ? 'PostgreSQL' : 'SQLite';
+  const engine = { postgres: 'PostgreSQL', sqlite: 'SQLite', mysql: 'MySQL' }[input.engine];
   const name = skillName(input.name, 'db');
   const qualified = (t: { schema: string | null; name: string }) =>
     input.engine === 'postgres' && t.schema && t.schema !== 'public'
@@ -501,7 +501,10 @@ export function generateSqlSkill(input: {
   ];
 }
 
-const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+const capitalize = (s: string) => {
+  const words = s.replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+};
 const singular = (s: string) =>
   s.endsWith('ies') ? `${s.slice(0, -3)}y` : s.endsWith('s') ? s.slice(0, -1) : s;
 
@@ -555,7 +558,7 @@ function sqlExamples(
       /^(status|state|total|amount|quantity|price)$/i.test(c.name),
     )?.name;
     out.push({
-      title: `${capitalize(d.name)} with their ${singular(target.name)}`,
+      title: `${capitalize(d.name)} with their ${singular(target.name).replace(/_/g, ' ')}`,
       sql: [
         `SELECT ${a}.${d.primaryKey[0] ?? fk.columns[0]}, ${b}.${label(target)}${extra ? `, ${a}.${extra}` : ''}${order ? `, ${a}.${order}` : ''}`,
         `FROM ${qualified(d)} ${a}`,
@@ -571,7 +574,7 @@ function sqlExamples(
     let b = alias(top.target.name);
     if (b === a) b = `${b}2`;
     out.push({
-      title: `Count ${top.d.name} per ${singular(top.target.name)}`,
+      title: `Count ${top.d.name.replace(/_/g, ' ')} per ${singular(top.target.name).replace(/_/g, ' ')}`,
       sql: [
         `SELECT ${b}.${label(top.target)}, count(*) AS ${top.d.name}_count`,
         `FROM ${qualified(top.d)} ${a}`,

@@ -6,6 +6,9 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- MySQL and MariaDB sources: `list_tables`, `describe_table`, guarded `query` and named queries, with MySQL-accurate lexing (executable comments refused, `#` and `-- ` comments, backslash strings), read-only transactions, `max_execution_time`, `sql_select_limit` and server-side prepared statements.
+- CI runs the SQL integration suite against real PostgreSQL 17 and MySQL 8.4 servers, in addition to PGlite and SQLite.
+
 - Swagger 2.0 documents are converted to OpenAPI 3 in memory: servers, body and form parameters, `collectionFormat`, responses and security definitions.
 - `add-to gemini` (`.gemini/settings.json`, skills in `.agents/skills/`) and `add-to claude-desktop` (absolute paths and `PATH` for desktop apps, skills packaged as `.zip` for upload).
 - `apitame doctor`: checks Node, config, environment variables, whether `.env` is git-ignored, API or database connectivity and credentials, whether the database role could write, allowlist typos, stale skills and client configs.

@@ -89,6 +89,7 @@ Free-form SQL passes four independent layers. Each one would stop the common att
 2. **Parser.** `node-sql-parser` must read the query as exactly one SELECT, with no `SELECT INTO`, no `FOR UPDATE` or `FOR SHARE`, and no denied functions or tables anywhere in the tree. If the parser cannot read the query, it is refused. Table allow and deny lists from the config are checked against the parsed table references, ignoring CTE names.
 3. **Database.**
    - PostgreSQL: `BEGIN TRANSACTION READ ONLY`, `SET LOCAL statement_timeout`, `SET LOCAL standard_conforming_strings = on`, then `DECLARE ... CURSOR FOR <query>` sent through the extended query protocol, which refuses more than one statement, and `FETCH` of at most `rowLimit + 1` rows. The transaction is always rolled back. A cursor also refuses data-modifying CTEs.
+   - MySQL: `START TRANSACTION READ ONLY`, `SET SESSION max_execution_time` (or `max_statement_time` on MariaDB) and `sql_select_limit`, with multi-statement queries disabled in the protocol. Its lexer also refuses `/*! */` executable comments, which MySQL runs.
    - SQLite: a connection opened with `readonly: true` and `PRAGMA query_only = ON`; each prepared statement must report `reader` and `readonly`; `prepare` refuses multiple statements. Queries run in a worker thread that is terminated when `timeoutMs` passes.
 4. **Role.** The database role you connect with. See [sql.md](sql.md#a-read-only-role) for a read-only role in a few lines. This is the one layer that does not depend on apitame at all.
 

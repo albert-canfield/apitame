@@ -241,7 +241,7 @@ export function renderOpenApiConfig(input: OpenApiConfigInput): string {
 export interface SqlConfigInput {
   name: string;
   description: string;
-  type: 'postgres' | 'sqlite';
+  type: 'postgres' | 'sqlite' | 'mysql';
   /** For postgres: a ${VAR} reference. For sqlite: a path relative to the config. */
   target: string;
   schemas?: string[];
@@ -256,7 +256,9 @@ export function renderSqlConfig(input: SqlConfigInput): string {
     source:
       input.type === 'postgres'
         ? { type: 'postgres', url: input.target, schemas: input.schemas ?? ['public'] }
-        : { type: 'sqlite', path: input.target },
+        : input.type === 'mysql'
+          ? { type: 'mysql', url: input.target }
+          : { type: 'sqlite', path: input.target },
     mode: 'read-only',
     limits: {
       timeoutMs: 10_000,
@@ -280,7 +282,7 @@ export function renderSqlConfig(input: SqlConfigInput): string {
   comment(
     doc,
     'source',
-    input.type === 'postgres'
+    input.type !== 'sqlite'
       ? 'The connection string comes from an environment variable (or .env next to this file).\nUse a read-only database role: see docs/sql.md for a two-line setup.'
       : 'Path to the database file, relative to this config. It is opened read-only.',
   );

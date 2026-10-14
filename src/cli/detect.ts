@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 export type SourceKind =
   | { kind: 'openapi'; location: string }
   | { kind: 'postgres'; url: string; fromEnv?: string }
+  | { kind: 'mysql'; url: string; fromEnv?: string }
   | { kind: 'sqlite'; file: string };
 
 const SQLITE_MAGIC = 'SQLite format 3\u0000';
@@ -29,6 +30,8 @@ export function detectSource(
 ): SourceKind {
   const s = input.trim();
   if (/^postgres(ql)?:\/\//i.test(s)) return { kind: 'postgres', url: s };
+  if (/^(mysql|mariadb):\/\//i.test(s))
+    return { kind: 'mysql', url: s.replace(/^mariadb:/i, 'mysql:') };
 
   const envMatch =
     /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/.exec(s) ?? /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(s);
@@ -37,6 +40,7 @@ export function detectSource(
     const value = env[name];
     if (!value) throw new Error(`Environment variable ${name} is not set.`);
     if (/^postgres(ql)?:\/\//i.test(value)) return { kind: 'postgres', url: value, fromEnv: name };
+    if (/^(mysql|mariadb):\/\//i.test(value)) return { kind: 'mysql', url: value, fromEnv: name };
     return detectSource(value, cwd, env);
   }
 

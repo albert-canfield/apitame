@@ -255,7 +255,9 @@ async function initOpenApi(
 }
 
 async function initSql(
-  detected: { kind: 'postgres'; url: string; fromEnv?: string } | { kind: 'sqlite'; file: string },
+  detected:
+    | { kind: 'postgres' | 'mysql'; url: string; fromEnv?: string }
+    | { kind: 'sqlite'; file: string },
   outDir: string,
   configPath: string,
   opts: InitOptions,
@@ -264,20 +266,20 @@ async function initSql(
   let yaml: string;
   let driverLabel: string;
 
-  if (detected.kind === 'postgres') {
+  if (detected.kind !== 'sqlite') {
     const envVar = opts.envVar ?? detected.fromEnv ?? 'DATABASE_URL';
     const name = opts.name ? slugify(opts.name) : slugify(databaseName(detected.url), 'db');
     const schemas = opts.schema && opts.schema.length > 0 ? opts.schema : ['public'];
+    driverLabel = detected.kind === 'postgres' ? 'PostgreSQL' : 'MySQL';
     redactor.addSecret(detected.url);
     yaml = renderSqlConfig({
       name,
       description: '',
-      type: 'postgres',
+      type: detected.kind,
       target: `\${${envVar}}`,
       schemas,
-      generatedFrom: `the PostgreSQL database "${databaseName(detected.url)}"`,
+      generatedFrom: `the ${driverLabel} database "${databaseName(detected.url)}"`,
     });
-    driverLabel = 'PostgreSQL';
     if (!detected.fromEnv) {
       // The connection string goes to .env (never into the config file).
       const envFile = join(outDir, '.env');
@@ -332,13 +334,14 @@ async function initSql(
         `Wrote ${rel(process.cwd(), configPath)} and ${files.length} skill files in ${rel(process.cwd(), skillsDir)}`,
       ),
     );
-    if (detected.kind === 'postgres') {
+    const privileges = await runtime.driver.privileges().catch(() => undefined);
+    if (privileges?.canWrite) {
       console.log(
         warn(
-          'Use a read-only database role for the connection. See docs/sql.md in the apitame repository for a two-line setup.',
+          `${privileges.detail}. apitame stays read-only anyway, but a read-only role is safer: see docs/sql.md.`,
         ),
       );
-    }
+    } else if (privileges) console.log(ok(`Read-only credentials: ${privileges.detail}`));
   } catch (err) {
     // The original error is not attached as `cause`: it may hold the connection string.
     // eslint-disable-next-line preserve-caught-error

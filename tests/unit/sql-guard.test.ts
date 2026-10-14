@@ -7,7 +7,7 @@ import {
 } from '../../src/sources/sql/guard.js';
 import type { Dialect } from '../../src/sources/sql/lexer.js';
 
-const dialects: Dialect[] = ['postgres', 'sqlite'];
+const dialects: Dialect[] = ['postgres', 'sqlite', 'mysql'];
 
 const allowed = (sql: string, dialect: Dialect) => guardSelect(sql, { dialect });
 
@@ -61,7 +61,7 @@ describe.each(dialects)('guardSelect (%s): writes and tricks are refused', (dial
     ['nul byte', 'SELECT 1\u0000; DROP TABLE x'],
     ['pragma', 'PRAGMA writable_schema = 1'],
     ['attach', "ATTACH DATABASE '/tmp/x.db' AS x"],
-    ['parameter placeholder', 'SELECT * FROM orders WHERE id = $1'],
+    ['parameter placeholder', 'SELECT * FROM orders WHERE id = ?'],
   ])('%s', (_name, sql) => {
     const r = allowed(sql, dialect);
     expect(r.ok).toBe(false);
@@ -100,6 +100,12 @@ describe('guardSelect: parser and database disagree (differential attacks)', () 
       dialect: 'sqlite',
     });
     expect(r.ok).toBe(false);
+  });
+
+  it('postgres: $1 placeholders are refused in ad-hoc queries', () => {
+    expect(guardSelect('SELECT * FROM orders WHERE id = $1', { dialect: 'postgres' }).ok).toBe(
+      false,
+    );
   });
 
   it('postgres: dollar-quoted strings are strings, and cannot hide a second statement', () => {
@@ -261,5 +267,71 @@ describe('bindNamedParams', () => {
     const r = bindNamedParams('SELECT * FROM t WHERE a = :x', 'sqlite', { x: 5 });
     expect(r.sql).toBe('SELECT * FROM t WHERE a = :x');
     expect(r.params).toEqual({ x: 5 });
+  });
+});
+
+describe('guardSelect: MySQL specifics', () => {
+  const my = (sql: string) => guardSelect(sql, { dialect: 'mysql' });
+
+  it('refuses executable comments and optimizer hints, which MySQL runs', () => {
+    expect(my('SELECT 1 /*!50000 , SLEEP(10) */').ok).toBe(false);
+    expect(my('SELECT 1 /*! ; DELETE FROM orders */').ok).toBe(false);
+    expect(my('SELECT /*+ MAX_EXECUTION_TIME(100000000) */ * FROM orders').ok).toBe(false);
+  });
+
+  it('only treats "--" as a comment when whitespace follows, like MySQL', () => {
+    expect(my('SELECT 1 --; DELETE FROM orders').ok).toBe(false);
+    const r = my('SELECT 1 -- ; DELETE FROM orders');
+    expect(r.ok && r.sql).toBe('SELECT 1');
+  });
+
+  it('understands # comments and backslash escapes', () => {
+    const hash = my('SELECT 1 # ; DELETE FROM orders');
+    expect(hash.ok && hash.sql).toBe('SELECT 1');
+    // In MySQL this is one string, so it is one harmless statement.
+    const bs = my("SELECT 'a\\'; DELETE FROM orders; -- '");
+    expect(bs.ok).toBe(true);
+    const dq = my('SELECT "a\\"; DELETE FROM orders; -- "');
+    expect(dq.ok).toBe(true);
+  });
+
+  it('refuses MySQL side-effect functions, locking reads, file export and system schemas', () => {
+    for (const sql of [
+      'SELECT SLEEP(5)',
+      'SELECT BENCHMARK(100000000, MD5(1))',
+      "SELECT LOAD_FILE('/etc/passwd')",
+      "SELECT GET_LOCK('x', 10)",
+      'SELECT * FROM orders LOCK IN SHARE MODE',
+      'SELECT * FROM orders FOR SHARE',
+      "SELECT * FROM orders INTO OUTFILE '/tmp/x'",
+      'SELECT user, authentication_string FROM mysql.user',
+      'SELECT * FROM performance_schema.events_statements_history',
+      'SELECT * FROM `mysql`.`user`',
+    ]) {
+      expect(my(sql).ok, sql).toBe(false);
+    }
+  });
+
+  it('accepts backtick identifiers and user variables', () => {
+    expect(my('SELECT `order`, `select` FROM `orders` WHERE id = 1').ok).toBe(true);
+    expect(my('SELECT @@version').ok).toBe(true);
+  });
+
+  it('binds named parameters as positional placeholders', () => {
+    const r = bindNamedParams('SELECT * FROM t WHERE a = :x AND b = :y OR c = :x', 'mysql', {
+      x: 1,
+      y: 'two',
+    });
+    expect(r).toEqual({
+      sql: 'SELECT * FROM t WHERE a = ? AND b = ? OR c = ?',
+      params: [1, 'two', 1],
+    });
+  });
+
+  it('treats RENAME as destructive', () => {
+    expect(analyzeWrite('RENAME TABLE a TO b', 'mysql')).toMatchObject({
+      kind: 'RENAME',
+      destructive: true,
+    });
   });
 });

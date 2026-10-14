@@ -1,12 +1,15 @@
 # SQL sources
 
-apitame serves PostgreSQL and SQLite databases as MCP tools: browse the schema, run read-only SELECT queries, and expose reviewed, parameterized queries as their own tools.
+apitame serves PostgreSQL, MySQL (and MariaDB) and SQLite databases as MCP tools: browse the schema, run read-only SELECT queries, and expose reviewed, parameterized queries as their own tools.
 
 ## Quick start
 
 ```bash
 # PostgreSQL: the URL is saved to .env as DATABASE_URL, the config only references it
 npx apitame init postgres://apitame_ro:password@localhost:5432/shop
+
+# MySQL or MariaDB: same handling of the URL
+npx apitame init mysql://apitame_ro:password@localhost:3306/shop
 
 # Or point at a variable you already have
 npx apitame init '$DATABASE_URL'
@@ -45,7 +48,16 @@ ALTER ROLE apitame_ro SET default_transaction_read_only = on;
 ALTER ROLE apitame_ro SET statement_timeout = '10s';
 ```
 
-Then connect with `postgres://apitame_ro:change-me@host:5432/shop`. On managed services (RDS, Cloud SQL, Neon, Supabase) the same statements work from an admin connection. Point apitame at a replica if you have one.
+Then connect with `postgres://apitame_ro:change-me@host:5432/shop`.
+
+For MySQL or MariaDB:
+
+```sql
+CREATE USER 'apitame_ro'@'%' IDENTIFIED BY 'change-me';
+GRANT SELECT ON shop.* TO 'apitame_ro'@'%';
+```
+
+`apitame doctor` (and `init`) check the credentials and warn when the role or user could write. On managed services (RDS, Cloud SQL, Neon, Supabase) the same statements work from an admin connection. Point apitame at a replica if you have one.
 
 For SQLite, apitame opens the file read-only. Make the file itself read-only to the user running apitame if you want the operating system to enforce it too.
 
@@ -55,7 +67,7 @@ See the [safety model](safety.md#sql-sources) for the full explanation. In order
 
 1. The lexer (database-accurate quoting) requires one statement starting with SELECT, WITH, VALUES or `(`, and refuses write keywords, side-effect functions and credential catalogs.
 2. The SQL parser must read it as a single SELECT without `INTO` or row locks.
-3. PostgreSQL runs it in a `READ ONLY` transaction with `statement_timeout`, through the single-statement extended protocol and a cursor capped at the row limit. SQLite runs it on a read-only connection, checks each statement is read-only, and kills the worker thread on timeout.
+3. PostgreSQL runs it in a `READ ONLY` transaction with `statement_timeout`, through the single-statement extended protocol and a cursor capped at the row limit. MySQL runs it in `START TRANSACTION READ ONLY` with `max_execution_time` (`max_statement_time` on MariaDB) and `sql_select_limit`, with multi-statement queries disabled. SQLite runs it on a read-only connection, checks each statement is read-only, and kills the worker thread on timeout.
 4. The role you connect with.
 
 When a valid query is refused because the parser does not understand some syntax, the error says so. Simplify the query, or add it as a named query.
@@ -63,6 +75,17 @@ When a valid query is refused because the parser does not understand some syntax
 ### Functions that are refused
 
 Anything that sleeps, signals other sessions, reads or writes files, opens connections, changes settings, takes advisory locks, touches large objects, changes sequences or runs SQL passed as a string. That includes `pg_sleep`, `pg_terminate_backend`, `pg_cancel_backend`, `pg_read_file`, `pg_ls_dir`, `set_config`, `nextval`, `setval`, `lo_import`, `dblink*`, `query_to_xml`, `pg_advisory_lock*`, `pg_notify` and, for SQLite, `load_extension`, `readfile`, `writefile` and `fts3_tokenizer`. The full list is in `src/sources/sql/guard.ts`.
+
+### MySQL specifics
+
+MySQL reads SQL differently from PostgreSQL and SQLite, and the lexer follows it:
+
+- `/*! ... */` executable comments and `/*+ ... */` optimizer hints are refused: MySQL runs the first and the second could lift the timeout.
+- `--` starts a comment only when whitespace follows, and `#` starts a comment.
+- Both `'...'` and `"..."` are strings, with backslash escapes; identifiers use backticks.
+- `SLEEP`, `BENCHMARK`, `LOAD_FILE`, `GET_LOCK` and replication wait functions are refused, as are `LOCK IN SHARE MODE`, `FOR SHARE`, `INTO OUTFILE` and the `mysql`, `performance_schema` and `sys` schemas.
+- Named query parameters are bound with server-side prepared statements, so values are never escaped into SQL text (this stays safe even with `NO_BACKSLASH_ESCAPES`).
+- MySQL commits DDL implicitly, so a dry run of a DDL named query is refused instead of being run for real.
 
 ## Named queries
 
