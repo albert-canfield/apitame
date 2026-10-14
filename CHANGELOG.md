@@ -7,6 +7,8 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - Swagger 2.0 documents are converted to OpenAPI 3 in memory: servers, body and form parameters, `collectionFormat`, responses and security definitions.
+- Rate limits: `limits.maxCallsPerMinute` (default 120) and `limits.maxWritesPerMinute` (default 20) stop runaway agent loops.
+- Audit log: `audit.file` appends a redacted JSON Lines record of every write attempt and refused query (`include: all` adds reads).
 - Response field selection: read tools accept `"fields": ["id", "items.name"]` (dot paths, arrays mapped) to return only what the agent needs. Applied before the response size cap.
 
 ### Security

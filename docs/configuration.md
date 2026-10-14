@@ -19,6 +19,7 @@ Values may reference environment variables as `${NAME}` or `${NAME:-default}`. S
 | `longTail` | object | `{enabled: true}` | Adds `search_operations` and `call_operation` (OpenAPI only). |
 | `writes` | object | see below | Allowlist and confirmation rules. |
 | `confirmation` | object | see below | How destructive calls are approved. |
+| `audit` | object | `{include: writes}` | Optional JSON Lines audit file. |
 | `sql` | object | see below | Named queries and table filters (SQL only). |
 | `skills` | object | `{dir: ./skills}` | Where generated skills live. |
 
@@ -84,6 +85,8 @@ auth:
 | `timeoutMs` | 15000 | all | Request or query timeout, 100 to 600000. |
 | `maxResponseBytes` | 50000 | all | Size cap for what goes back to the agent. JSON is trimmed to fit. |
 | `rowLimit` | 200 | SQL | Maximum rows per query result. |
+| `maxCallsPerMinute` | 120 | all | Tool calls per minute across all tools. `0` means unlimited. |
+| `maxWritesPerMinute` | 20 | all | Writes per minute, counted just before they are sent. `0` means unlimited. |
 
 ## `tools`
 
@@ -136,6 +139,16 @@ confirmation:
 - `auto`: ask the human through MCP elicitation when the client supports it, otherwise return a one-time token.
 - `elicitation`: refuse destructive calls when the client cannot elicit.
 - `token`: always use tokens.
+
+## `audit`
+
+```yaml
+audit:
+  file: ./apitame-audit.jsonl   # relative to the config file; no file when unset
+  include: writes               # writes (default) or all
+```
+
+See [safety.md](safety.md#audit-log) for the format.
 
 ## `sql`
 

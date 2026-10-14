@@ -111,6 +111,18 @@ export const ConfigSchema = z
         timeoutMs: z.number().int().min(100).max(600_000).default(15_000),
         maxResponseBytes: z.number().int().min(1_000).max(10_000_000).default(50_000),
         rowLimit: z.number().int().min(1).max(10_000).default(200),
+        /** Tool calls per minute across all tools. 0 means unlimited. */
+        maxCallsPerMinute: z.number().int().min(0).max(100_000).default(120),
+        /** Writes per minute (HTTP writes and named write queries). 0 means unlimited. */
+        maxWritesPerMinute: z.number().int().min(0).max(100_000).default(20),
+      })
+      .prefault({}),
+    audit: z
+      .object({
+        /** JSON Lines file, relative to the config file. Unset means no audit file. */
+        file: z.string().min(1).optional(),
+        /** `writes`: write attempts and refused queries. `all`: every call. */
+        include: z.enum(['writes', 'all']).default('writes'),
       })
       .prefault({}),
     tools: z.array(ToolGroupSchema).default([]),

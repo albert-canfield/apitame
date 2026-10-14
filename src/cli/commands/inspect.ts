@@ -73,6 +73,13 @@ export async function inspectCommand(opts: InspectOptions): Promise<void> {
             operations: operationCount,
             blocked,
             skills: skills.map((s) => s.name),
+            limits: {
+              callsPerMinute: loaded.config.limits.maxCallsPerMinute,
+              writesPerMinute: loaded.config.limits.maxWritesPerMinute,
+            },
+            audit: loaded.config.audit.file
+              ? { file: loaded.config.audit.file, include: loaded.config.audit.include }
+              : null,
             warnings: runtime.warnings,
             ...(budget !== undefined ? { budget, overBudget } : {}),
           },
@@ -143,6 +150,14 @@ export async function inspectCommand(opts: InspectOptions): Promise<void> {
       );
     }
     if (skills.length > 0) console.log(ok(`Skills: ${skills.map((s) => s.name).join(', ')}`));
+    const { maxCallsPerMinute: calls, maxWritesPerMinute: writesPm } = loaded.config.limits;
+    const rate = (n: number, what: string) => (n > 0 ? `${n} ${what}/min` : `unlimited ${what}`);
+    const audit = loaded.config.audit;
+    console.log(
+      ok(
+        `Limits: ${rate(calls, 'calls')}, ${rate(writesPm, 'writes')}. Audit log: ${audit.file ? `${audit.file} (${audit.include})` : 'off'}`,
+      ),
+    );
     for (const w of runtime.warnings) console.log(warn(w));
     if (budget !== undefined) {
       console.log(

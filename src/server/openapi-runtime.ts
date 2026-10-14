@@ -3,6 +3,7 @@ import { resolveEnv } from '../config/env.js';
 import type { Config, ToolGroupConfig } from '../config/schema.js';
 import { Logger } from '../log.js';
 import { ConfirmationStore, confirmOrChallenge } from '../safety/confirm.js';
+import { Guardrails, type AuditEntry, type AuditOutcome } from '../safety/guardrails.js';
 import { decide, type Decision } from '../safety/policy.js';
 import { Redactor } from '../safety/redact.js';
 import { loadSpec, resolveBaseUrl, type LoadedSpec } from '../sources/openapi/load.js';
@@ -39,6 +40,8 @@ export interface OpenApiRuntimeOptions {
   baseUrlOverride?: string;
   /** Pre-loaded spec, to avoid parsing twice. */
   spec?: LoadedSpec;
+  /** Rate limits and audit log. Built from the config when not given. */
+  guardrails?: Guardrails;
 }
 
 interface BuiltTool {
@@ -76,6 +79,7 @@ export class OpenApiRuntime implements Runtime {
   private readonly toolByName: Map<string, BuiltTool>;
   private readonly validator = new ArgValidator();
   private readonly confirmations: ConfirmationStore;
+  private readonly guardrails: Guardrails;
   private readonly redactor: Redactor;
   private readonly logger: Logger;
   private auth: AuthProvider | undefined;
@@ -94,6 +98,8 @@ export class OpenApiRuntime implements Runtime {
     this.redactor = opts.redactor ?? new Redactor();
     this.logger = opts.logger ?? new Logger(this.redactor);
     this.confirmations = new ConfirmationStore(config.confirmation.ttlSeconds * 1_000);
+    this.guardrails =
+      opts.guardrails ?? Guardrails.fromConfig(config, opts.configDir, this.redactor, this.logger);
 
     const authHeaders =
       config.auth.type === 'apiKey' && config.auth.in === 'header' ? [config.auth.name] : [];
@@ -370,6 +376,8 @@ export class OpenApiRuntime implements Runtime {
   ): Promise<ToolResult> {
     const tool = this.toolByName.get(name);
     if (!tool) return errorResult(`Unknown tool "${name}".`);
+    const limited = this.guardrails.checkCall();
+    if (limited) return errorResult(limited);
     try {
       return await this.dispatch(tool, args ?? {}, ctx);
     } catch (err) {
@@ -407,7 +415,7 @@ export class OpenApiRuntime implements Runtime {
             if (k === 'confirm') ownFlags.confirm = undefined;
           }
         }
-        return this.execute(op, params, ownFlags, ctx);
+        return this.execute(op, params, ownFlags, ctx, tool.def.name);
       }
       case 'group': {
         const id = String(rest.operation ?? '');
@@ -417,7 +425,7 @@ export class OpenApiRuntime implements Runtime {
             `Unknown operation "${id}" for tool "${tool.def.name}". Valid operations: ${tool.ops.map((o) => o.id).join(', ')}.`,
           );
         }
-        return this.execute(op, asObject(rest.params), flags, ctx);
+        return this.execute(op, asObject(rest.params), flags, ctx, tool.def.name);
       }
       case 'call': {
         const id = String(rest.operationId ?? '');
@@ -425,7 +433,7 @@ export class OpenApiRuntime implements Runtime {
           this.byId.get(id) ?? this.operations.find((o) => o.id.toLowerCase() === id.toLowerCase());
         if (!op)
           return errorResult(`Unknown operationId "${id}". Use ${SEARCH} to find valid ids.`);
-        return this.execute(op, asObject(rest.params), flags, ctx);
+        return this.execute(op, asObject(rest.params), flags, ctx, tool.def.name);
       }
     }
   }
@@ -489,12 +497,25 @@ export class OpenApiRuntime implements Runtime {
     op: Operation,
     params: Record<string, unknown>,
     flags: { dryRun: boolean; confirm: string | undefined; fields: string[] | undefined },
-    ctx?: CallContext,
+    ctx: CallContext | undefined,
+    tool: string,
   ): Promise<ToolResult> {
+    const audit = (outcome: AuditOutcome, extra: Partial<AuditEntry> = {}) =>
+      this.guardrails.record({
+        tool,
+        operation: op.id,
+        access: op.access,
+        outcome,
+        args: params,
+        ...extra,
+      });
     if (op.unsupported) return errorResult(`"${op.id}" cannot be called: ${op.unsupported}.`);
 
     const decision = this.decision(op);
-    if (!decision.allowed) return errorResult(`Blocked: ${decision.reason}\n${decision.hint}`);
+    if (!decision.allowed) {
+      audit('blocked', { reason: decision.reason });
+      return errorResult(`Blocked: ${decision.reason}\n${decision.hint}`);
+    }
 
     const problems = this.validator.check(op.id, op.inputSchema, params);
     if (problems.length > 0) {
@@ -533,6 +554,7 @@ export class OpenApiRuntime implements Runtime {
     };
 
     if (flags.dryRun) {
+      audit('dry-run');
       return jsonResult({ dryRun: true, note: 'Nothing was sent.', ...preview });
     }
 
@@ -546,19 +568,38 @@ export class OpenApiRuntime implements Runtime {
         store: this.confirmations,
         ctx,
       });
-      if (!outcome.proceed) return outcome.result;
+      if (!outcome.proceed) {
+        audit(outcome.result.isError ? 'declined' : 'confirmation-requested');
+        return outcome.result;
+      }
+    }
+
+    if (op.access !== 'read') {
+      const limited = this.guardrails.checkWrite();
+      if (limited) {
+        audit('rate-limited');
+        return errorResult(limited);
+      }
     }
 
     if (op.access !== 'read')
       this.logger.info(`${op.access} ${op.id}: ${req.method} ${req.url.pathname}`);
 
-    const res = await sendRequest(req, op.noAuth ? undefined : this.auth, {
-      timeoutMs: this.config.limits.timeoutMs,
-      maxResponseBytes: this.config.limits.maxResponseBytes,
-      fields: flags.fields,
-      ...(this.opts.fetchImpl ? { fetchImpl: this.opts.fetchImpl } : {}),
-      ...(ctx?.signal ? { signal: ctx.signal } : {}),
-    });
+    const started = Date.now();
+    let res: Awaited<ReturnType<typeof sendRequest>>;
+    try {
+      res = await sendRequest(req, op.noAuth ? undefined : this.auth, {
+        timeoutMs: this.config.limits.timeoutMs,
+        maxResponseBytes: this.config.limits.maxResponseBytes,
+        fields: flags.fields,
+        ...(this.opts.fetchImpl ? { fetchImpl: this.opts.fetchImpl } : {}),
+        ...(ctx?.signal ? { signal: ctx.signal } : {}),
+      });
+    } catch (err) {
+      audit('error', { durationMs: Date.now() - started, reason: (err as Error).message });
+      throw err;
+    }
+    audit(res.ok ? 'sent' : 'error', { status: res.status, durationMs: Date.now() - started });
     const payload = this.redactor.value({
       status: res.status,
       data: res.data,
