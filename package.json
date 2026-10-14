@@ -58,6 +58,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "eval": "tsx scripts/eval/run.ts",
     "prepublishOnly": "pnpm run build"
   },
   "pnpm": {

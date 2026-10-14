@@ -1,0 +1,337 @@
+# Tool-selection eval tasks for examples/petstore (read-only mode).
+#
+# fixtures (top level): one small, consistent store that every task sees. An operation
+#   that has fixtures answers 404 to any other arguments; an operation without
+#   fixtures answers with a sample built from the spec.
+# Each task then lists:
+#   required:  calls that must reach the API, with key arguments
+#   forbidden: operations the agent must not attempt (writes are always forbidden)
+#   answer:    substrings and regular expressions the final answer must contain
+#   fake:      the calls and answer the scripted model replays in tests and CI
+# docs/eval.md explains the format and the grading.
+
+api: petstore
+
+fixtures:
+  # Pets: three pending, three sold, four available.
+  - operation: getPetById
+    match: { petId: 42 }
+    body: &biscuit
+      id: 42
+      name: Biscuit
+      status: pending
+      category: { id: 1, name: Dogs }
+      photoUrls: []
+      tags: [{ id: 4, name: friendly }]
+  - operation: getPetById
+    match: { petId: 12 }
+    body: &clover
+      id: 12
+      name: Clover
+      status: pending
+      category: { id: 4, name: Rabbits }
+      photoUrls: []
+      tags: []
+  - operation: getPetById
+    match: { petId: 30 }
+    body: &pepper
+      id: 30
+      name: Pepper
+      status: pending
+      category: { id: 2, name: Cats }
+      photoUrls: []
+      tags: [{ id: 3, name: senior }]
+  - operation: getPetById
+    match: { petId: 7 }
+    body: &rex
+      id: 7
+      name: Rex
+      status: sold
+      category: { id: 1, name: Dogs }
+      photoUrls: []
+      tags: []
+  - operation: getPetById
+    match: { petId: 19 }
+    body: &luna
+      id: 19
+      name: Luna
+      status: sold
+      category: { id: 2, name: Cats }
+      photoUrls: []
+      tags: []
+  - operation: getPetById
+    match: { petId: 23 }
+    body: &momo
+      id: 23
+      name: Momo
+      status: sold
+      category: { id: 2, name: Cats }
+      photoUrls: []
+      tags: []
+  - operation: getPetById
+    match: { petId: 51 }
+    body: &mittens
+      id: 51
+      name: Mittens
+      status: available
+      category: { id: 2, name: Cats }
+      photoUrls: []
+      tags: []
+  - operation: getPetById
+    match: { petId: 52 }
+    body: &bolt
+      id: 52
+      name: Bolt
+      status: available
+      category: { id: 1, name: Dogs }
+      photoUrls: []
+      tags: []
+  - operation: getPetById
+    match: { petId: 53 }
+    body: &kiwi
+      id: 53
+      name: Kiwi
+      status: available
+      category: { id: 3, name: Birds }
+      photoUrls: []
+      tags: []
+  - operation: getPetById
+    match: { petId: 31 }
+    body: &duke
+      id: 31
+      name: Duke
+      status: available
+      category: { id: 2, name: Cats }
+      photoUrls: []
+      tags: [{ id: 3, name: senior }]
+  - operation: findPetsByStatus
+    match: { status: pending }
+    body: [*biscuit, *clover, *pepper]
+  - operation: findPetsByStatus
+    match: { status: sold }
+    body: [*rex, *luna, *momo]
+  - operation: findPetsByStatus
+    match: { status: available }
+    body: [*mittens, *bolt, *kiwi, *duke]
+  - operation: findPetsByTags
+    match: { tags: senior }
+    body: [*pepper, *duke]
+  - operation: findPetsByTags
+    match: { tags: friendly }
+    body: [*biscuit]
+  - operation: getInventory
+    body: { available: 4, pending: 3, sold: 3 }
+  # Orders
+  - operation: getOrderById
+    match: { orderId: 5 }
+    body: { id: 5, petId: 12, quantity: 1, status: approved, complete: false }
+  - operation: getOrderById
+    match: { orderId: 7 }
+    body:
+      id: 7
+      petId: 42
+      quantity: 2
+      shipDate: '2026-10-10T09:00:00Z'
+      status: delivered
+      complete: true
+  # Users
+  - operation: getUserByName
+    match: { username: jdoe }
+    body:
+      id: 5
+      username: jdoe
+      firstName: Jane
+      lastName: Doe
+      email: jane.doe@example.com
+      phone: '555-0100'
+      userStatus: 1
+  - operation: loginUser
+    match: { username: demo, password: demo-pass }
+    body: 'logged in user session:7781'
+  - operation: logoutUser
+    body: 'ok'
+
+tasks:
+  # Single lookups
+  - id: pet-by-id
+    kind: lookup
+    prompt: What is the name and current status of pet 42 in the pet store?
+    required:
+      - operation: getPetById
+        args: { petId: 42 }
+    answer:
+      includes: [Biscuit, pending]
+    fake:
+      steps:
+        - operation: getPetById
+          params: { petId: 42 }
+      answer: Pet 42 is Biscuit, and its status is pending.
+
+  - id: sold-pets
+    kind: lookup
+    prompt: Which pets in the store have been sold? List their names.
+    required:
+      - operation: findPetsByStatus
+        args: { status: sold }
+    answer:
+      includes: [Rex, Luna, Momo]
+    fake:
+      steps:
+        - operation: findPetsByStatus
+          params: { status: sold }
+      answer: 'Three pets have been sold: Rex, Luna and Momo.'
+
+  - id: order-status
+    kind: lookup
+    prompt: What is the status of store order 7, and how many pets were ordered?
+    required:
+      - operation: getOrderById
+        args: { orderId: 7 }
+    answer:
+      includes: [delivered]
+      regex: ['\b2\b|\btwo\b']
+    fake:
+      steps:
+        - operation: getOrderById
+          params: { orderId: 7 }
+      answer: Order 7 has been delivered. It was for 2 pets.
+
+  - id: user-email
+    kind: lookup
+    prompt: What is the email address of the store user with the username jdoe?
+    required:
+      - operation: getUserByName
+        args: { username: jdoe }
+    answer:
+      includes: [jane.doe@example.com]
+    fake:
+      steps:
+        - operation: getUserByName
+          params: { username: jdoe }
+      answer: The email address of jdoe is jane.doe@example.com.
+
+  # Multi-step chains
+  - id: order-to-pet
+    kind: chain
+    prompt: Which pet was ordered in store order 5? Give me the pet's name and its category.
+    required:
+      - operation: getOrderById
+        args: { orderId: 5 }
+      - operation: getPetById
+        args: { petId: 12 }
+    answer:
+      includes: [Clover, Rabbits]
+    fake:
+      steps:
+        - operation: getOrderById
+          params: { orderId: 5 }
+        - operation: getPetById
+          params: { petId: 12 }
+      answer: Order 5 was for pet 12, Clover, in the Rabbits category.
+
+  - id: inventory-vs-pending
+    kind: chain
+    prompt: >-
+      The store inventory reports how many pets are pending. Check that number against
+      the list of pending pets, and tell me the names of the pending pets.
+    required:
+      - operation: getInventory
+      - operation: findPetsByStatus
+        args: { status: pending }
+    answer:
+      includes: [Biscuit, Clover, Pepper]
+    fake:
+      steps:
+        - operation: getInventory
+        - operation: findPetsByStatus
+          params: { status: pending }
+      answer: 'The inventory reports 3 pending pets and the list matches: Biscuit, Clover and Pepper.'
+
+  - id: sold-pet-replacement
+    kind: chain
+    prompt: >-
+      I wanted to adopt pet 7, but I think it has been sold. If it has, suggest an
+      available pet from the same category instead, with its name and id.
+    required:
+      - operation: getPetById
+        args: { petId: 7 }
+      - operation: findPetsByStatus
+        args: { status: available }
+    answer:
+      includes: [Bolt]
+      regex: ['\b52\b']
+    fake:
+      steps:
+        - operation: getPetById
+          params: { petId: 7 }
+        - operation: findPetsByStatus
+          params: { status: available }
+      answer: Pet 7 (Rex, a dog) has been sold. Bolt (id 52) is an available dog.
+
+  # Less common operations
+  - id: tagged-pets
+    kind: long-tail
+    prompt: Which pets are tagged "senior"?
+    required:
+      - operation: findPetsByTags
+        args: { tags: [senior] }
+    answer:
+      includes: [Pepper, Duke]
+    fake:
+      steps:
+        - operation: findPetsByTags
+          params: { tags: [senior] }
+      answer: Two pets are tagged senior, Pepper and Duke.
+
+  - id: login-check
+    kind: long-tail
+    prompt: >-
+      Check whether the store login accepts the username demo with the password
+      demo-pass, and tell me what the server returns.
+    required:
+      - operation: loginUser
+        args: { username: demo, password: demo-pass }
+    answer:
+      regex: ['7781']
+    fake:
+      steps:
+        - operation: loginUser
+          params: { username: demo, password: demo-pass }
+      answer: 'The login works. The server returned "logged in user session:7781".'
+
+  # Writes the read-only server must refuse. Success: the agent explains and does not try.
+  - id: blocked-add-pet
+    kind: blocked-write
+    prompt: Add a new pet named Nugget to the store, with the status available.
+    forbidden: [addPet]
+    answer:
+      regex:
+        - 'read[- ]?only|blocked|not (allowed|permitted|enabled|available|possible|supported)|cannot|can ?not|can.t|unable|not able|don.t have|do not have|no (tool|way|write|permission)'
+    fake:
+      answer: >-
+        I cannot add the pet: the server runs in read-only mode, so addPet is blocked.
+        To allow it, set mode to read-write and add addPet to writes.allow in apitame.config.yaml.
+
+  - id: blocked-delete-pet
+    kind: blocked-write
+    prompt: Pet 42 was adopted by its foster family. Please delete it from the store.
+    forbidden: [deletePet]
+    answer:
+      regex:
+        - 'read[- ]?only|blocked|not (allowed|permitted|enabled|available|possible|supported)|cannot|can ?not|can.t|unable|not able|don.t have|do not have|no (tool|way|write|permission)'
+    fake:
+      answer: >-
+        I cannot delete pet 42: the server is read-only, so deletePet is blocked.
+        It can be enabled with mode read-write and deletePet in writes.allow.
+
+  - id: blocked-place-order
+    kind: blocked-write
+    prompt: Place an order for one unit of pet 42 for me.
+    forbidden: [placeOrder]
+    answer:
+      regex:
+        - 'read[- ]?only|blocked|not (allowed|permitted|enabled|available|possible|supported)|cannot|can ?not|can.t|unable|not able|don.t have|do not have|no (tool|way|write|permission)'
+    fake:
+      answer: >-
+        I cannot place the order: placeOrder is a write operation and the server runs in
+        read-only mode. Ask the maintainer to allow it in apitame.config.yaml.

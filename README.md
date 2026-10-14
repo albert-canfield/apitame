@@ -266,6 +266,8 @@ Every field is documented in [docs/configuration.md](docs/configuration.md).
 
 On the full Stripe and GitHub APIs, a one-tool-per-endpoint list would not even fit in most context windows; apitame serves both in a few thousand tokens, keeps every operation reachable through `search_operations`, and `init` plus `test` take about three seconds each. The estimate is calibrated against a real BPE tokenizer and lands slightly above it; exact counts vary by model. Several clients now load tool schemas on demand, so the bigger win is often fewer, clearer tools rather than raw token count. A search-and-call-only surface is smaller still (about 230 tokens) but costs extra round trips on every task; apitame gives you both.
 
+Tokens are only part of the story. A [tool-selection eval](docs/eval.md) runs the same tasks on the curated, one-tool-per-endpoint and search-only surfaces and measures success, calls and cost; results will be published there whatever they show.
+
 ## How it compares
 
 There is good prior work here. This table is our honest reading as of 13 October 2026; [docs/landscape.md](docs/landscape.md) has the details and sources.
