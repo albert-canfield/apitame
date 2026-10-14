@@ -75,6 +75,14 @@ With `longTail.enabled: true` (the default) two more tools are added:
 
 ## Responses
 
+Every tool that reads JSON accepts an optional `fields` argument: a list of dot paths to keep. Arrays are handled transparently, so on a search result
+
+```json
+{ "operation": "search/repos", "params": { "q": "mcp language:typescript" }, "fields": ["total_count", "items.full_name", "items.stargazers_count"] }
+```
+
+returns `total_count` and, for every item, only `full_name` and `stargazers_count`. Selection happens before the size cap, so more items fit. If an operation has its own parameter called `fields` (common in Google and JSON:API style APIs), the API parameter wins in single-operation tools; in grouped tools it lives inside `params` and there is no clash.
+
 Results are compact JSON: `{"status": 200, "data": ...}`. Non-2xx statuses are returned with `isError: true` and the API's error body, so the agent can read the reason. Responses larger than `limits.maxResponseBytes` are trimmed (arrays are cut to the items that fit) with a `note` explaining what happened.
 
 ## Auth

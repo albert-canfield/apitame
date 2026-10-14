@@ -25,6 +25,7 @@ import type {
 } from '../types.js';
 import { buildRequest, RequestBuildError, sendRequest } from './http-client.js';
 import { errorResult, jsonResult } from './results.js';
+import { parseFields } from './fields.js';
 import { ArgValidator } from './validate.js';
 
 export interface OpenApiRuntimeOptions {
@@ -151,6 +152,8 @@ export class OpenApiRuntime implements Runtime {
 
   private safetyProps(ops: Operation[]): Record<string, JsonSchema> {
     const props: Record<string, JsonSchema> = {};
+    // Explained once in the server instructions, so no per-tool description.
+    if (ops.some((o) => o.response)) props.fields = { type: 'array', items: { type: 'string' } };
     if (ops.some((o) => o.access !== 'read')) {
       props.dryRun = {
         type: 'boolean',
@@ -217,9 +220,10 @@ export class OpenApiRuntime implements Runtime {
             description,
             inputSchema: {
               ...op.inputSchema,
+              // The API's own parameters win if they share a name with fields, dryRun or confirm.
               properties: {
-                ...(op.inputSchema.properties as Record<string, JsonSchema>),
                 ...this.safetyProps(ops),
+                ...(op.inputSchema.properties as Record<string, JsonSchema>),
               },
             } as ToolDefinition['inputSchema'],
             annotations: this.annotations(title, ops),
@@ -337,6 +341,7 @@ export class OpenApiRuntime implements Runtime {
         ? `Use ${SEARCH} to find operations that are not listed, then ${CALL}.`
         : '',
       'Results are JSON: {"status": <http status>, "data": <body>}.',
+      'Add "fields": ["id", "items.name"] (dot paths) to keep only the fields you need from large responses.',
     ];
     return parts.filter(Boolean).join(' ');
   }
@@ -377,17 +382,33 @@ export class OpenApiRuntime implements Runtime {
     args: Record<string, unknown>,
     ctx?: CallContext,
   ): Promise<ToolResult> {
-    const { dryRun, confirm, ...rest } = args;
+    const { dryRun, confirm, fields, ...rest } = args;
     const flags = {
       dryRun: dryRun === true,
       confirm: typeof confirm === 'string' ? confirm : undefined,
+      fields: parseFields(fields),
     };
 
     switch (tool.kind) {
       case 'search':
         return this.search(String(args.query ?? ''), Number(args.limit ?? 8));
-      case 'operation':
-        return this.execute(tool.ops[0]!, rest, flags, ctx);
+      case 'operation': {
+        const op = tool.ops[0]!;
+        // Give back any control argument that is really one of the operation's parameters.
+        const own = (op.inputSchema.properties ?? {}) as Record<string, unknown>;
+        const params = { ...rest };
+        const control = { dryRun, confirm, fields };
+        const ownFlags = { ...flags };
+        for (const [k, v] of Object.entries(control)) {
+          if (k in own && v !== undefined) {
+            params[k] = v;
+            if (k === 'fields') ownFlags.fields = undefined;
+            if (k === 'dryRun') ownFlags.dryRun = false;
+            if (k === 'confirm') ownFlags.confirm = undefined;
+          }
+        }
+        return this.execute(op, params, ownFlags, ctx);
+      }
       case 'group': {
         const id = String(rest.operation ?? '');
         const op = tool.ops.find((o) => o.id === id);
@@ -467,7 +488,7 @@ export class OpenApiRuntime implements Runtime {
   private async execute(
     op: Operation,
     params: Record<string, unknown>,
-    flags: { dryRun: boolean; confirm: string | undefined },
+    flags: { dryRun: boolean; confirm: string | undefined; fields: string[] | undefined },
     ctx?: CallContext,
   ): Promise<ToolResult> {
     if (op.unsupported) return errorResult(`"${op.id}" cannot be called: ${op.unsupported}.`);
@@ -534,6 +555,7 @@ export class OpenApiRuntime implements Runtime {
     const res = await sendRequest(req, op.noAuth ? undefined : this.auth, {
       timeoutMs: this.config.limits.timeoutMs,
       maxResponseBytes: this.config.limits.maxResponseBytes,
+      fields: flags.fields,
       ...(this.opts.fetchImpl ? { fetchImpl: this.opts.fetchImpl } : {}),
       ...(ctx?.signal ? { signal: ctx.signal } : {}),
     });

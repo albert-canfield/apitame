@@ -1,5 +1,6 @@
 import type { AuthProvider } from '../auth/index.js';
 import { VERSION } from '../version.js';
+import { projectFields } from './fields.js';
 import type { Operation, ParamSpec } from '../sources/openapi/operations.js';
 
 const USER_AGENT = `apitame/${VERSION} (+https://github.com/albert-canfield/apitame)`;
@@ -212,6 +213,8 @@ export function fitJson(value: unknown, maxBytes: number): { value: unknown; not
 export interface SendOptions {
   timeoutMs: number;
   maxResponseBytes: number;
+  /** Keep only these fields of a JSON response (dot paths), before size limits apply. */
+  fields?: string[] | undefined;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
 }
@@ -314,7 +317,9 @@ export async function sendRequest(
     note = `Response was larger than ${hardCap} bytes and was cut. Use filters or pagination.`;
   } else if (/json/i.test(contentType) || /^\s*[[{]/.test(text)) {
     try {
-      const fitted = fitJson(JSON.parse(text), opts.maxResponseBytes);
+      const parsed: unknown = JSON.parse(text);
+      const selected = opts.fields ? projectFields(parsed, opts.fields) : parsed;
+      const fitted = fitJson(selected, opts.maxResponseBytes);
       data = fitted.value;
       note = fitted.note;
     } catch {

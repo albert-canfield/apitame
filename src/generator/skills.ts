@@ -279,6 +279,8 @@ export function generateOpenApiSkill(rt: OpenApiRuntime): GeneratedFile[] {
     '',
     'Grouped tools take `{"operation": "<operation id>", "params": {...}}`. Results are JSON: `{"status": <http status>, "data": <body>}`.',
     '',
+    'Add `"fields"` with dot paths to keep only what you need, for example `"fields": ["id", "name", "items.owner.login"]`. Arrays are handled for you, so `items.name` keeps `name` in every item. It saves a lot of context on large responses.',
+    '',
     '## Workflows',
     '',
   );
@@ -306,7 +308,7 @@ export function generateOpenApiSkill(rt: OpenApiRuntime): GeneratedFile[] {
     );
   }
   lines.push(
-    `- Responses over ${Math.round(rt.config.limits.maxResponseBytes / 1000)} KB are cut. Use filters and pagination rather than fetching everything.`,
+    `- Responses over ${Math.round(rt.config.limits.maxResponseBytes / 1000)} KB are cut. Use filters, pagination and \`fields\` rather than fetching everything.`,
     '- Never ask the user for API keys or tokens: the server already holds them, and they are never shown to you.',
     '- A non-2xx `status` is an API error: read `data` for the reason before retrying.',
     '',
