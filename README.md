@@ -8,7 +8,7 @@
   <a href="https://www.npmjs.com/package/apitame"><img alt="npm version" src="https://img.shields.io/npm/v/apitame.svg"></a>
   <a href="https://github.com/albert-canfield/apitame/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/albert-canfield/apitame/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <img alt="Node 20+" src="https://img.shields.io/badge/node-%3E%3D20.12-339933.svg">
+  <img alt="Node 22+" src="https://img.shields.io/badge/node-%3E%3D22-339933.svg">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-TypeScript%20SDK%20v2-8A2BE2.svg">
 </p>
 
@@ -36,7 +36,7 @@ Giving an agent an API is easy. Giving it one safely, without flooding its conte
 
 ## Quick start
 
-Requires Node.js 20.12 or later.
+Requires Node.js 22 or later.
 
 ### From an OpenAPI spec (3.0, 3.1 or Swagger 2.0)
 
@@ -291,7 +291,6 @@ Executor is the closest match on safety and is a great choice if you want a mana
 - [SQL Server and DuckDB](https://github.com/albert-canfield/apitame/issues/27).
 - [OAuth 2.1 for the HTTP transport](https://github.com/albert-canfield/apitame/issues/28).
 - [Approvals through multi round-trip input](https://github.com/albert-canfield/apitame/issues/45), ready for the 2026-07-28 protocol and for stateless HTTP.
-- [Require Node 22](https://github.com/albert-canfield/apitame/issues/29) (Node 20 is past end of life).
 - Later: GraphQL sources.
 
 Ideas and votes are welcome in [issues](https://github.com/albert-canfield/apitame/issues).

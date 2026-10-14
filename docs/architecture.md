@@ -76,6 +76,6 @@ Tool input schemas are generated JSON Schema, not Zod objects written by hand. T
 - `tests/integration`: the OpenAPI runtime against the mock server (blocking, allowlist, confirmation, dry run, redaction), the MCP protocol over an in-memory transport (including elicitation and skills), `doctor`, and the SQL runtime against SQLite, PGlite and, in CI, real PostgreSQL 17 and MySQL 8.4 servers (timeouts, read-only roles, injection payloads).
 - `tests/e2e`: the CLI as users run it, including a stdio MCP session and every `add-to` client.
 
-CI runs on Linux (Node 20, 22, 24), macOS and Windows, plus a packed-tarball smoke test and the real-database job.
+CI runs on Linux (Node 22, 24), macOS and Windows, plus a packed-tarball smoke test and the real-database job.
 
 See [decisions.md](decisions.md) for the reasoning behind the main choices.

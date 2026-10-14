@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Node.js 22 or later is required. Node 20 reached end of life in April 2026; `apitame doctor` now fails on it. Thanks @Enard52 (#48).
+
 ## [0.2.0] - 2026-10-14
 
 ### Added

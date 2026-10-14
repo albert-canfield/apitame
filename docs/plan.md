@@ -41,7 +41,7 @@ See [architecture.md](architecture.md) for modules and request flows, and [decis
 - [x] Tests prove that writes are blocked in read-only mode and that destructive operations require confirmation (OpenAPI and SQL, unit and integration).
 - [x] SQL guard tests include injection attempts, multi-statement tricks and parser/database differentials.
 - [x] Secret redaction is tested (echoed tokens, OAuth errors, database passwords).
-- [x] CI: lint, typecheck and tests on Node 20, 22 and 24; build and smoke test of the packed CLI.
+- [x] CI: lint, typecheck and tests on Node 22 and 24 (and 20 until 0.2); build and smoke test of the packed CLI.
 - [x] `npx apitame init examples/petstore/openapi.yaml && npx apitame serve` works on a clean machine (checked against the published package with an empty npm cache, and covered by the e2e tests and the CI smoke test).
 
 ## Release checklist
@@ -55,5 +55,5 @@ See [architecture.md](architecture.md) for modules and request flows, and [decis
 ## After v0.1
 
 - v0.2: multipart uploads (done), Swagger 2.0 import (done), response field selection (done), MySQL (done), audit log and rate limits (done), `doctor` (done).
-- Next: see the [open issues](https://github.com/albert-canfield/apitame/issues): tool-selection eval (#24), SQL Server and DuckDB (#27), OAuth 2.1 for HTTP (#28), Node 22 (#29), approvals through multi round-trip input (#45).
+- Next: see the [open issues](https://github.com/albert-canfield/apitame/issues): tool-selection eval (#24), SQL Server and DuckDB (#27), OAuth 2.1 for HTTP (#28), approvals through multi round-trip input (#45).
 - Later: GraphQL.
