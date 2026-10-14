@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
-- **Breaking:** Node.js 22 or later is required. Node 20 reached end of life in April 2026; `apitame doctor` now fails on it. Thanks @Enard52 (#48).
+- **Breaking:** Node.js 22.14 or later is required. Node 20 reached end of life in April 2026, and the SQLite driver (better-sqlite3 13) crashes on Node 22 before 22.14; `apitame doctor` fails on older versions. Thanks @Enard52 (#48).
 - commander 15: a "too many arguments" error now lists the arguments it got (`Expected 0 arguments but got 2: extra1, extra2.`). Options and help output are unchanged.
 
 ## [0.2.0] - 2026-10-14

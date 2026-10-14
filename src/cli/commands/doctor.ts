@@ -37,9 +37,10 @@ const MARK: Record<Status, (s: string) => string> = {
 };
 
 function checkNode(add: (s: Status, check: string, detail: string) => void): void {
-  const [major = 0] = process.versions.node.split('.').map(Number);
-  if (major < 22) add('fail', 'Node.js', `${process.version}: apitame needs Node.js 22 or later`);
-  else add('ok', 'Node.js', process.version);
+  const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
+  if (major < 22 || (major === 22 && minor < 14)) {
+    add('fail', 'Node.js', `${process.version}: apitame needs Node.js 22.14 or later`);
+  } else add('ok', 'Node.js', process.version);
 }
 
 function checkDotEnv(

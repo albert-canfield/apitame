@@ -14,9 +14,6 @@ updates:
       # Types follow the minimum supported Node (22).
       - dependency-name: '@types/node'
         versions: ['>=23']
-      # better-sqlite3 13 prebuilds need Node-API 10 (Node 22.14+) and crash on older Node 22.
-      - dependency-name: better-sqlite3
-        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule:
