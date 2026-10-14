@@ -49,6 +49,37 @@ jobs:
       - run: pnpm build
       - run: pnpm test
 
+  databases:
+    name: Real databases (PostgreSQL 17, MySQL 8.4)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: pgpw
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 3s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -prootpw --silent" --health-interval 3s --health-timeout 3s --health-retries 40
+    env:
+      APITAME_TEST_POSTGRES_URL: postgres://postgres:pgpw@127.0.0.1:5432/postgres
+      APITAME_TEST_MYSQL_URL: mysql://root:rootpw@127.0.0.1:3306/mysql
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vitest run tests/integration/sql.test.ts
+
   smoke:
     name: Packed CLI smoke test
     runs-on: ubuntu-latest
