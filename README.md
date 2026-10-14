@@ -287,8 +287,12 @@ Executor is the closest match on safety and is a great choice if you want a mana
 
 ## Roadmap
 
-- Next: a published tool-selection eval (curated vs one-per-endpoint vs search-only), per-tool rate limits, `serve` reloading the config on change.
-- Later: GraphQL sources, OAuth authorization code flow for remote HTTP serving, more databases.
+- [A published tool-selection eval](https://github.com/albert-canfield/apitame/issues/24): curated tools vs one tool per endpoint vs search-only.
+- [Stateful HTTP](https://github.com/albert-canfield/apitame/issues/25), so confirmations can use elicitation over HTTP too.
+- [SQL Server and DuckDB](https://github.com/albert-canfield/apitame/issues/27).
+- [OAuth 2.1 for the HTTP transport](https://github.com/albert-canfield/apitame/issues/28).
+- [Require Node 22](https://github.com/albert-canfield/apitame/issues/29) (Node 20 is past end of life).
+- Later: GraphQL sources.
 
 Ideas and votes are welcome in [issues](https://github.com/albert-canfield/apitame/issues).
 
