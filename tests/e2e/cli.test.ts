@@ -9,7 +9,15 @@ import { parse as parseYaml } from 'yaml';
 import { startMockServer, type MockServer } from '../../src/mock/server.js';
 import { loadSpec } from '../../src/sources/openapi/load.js';
 import { extractOperations } from '../../src/sources/openapi/operations.js';
-import { createSqliteShop, freePort, PETSTORE, ROOT, tempDir } from '../helpers.js';
+import {
+  createDuckdbShop,
+  createSqliteShop,
+  duckdbForTests,
+  freePort,
+  PETSTORE,
+  ROOT,
+  tempDir,
+} from '../helpers.js';
 import { claimsFor, FakeAuthServer, makeKey, signers, signJwt } from '../oauth-fixtures.js';
 
 const CLI = join(ROOT, 'src/cli.ts');
@@ -482,6 +490,134 @@ describe('CLI: serve for protocol 2026-07-28 clients', () => {
       }
     } finally {
       server.stop();
+    }
+  });
+});
+
+const { duck } = await duckdbForTests();
+
+describe.skipIf(!duck)('CLI: DuckDB flow', () => {
+  const t = tempDir('apitame-cli-duckdb-');
+  beforeAll(() => createDuckdbShop(join(t.dir, 'shop.duckdb'), duck!));
+  afterAll(() => t.cleanup());
+
+  it('init, inspect, test, doctor and add-to on a DuckDB file', () => {
+    const init = run(['init', 'shop.duckdb'], t.dir);
+    expect(init.code, init.stderr).toBe(0);
+    expect(init.stdout).toMatch(/Connected to DuckDB: 4 tables and views/);
+    expect(init.stdout).toMatch(/npx -p apitame -p @duckdb\/node-api apitame test/);
+    const cfg = parseYaml(readFileSync(join(t.dir, 'apitame.config.yaml'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(cfg).toMatchObject({ name: 'shop', source: { type: 'duckdb', path: './shop.duckdb' } });
+    const skill = readFileSync(join(t.dir, 'skills/shop-db/SKILL.md'), 'utf8');
+    expect(skill).toMatch(/DuckDB database/);
+    expect(skill).toMatch(/JOIN customers/);
+    expect(skill).toMatch(/GROUP BY ALL/);
+
+    const inspect = run(['inspect', '--json'], t.dir);
+    expect(inspect.code, inspect.stderr).toBe(0);
+    expect((JSON.parse(inspect.stdout) as { tools: unknown[] }).tools).toHaveLength(3);
+
+    const test = run(['test'], t.dir);
+    expect(test.code, test.stdout + test.stderr).toBe(0);
+    expect(test.stdout).toMatch(/orders\s+describe \+ query\s+pass/);
+    expect(test.stdout).toMatch(
+      /9 write and injection attempts\s+safety\s+pass\s+\d+\s+all refused/,
+    );
+
+    const doctor = run(['doctor', '--json'], t.dir);
+    const findings = (
+      JSON.parse(doctor.stdout) as { findings: Array<{ check: string; status: string }> }
+    ).findings;
+    expect(findings.find((f) => f.check === 'DuckDB driver')?.status).toBe('ok');
+    expect(findings.find((f) => f.check === 'Database')?.status).toBe('ok');
+
+    const addTo = run(['add-to', 'claude-code', '--write'], t.dir);
+    expect(addTo.code, addTo.stderr).toBe(0);
+    const mcp = JSON.parse(readFileSync(join(t.dir, '.mcp.json'), 'utf8'));
+    expect(mcp.mcpServers.shop.args.slice(0, 6)).toEqual([
+      '-y',
+      '-p',
+      expect.stringMatching(/^apitame@\d+\.\d+$/),
+      '-p',
+      '@duckdb/node-api',
+      'apitame',
+    ]);
+    expect(addTo.stdout).toMatch(
+      /claude mcp add --transport stdio --scope project shop -- npx -y -p apitame@\d+\.\d+ -p @duckdb\/node-api apitame serve --config/,
+    );
+  });
+
+  it('serve answers queries over stdio', async () => {
+    const client = new Client({ name: 'e2e', version: '1.0.0' });
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [...NODE_ARGS, 'serve'],
+      cwd: t.dir,
+      env: { ...(process.env as Record<string, string>), APITAME_LOG_LEVEL: 'silent' },
+      stderr: 'ignore',
+    });
+    await client.connect(transport);
+    try {
+      const res = (await client.callTool({
+        name: 'query',
+        arguments: { sql: 'SELECT count(*) AS n FROM orders' },
+      })) as { content: Array<{ text: string }> };
+      expect(JSON.parse(res.content[0]!.text)).toMatchObject({ rows: [[60]] });
+      const refused = await client.callTool({
+        name: 'query',
+        arguments: { sql: "SELECT * FROM read_csv('/etc/hosts')" },
+      });
+      expect(refused.isError).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('says how to run with the driver when @duckdb/node-api is missing, and writes nothing', () => {
+    const fresh = tempDir('apitame-cli-noduck-');
+    try {
+      copyFileSync(join(t.dir, 'shop.duckdb'), join(fresh.dir, 'shop.duckdb'));
+      // Simulate an install without the optional peer: resolving the package fails.
+      const hooks = join(fresh.dir, 'no-duckdb-hooks.mjs');
+      writeFileSync(
+        hooks,
+        [
+          'export async function resolve(specifier, context, next) {',
+          "  if (specifier === '@duckdb/node-api') {",
+          '    const err = new Error("Cannot find package \'@duckdb/node-api\'");',
+          "    err.code = 'ERR_MODULE_NOT_FOUND';",
+          '    throw err;',
+          '  }',
+          '  return next(specifier, context);',
+          '}',
+        ].join('\n'),
+      );
+      const blocker = join(fresh.dir, 'no-duckdb.mjs');
+      writeFileSync(
+        blocker,
+        `import { register } from 'node:module';\nregister(${JSON.stringify(pathToFileURL(hooks).href)});\n`,
+      );
+      const res = spawnSync(
+        process.execPath,
+        ['--import', pathToFileURL(blocker).href, ...NODE_ARGS, 'init', 'shop.duckdb'],
+        {
+          cwd: fresh.dir,
+          encoding: 'utf8',
+          env: { ...process.env, NO_COLOR: '1', APITAME_LOG_LEVEL: 'silent' },
+          timeout: 60_000,
+        },
+      );
+      expect(res.status, res.stdout + res.stderr).toBe(1);
+      expect(res.stderr).toMatch(/needs the "@duckdb\/node-api" package/);
+      expect(res.stderr).toMatch(
+        /npx -p apitame -p @duckdb\/node-api apitame init \.\/data\.duckdb/,
+      );
+      expect(existsSync(join(fresh.dir, 'apitame.config.yaml'))).toBe(false);
+    } finally {
+      fresh.cleanup();
     }
   });
 });

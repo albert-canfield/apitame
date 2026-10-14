@@ -80,7 +80,7 @@ export interface ToolSummary {
 /** A source-specific runtime: the thing an MCP server serves. */
 export interface Runtime {
   readonly name: string;
-  readonly sourceType: 'openapi' | 'postgres' | 'sqlite' | 'mysql';
+  readonly sourceType: 'openapi' | 'postgres' | 'sqlite' | 'mysql' | 'duckdb';
   readonly mode: 'read-only' | 'read-write';
   /** Server instructions sent during the MCP handshake. */
   instructions(): string;

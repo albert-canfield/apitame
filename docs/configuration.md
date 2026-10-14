@@ -66,6 +66,16 @@ source:
   path: ./shop.db          # relative to the config file
 ```
 
+### DuckDB
+
+```yaml
+source:
+  type: duckdb
+  path: ./data.duckdb      # relative to the config file, opened read-only
+```
+
+DuckDB needs the optional `@duckdb/node-api` package next to apitame (`npx -p apitame -p @duckdb/node-api apitame <command>`, see [sql.md](sql.md#duckdb)). Named queries on a DuckDB source must be reads: `write: true` is a validation error.
+
 ## `auth`
 
 Only used by OpenAPI sources.
@@ -175,7 +185,7 @@ sql:
       sql: SELECT id, total FROM orders WHERE customer_id = :customer_id ORDER BY id DESC LIMIT 20
       params:
         customer_id: { type: integer, description: Customer id, required: true }
-      write: false                         # true for INSERT, UPDATE, DELETE
+      write: false                         # true for INSERT, UPDATE, DELETE (not on DuckDB)
   tables:
     allow: []                              # if non-empty, only these tables
     deny: []                               # never these tables

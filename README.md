@@ -15,7 +15,7 @@
 </p>
 
 ```bash
-npx apitame init ./openapi.yaml          # or an API URL, postgres://..., mysql://..., ./shop.db
+npx apitame init ./openapi.yaml          # or an API URL, postgres://..., mysql://..., ./shop.db, ./data.duckdb
 npx apitame add-to claude-code --write   # or codex, cursor, vscode, gemini, claude-desktop
 ```
 
@@ -34,7 +34,7 @@ Giving an agent an API is easy. Giving it one safely, without flooding its conte
 - **Safe by default.** Read-only out of the box. Writes need `mode: read-write` and an explicit allowlist. Destructive operations stop for human approval. Every write has a dry run.
 - **A curated tool surface.** Endpoints are grouped into a handful of task-level tools, with `search_operations` and `call_operation` for the long tail. The GitHub example goes from 38 endpoints to 8 tools and about 60% fewer tokens; Stripe's full API goes from 612 endpoints to 12 tools and 99% fewer. Responses can be trimmed to the fields the agent needs with `"fields": ["items.full_name"]`.
 - **Skills that match the server.** Generated `SKILL.md` files use the real tool names, argument shapes, workflows and safety rules. They are installed where Claude Code, Codex, Cursor, VS Code and Gemini CLI look for them, packaged for Claude Desktop, and served over MCP.
-- **SQL without the usual footguns.** PostgreSQL, MySQL and SQLite with `list_tables`, `describe_table` and a SELECT-only `query`, checked by a lexer and a real SQL parser, then run in a read-only transaction with a row limit and a timeout.
+- **SQL without the usual footguns.** PostgreSQL, MySQL, SQLite and DuckDB with `list_tables`, `describe_table` and a SELECT-only `query`, checked by a lexer and a real SQL parser, then run read-only at the database level with a row limit and a timeout.
 - **One config file you can review in a pull request.** `apitame.config.yaml` holds the tool groups, the allowlist, limits and auth. No daemon, no account, no code generation.
 - **Secrets stay secret.** Credentials come only from environment variables and are redacted from every tool result, error, log line and dry-run preview.
 
@@ -63,9 +63,12 @@ npx apitame init https://api.example.com   # a spec URL, or a base URL (apitame 
 npx apitame init postgres://readonly_user:password@localhost:5432/shop
 npx apitame init mysql://readonly_user:password@localhost:3306/shop
 npx apitame init ./shop.db
+npx -p apitame -p @duckdb/node-api apitame init ./data.duckdb
 ```
 
 The connection string is saved to `.env` (never to the config file). Use a read-only role: [docs/sql.md](docs/sql.md) has a two-line setup.
+
+DuckDB's driver is an optional extra (its native binary adds 40 to 120 MB), so it is not part of the default install: run apitame with `npx -p apitame -p @duckdb/node-api apitame <command>`, and `add-to` writes client configs that do the same. See [DuckDB](docs/sql.md#duckdb).
 
 ### Check it, then connect your agent
 
@@ -208,10 +211,10 @@ apitame assumes the agent will eventually call the wrong thing, and makes that b
 
 For SQL, every free-form query passes four independent layers:
 
-1. **A lexer that follows the database's own quoting rules**: exactly one statement, no write keywords, no side-effect functions (`pg_sleep`, `pg_read_file`, `dblink`, `load_extension` and others), no credential catalogs.
-2. **A real SQL parser**: the statement must be a SELECT, with no `SELECT INTO` and no row locks. Anything the parser cannot read is refused.
-3. **The database itself**: PostgreSQL runs the query inside `BEGIN READ ONLY` with `statement_timeout`, through the extended protocol (which accepts one statement only) and a cursor that stops at the row limit. MySQL uses `START TRANSACTION READ ONLY`, `max_execution_time`, `sql_select_limit` and single-statement prepared statements. SQLite uses a read-only connection, `query_only`, a per-statement read-only check and a worker thread that is killed on timeout.
-4. **Your read-only database role**, which nothing can bypass.
+1. **A lexer that follows the database's own quoting rules**: exactly one statement, no write keywords, no side-effect functions (`pg_sleep`, `pg_read_file`, `dblink`, `load_extension`, DuckDB's `read_csv` and `query` and others), no credential catalogs.
+2. **A real SQL parser**: the statement must be a SELECT, with no `SELECT INTO` and no row locks. Anything the parser cannot read is refused. For DuckDB this is DuckDB's own parser, run on a separate in-memory database: it cannot disagree with the engine, but it is not independent of it either.
+3. **The database itself**: PostgreSQL runs the query inside `BEGIN READ ONLY` with `statement_timeout`, through the extended protocol (which accepts one statement only) and a cursor that stops at the row limit. MySQL uses `START TRANSACTION READ ONLY`, `max_execution_time`, `sql_select_limit` and single-statement prepared statements. SQLite uses a read-only connection, `query_only`, a per-statement read-only check and a worker thread that is killed on timeout. DuckDB opens the file `READ_ONLY` with file access and extension loading turned off and the configuration locked, and checks with DuckDB itself that the text is one SELECT statement.
+4. **Your read-only database role**, which nothing can bypass. DuckDB has no roles: a read-only file plays that part.
 
 The layers exist because parsers and databases disagree. `SELECT '\'; DELETE FROM orders; --'` is one harmless string to a typical SQL parser and two statements to PostgreSQL. apitame's lexer reads it the way PostgreSQL does, and the test suite includes that case and the `COMMIT; DROP SCHEMA` escape that affected the archived reference Postgres server.
 
@@ -221,7 +224,7 @@ Read [docs/safety.md](docs/safety.md) for the full model, including what apitame
 
 | Command | What it does |
 | --- | --- |
-| `apitame init <source>` | Introspect an OpenAPI or Swagger file or URL, a `postgres://` or `mysql://` URL, or a SQLite file. Writes `apitame.config.yaml` and `skills/`. |
+| `apitame init <source>` | Introspect an OpenAPI or Swagger file or URL, a `postgres://` or `mysql://` URL, or a SQLite or DuckDB file. Writes `apitame.config.yaml` and `skills/`. |
 | `apitame serve` | Run the MCP server over stdio (default) or `--transport http`. With `--watch`, config and spec edits apply live and clients are told the tools changed. |
 | `apitame inspect` | List tools, access levels and estimated token cost. `--max-tokens <n>` fails CI when the tool list grows past a budget. |
 | `apitame test` | Call every read tool against a local mock built from the spec (or `--live`, which also validates responses), and prove that blocked writes are refused. For SQL, check every table and try known injection payloads. |
@@ -274,7 +277,7 @@ There is good prior work here. This table is our honest reading as of 13 October
 
 | | apitame | [FastMCP](https://github.com/PrefectHQ/fastmcp) `from_openapi` | [Executor](https://github.com/UsefulSoftwareCo/executor) | [mcp-openapi-server](https://github.com/ivo-toby/mcp-openapi-server) | [openapi-mcp-generator](https://github.com/harsha-iiiv/openapi-mcp-generator) | [MCP Toolbox for Databases](https://github.com/googleapis/mcp-toolbox) | [DBHub](https://github.com/bytebase/dbhub) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Inputs | OpenAPI 3.x, Swagger 2.0, PostgreSQL, MySQL, SQLite | OpenAPI (in Python code) | OpenAPI, GraphQL, MCP | OpenAPI | OpenAPI | 20+ databases | 6 SQL engines |
+| Inputs | OpenAPI 3.x, Swagger 2.0, PostgreSQL, MySQL, SQLite, DuckDB | OpenAPI (in Python code) | OpenAPI, GraphQL, MCP | OpenAPI | OpenAPI | 20+ databases | 6 SQL engines |
 | Runs as | CLI plus a config file | Python framework | Daemon, desktop app or hosted | CLI proxy | Generated Node project | Go server | Node server |
 | Tool surface | Grouped task tools (capped) plus search and call | One per endpoint, or search and call, or code mode | Code mode, or search and invoke | One per endpoint, or 3 discovery tools | One per endpoint | Hand-written toolsets | 2 tools plus custom |
 | Read-only by default | Yes | No | Partial | No | No | No | Partial |
@@ -294,7 +297,7 @@ Executor is the closest match on safety and is a great choice if you want a mana
 ## Roadmap
 
 - [A published tool-selection eval](https://github.com/albert-canfield/apitame/issues/24): curated tools vs one tool per endpoint vs search-only.
-- [SQL Server and DuckDB](https://github.com/albert-canfield/apitame/issues/27).
+- [SQL Server](https://github.com/albert-canfield/apitame/issues/27): still open. DuckDB, the other half of that issue, is supported.
 - Later: GraphQL sources.
 
 Ideas and votes are welcome in [issues](https://github.com/albert-canfield/apitame/issues).

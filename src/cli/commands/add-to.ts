@@ -4,6 +4,7 @@ import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { loadConfig } from '../../config/load.js';
 import { zip } from '../../generator/zip.js';
 import { loadSkills } from '../../server/skills.js';
+import { DUCKDB_PACKAGE } from '../../sources/sql/duckdb-package.js';
 import { VERSION } from '../../version.js';
 import { c, ok, warn } from '../ui.js';
 
@@ -29,8 +30,12 @@ interface ServerCommand {
   args: string[];
 }
 
-/** Default launcher: npx with the current minor version, so updates do not break configs. */
-function launcher(opts: AddToOptions, configArg: string): ServerCommand {
+/**
+ * Default launcher: npx with the current minor version, so updates do not break configs.
+ * Optional packages (the DuckDB driver) are added with `-p`, so npx installs them next
+ * to apitame: `npx -y -p apitame@0.2 -p @duckdb/node-api apitame serve ...`.
+ */
+function launcher(opts: AddToOptions, configArg: string, extras: string[] = []): ServerCommand {
   if (opts.command) {
     const parts = opts.command.split(' ').filter(Boolean);
     return {
@@ -38,8 +43,10 @@ function launcher(opts: AddToOptions, configArg: string): ServerCommand {
       args: [...parts.slice(1), 'serve', '--config', configArg],
     };
   }
-  const minor = VERSION.split('.').slice(0, 2).join('.');
-  return { command: 'npx', args: ['-y', `apitame@${minor}`, 'serve', '--config', configArg] };
+  const pkg = `apitame@${VERSION.split('.').slice(0, 2).join('.')}`;
+  const install =
+    extras.length > 0 ? ['-p', pkg, ...extras.flatMap((e) => ['-p', e]), 'apitame'] : [pkg];
+  return { command: 'npx', args: ['-y', ...install, 'serve', '--config', configArg] };
 }
 
 function mergeJson(file: string, key: string, name: string, value: unknown): void {
@@ -136,6 +143,8 @@ export async function addToCommand(clientArg: string, opts: AddToOptions): Promi
 
   const loaded = loadConfig(opts.config ?? process.env.APITAME_CONFIG ?? undefined);
   const name = opts.name ?? loaded.config.name;
+  const extras = loaded.config.source.type === 'duckdb' ? [DUCKDB_PACKAGE] : [];
+  const launch = (configArg: string) => launcher(opts, configArg, extras);
   const cwd = process.cwd();
   const relConfig = relative(cwd, loaded.path);
   const inProject = !relConfig.startsWith('..');
@@ -148,12 +157,12 @@ export async function addToCommand(clientArg: string, opts: AddToOptions): Promi
 
   switch (client) {
     case 'claude-code': {
-      const cmd = launcher(opts, pathFor('${CLAUDE_PROJECT_DIR:-.}'));
+      const cmd = launch(pathFor('${CLAUDE_PROJECT_DIR:-.}'));
       const entry = { type: 'stdio', ...cmd };
       console.log(c.bold('Claude Code'));
       console.log(c.dim('Add with the CLI (project scope, writes .mcp.json):'));
       console.log(
-        `  claude mcp add --transport stdio --scope project ${name} -- ${cmd.command} ${launcher(opts, loaded.path).args.join(' ')}`,
+        `  claude mcp add --transport stdio --scope project ${name} -- ${cmd.command} ${launch(loaded.path).args.join(' ')}`,
       );
       console.log(c.dim('\nOr put this in .mcp.json at the project root:'));
       console.log(JSON.stringify({ mcpServers: { [name]: entry } }, null, 2));
@@ -175,7 +184,7 @@ export async function addToCommand(clientArg: string, opts: AddToOptions): Promi
       break;
     }
     case 'codex': {
-      const cmd = launcher(opts, loaded.path);
+      const cmd = launch(loaded.path);
       console.log(c.bold('Codex'));
       console.log(c.dim('Add with the CLI (writes ~/.codex/config.toml):'));
       console.log(`  codex mcp add ${name} -- ${cmd.command} ${cmd.args.join(' ')}`);
@@ -215,11 +224,9 @@ export async function addToCommand(clientArg: string, opts: AddToOptions): Promi
       break;
     }
     case 'cursor': {
-      const cmd = launcher(opts, pathFor('${workspaceFolder}'));
+      const cmd = launch(pathFor('${workspaceFolder}'));
       const entry = { type: 'stdio', ...cmd };
-      const deeplinkConfig = Buffer.from(JSON.stringify(launcher(opts, loaded.path))).toString(
-        'base64',
-      );
+      const deeplinkConfig = Buffer.from(JSON.stringify(launch(loaded.path))).toString('base64');
       console.log(c.bold('Cursor'));
       console.log(c.dim('Put this in .cursor/mcp.json:'));
       console.log(JSON.stringify({ mcpServers: { [name]: entry } }, null, 2));
@@ -245,7 +252,7 @@ export async function addToCommand(clientArg: string, opts: AddToOptions): Promi
       break;
     }
     case 'vscode': {
-      const cmd = launcher(opts, pathFor('${workspaceFolder}'));
+      const cmd = launch(pathFor('${workspaceFolder}'));
       const entry = { type: 'stdio', ...cmd };
       console.log(c.bold('VS Code'));
       console.log(c.dim('Put this in .vscode/mcp.json:'));
@@ -269,7 +276,7 @@ export async function addToCommand(clientArg: string, opts: AddToOptions): Promi
     }
     case 'gemini': {
       // Gemini CLI documents no project variable for args, so the path is absolute.
-      const cmd = launcher(opts, loaded.path);
+      const cmd = launch(loaded.path);
       console.log(c.bold('Gemini CLI'));
       console.log(c.dim('Put this in .gemini/settings.json (or ~/.gemini/settings.json):'));
       console.log(JSON.stringify({ mcpServers: { [name]: cmd } }, null, 2));
@@ -293,7 +300,7 @@ export async function addToCommand(clientArg: string, opts: AddToOptions): Promi
     case 'claude-desktop': {
       // Desktop apps start servers from an unknown folder with a minimal PATH, so everything
       // is absolute and PATH includes the folder of the npx that was found now.
-      const base = launcher(opts, loaded.path);
+      const base = launch(loaded.path);
       const npx = !opts.command ? which('npx') : undefined;
       const entry = npx
         ? {

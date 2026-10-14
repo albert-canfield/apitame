@@ -88,11 +88,18 @@ export const SqliteSourceSchema = z.object({
   path: z.string().min(1),
 });
 
+export const DuckdbSourceSchema = z.object({
+  type: z.literal('duckdb'),
+  /** Database file path, relative to the config file. Opened read-only. */
+  path: z.string().min(1),
+});
+
 export const SourceSchema = z.discriminatedUnion('type', [
   OpenApiSourceSchema,
   PostgresSourceSchema,
   MysqlSourceSchema,
   SqliteSourceSchema,
+  DuckdbSourceSchema,
 ]);
 
 export const ToolGroupSchema = z.object({
@@ -264,6 +271,16 @@ export const ConfigSchema = z
         code: 'custom',
         path: ['tools'],
         message: 'Tool groups only apply to OpenAPI sources. Use sql.queries for SQL sources.',
+      });
+    }
+    if (cfg.source.type === 'duckdb') {
+      cfg.sql.queries.forEach((q, i) => {
+        if (!q.write) return;
+        ctx.addIssue({
+          code: 'custom',
+          path: ['sql', 'queries', i, 'write'],
+          message: `Named write queries are not supported for DuckDB sources: apitame opens DuckDB files read-only. Remove "write: true" from "${q.name}" (read queries work).`,
+        });
       });
     }
   });

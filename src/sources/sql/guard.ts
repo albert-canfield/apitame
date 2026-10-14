@@ -1,6 +1,7 @@
 import mysqlBuild from 'node-sql-parser/build/mysql.js';
 import postgresBuild from 'node-sql-parser/build/postgresql.js';
 import sqliteBuild from 'node-sql-parser/build/sqlite.js';
+import { DUCKDB_DENIED_TABLES, duckdbFromCheck, isDeniedDuckdbFunction } from './duckdb-rules.js';
 import {
   calledFunctions,
   LexError,
@@ -173,9 +174,17 @@ const BUILTIN_DENIED_TABLES = [
   'column_statistics',
 ];
 
-export function isDeniedFunction(name: string): boolean {
+/**
+ * Whether a function is refused. The shared list applies to every dialect; DuckDB adds
+ * its file readers, SQL-string runners and engine-state functions (see duckdb-rules.ts).
+ */
+export function isDeniedFunction(name: string, dialect?: Dialect): boolean {
   const bare = name.toLowerCase().split('.').pop() ?? '';
-  return DENIED_FUNCTIONS.has(bare) || DENIED_FUNCTION_PREFIXES.some((p) => bare.startsWith(p));
+  return (
+    DENIED_FUNCTIONS.has(bare) ||
+    DENIED_FUNCTION_PREFIXES.some((p) => bare.startsWith(p)) ||
+    (dialect === 'duckdb' && isDeniedDuckdbFunction(bare))
+  );
 }
 
 type SqlParser = {
@@ -183,19 +192,21 @@ type SqlParser = {
   tableList(sql: string, opt: { database: string }): string[];
 };
 type ParserModule = { Parser: new () => SqlParser };
+/** Dialects that node-sql-parser reads. DuckDB is parsed by DuckDB itself (duckdb-guard.ts). */
+type NodeParserDialect = Exclude<Dialect, 'duckdb'>;
 const parsers = new Map<Dialect, SqlParser>();
 
 /**
  * Only the three dialect builds apitame needs are imported, so the bundler
  * ships about 800 KB instead of the whole node-sql-parser package.
  */
-const PARSER_BUILDS: Record<Dialect, ParserModule> = {
+const PARSER_BUILDS: Record<NodeParserDialect, ParserModule> = {
   postgres: postgresBuild as unknown as ParserModule,
   sqlite: sqliteBuild as unknown as ParserModule,
   mysql: mysqlBuild as unknown as ParserModule,
 };
 
-function parser(dialect: Dialect): SqlParser {
+function parser(dialect: NodeParserDialect): SqlParser {
   let p = parsers.get(dialect);
   if (!p) {
     p = new PARSER_BUILDS[dialect].Parser();
@@ -204,17 +215,21 @@ function parser(dialect: Dialect): SqlParser {
   return p;
 }
 
-const PARSER_DB: Record<Dialect, string> = {
+const PARSER_DB: Record<NodeParserDialect, string> = {
   postgres: 'PostgresQL',
   sqlite: 'sqlite',
   mysql: 'MySQL',
 };
 
-/** Extra keywords that only matter in one dialect (MySQL locking reads and file export). */
+/**
+ * Extra keywords that only matter in one dialect (MySQL locking reads and file export;
+ * DuckDB extension, export, import and settings statements).
+ */
 const DIALECT_KEYWORDS: Record<Dialect, string[]> = {
   postgres: [],
   sqlite: [],
   mysql: ['LOCK', 'SHARE', 'HANDLER', 'OUTFILE', 'DUMPFILE', 'LOAD'],
+  duckdb: ['INSTALL', 'LOAD', 'EXPORT', 'IMPORT', 'SET', 'RESET'],
 };
 
 /** Schemas that hold credentials or other sessions' statements. */
@@ -222,11 +237,32 @@ const SYSTEM_SCHEMAS: Record<Dialect, string[]> = {
   postgres: [],
   sqlite: [],
   mysql: ['mysql', 'performance_schema', 'sys'],
+  duckdb: [],
 };
+
+/** Statements a query may start with. DuckDB also accepts FROM-first queries (`FROM orders`). */
+const FIRST_WORDS: Record<Dialect, string[]> = {
+  postgres: ['SELECT', 'WITH', 'VALUES'],
+  sqlite: ['SELECT', 'WITH', 'VALUES'],
+  mysql: ['SELECT', 'WITH', 'VALUES'],
+  duckdb: ['SELECT', 'WITH', 'VALUES', 'FROM'],
+};
+
+/** Every table name that is refused: built in, per dialect, and from the config. */
+export function deniedTables(dialect: Dialect, configured: string[] = []): string[] {
+  return [
+    ...BUILTIN_DENIED_TABLES,
+    ...(dialect === 'duckdb' ? DUCKDB_DENIED_TABLES : []),
+    ...configured,
+  ];
+}
 
 const lower = (s: string) => s.toLowerCase();
 
-function tableMatches(ref: { schema: string | null; table: string }, list: string[]): boolean {
+export function tableMatches(
+  ref: { schema: string | null; table: string },
+  list: string[],
+): boolean {
   const full = ref.schema ? `${lower(ref.schema)}.${lower(ref.table)}` : lower(ref.table);
   return list.some((entry) => {
     const e = lower(entry);
@@ -365,7 +401,7 @@ export function guardSelect(sql: string, opts: GuardOptions): GuardResult {
 
   const first = stmt[0];
   const firstWord = first?.type === 'word' ? first.value.toUpperCase() : '';
-  if (!['SELECT', 'WITH', 'VALUES'].includes(firstWord) && first?.type !== 'lparen') {
+  if (!FIRST_WORDS[opts.dialect].includes(firstWord) && first?.type !== 'lparen') {
     return fail(`Only SELECT queries are allowed (query starts with "${first?.value ?? ''}").`);
   }
   const extraKeywords = new Set(DIALECT_KEYWORDS[opts.dialect]);
@@ -382,7 +418,12 @@ export function guardSelect(sql: string, opts: GuardOptions): GuardResult {
     }
   }
   for (const fn of calledFunctions(stmt)) {
-    if (isDeniedFunction(fn)) return fail(`Function ${fn}() is not allowed in read-only queries.`);
+    if (isDeniedFunction(fn, opts.dialect))
+      return fail(`Function ${fn}() is not allowed in read-only queries.`);
+  }
+  if (opts.dialect === 'duckdb') {
+    const reason = duckdbFromCheck(stmt);
+    if (reason) return fail(reason);
   }
   const systemSchemas = SYSTEM_SCHEMAS[opts.dialect];
   for (let k = 0; k < stmt.length - 1; k++) {
@@ -395,7 +436,7 @@ export function guardSelect(sql: string, opts: GuardOptions): GuardResult {
       return fail(`The "${t.value}" schema is not available.`);
     }
   }
-  const denied = [...BUILTIN_DENIED_TABLES, ...(opts.denyTables ?? [])];
+  const denied = deniedTables(opts.dialect, opts.denyTables);
   for (const t of stmt) {
     if (
       (t.type === 'word' || t.type === 'quoted') &&
@@ -412,10 +453,15 @@ export function guardSelect(sql: string, opts: GuardOptions): GuardResult {
   if (opts.skipParser) {
     return { ok: true, sql: cleanSql, tables: [] };
   }
+  if (opts.dialect === 'duckdb') {
+    // No bundled parser reads DuckDB SQL: guardDuckdbSelect (duckdb-guard.ts) asks DuckDB's own parser.
+    throw new Error('DuckDB queries are checked with guardDuckdbSelect, not guardSelect.');
+  }
+  const dialect = opts.dialect;
 
   let ast: unknown;
   try {
-    ast = parser(opts.dialect).astify(cleanSql, { database: PARSER_DB[opts.dialect] });
+    ast = parser(dialect).astify(cleanSql, { database: PARSER_DB[dialect] });
   } catch (err) {
     const msg = (err as Error).message.split('\n')[0]?.slice(0, 160) ?? 'parse error';
     return fail(
@@ -462,8 +508,20 @@ export function guardSelect(sql: string, opts: GuardOptions): GuardResult {
   for (const fn of facts.functions) {
     if (isDeniedFunction(fn)) return fail(`Function ${fn}() is not allowed in read-only queries.`);
   }
+  return checkTableRefs(facts.tables, opts, cleanSql);
+}
 
-  const tables = facts.tables;
+/**
+ * Apply the system schema, deny and allow lists to the table references a parser found.
+ * Shared by the node-sql-parser layer and the DuckDB parser layer.
+ */
+export function checkTableRefs(
+  tables: Array<{ schema: string | null; table: string }>,
+  opts: GuardOptions,
+  cleanSql: string,
+): GuardResult {
+  const systemSchemas = SYSTEM_SCHEMAS[opts.dialect];
+  const denied = deniedTables(opts.dialect, opts.denyTables);
   for (const t of tables) {
     if (t.schema && systemSchemas.includes(lower(t.schema))) {
       return fail(`The "${t.schema}" schema is not available.`);
@@ -484,6 +542,7 @@ export function statementTables(
   sql: string,
   dialect: Dialect,
 ): Array<{ schema: string | null; table: string }> | null {
+  if (dialect === 'duckdb') return null;
   try {
     const entries = parser(dialect).tableList(sql, { database: PARSER_DB[dialect] });
     const seen = new Map<string, { schema: string | null; table: string }>();
@@ -563,8 +622,8 @@ export function analyzeWrite(sql: string, dialect: Dialect): WriteAnalysis {
 }
 
 /**
- * Rewrite `:name` parameters for the driver. Postgres gets `$1..$n`, MySQL
- * gets `?` (one per occurrence), SQLite keeps `:name` (bound by name).
+ * Rewrite `:name` parameters for the driver. Postgres and DuckDB get `$1..$n`,
+ * MySQL gets `?` (one per occurrence), SQLite keeps `:name` (bound by name).
  * Values are never interpolated.
  */
 export function bindNamedParams(

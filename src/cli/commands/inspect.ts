@@ -93,7 +93,12 @@ export async function inspectCommand(opts: InspectOptions): Promise<void> {
     }
 
     const src = loaded.config.source;
-    const where = src.type === 'openapi' ? src.spec : src.type === 'sqlite' ? src.path : src.url;
+    const where =
+      src.type === 'openapi'
+        ? src.spec
+        : src.type === 'sqlite' || src.type === 'duckdb'
+          ? src.path
+          : src.url;
     console.log(
       `${c.bold(runtime.name)}  ${c.dim(`${runtime.sourceType} · ${runtime.mode} · ${redactor.text(where)}`)}`,
     );

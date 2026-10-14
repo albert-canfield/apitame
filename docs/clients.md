@@ -4,6 +4,8 @@
 
 In the examples the server is called `github` and the config sits at the project root. apitame reads secrets from the environment or from `.env` next to `apitame.config.yaml`, so none of these files contain credentials.
 
+For a DuckDB source, the server needs the optional DuckDB driver next to apitame, and `add-to` adds it to every launcher: `"args": ["-y", "-p", "apitame@0.2", "-p", "@duckdb/node-api", "apitame", "serve", ...]` instead of `["-y", "apitame@0.2", "serve", ...]`. See [DuckDB](sql.md#duckdb).
+
 ## Claude Code
 
 Project scope, shared through git (`.mcp.json` at the project root):

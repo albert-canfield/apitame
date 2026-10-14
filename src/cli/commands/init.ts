@@ -27,6 +27,7 @@ import { discoverSpecUrl, isUrl, loadSpec, resolveBaseUrl } from '../../sources/
 import { extractOperations } from '../../sources/openapi/operations.js';
 import type { TableDetail } from '../../sources/sql/driver.js';
 import { toolListCost } from '../../tokens/estimate.js';
+import { DUCKDB_NPX } from '../../sources/sql/duckdb-package.js';
 import { databaseName, detectSource } from '../detect.js';
 import { c, n, ok, warn } from '../ui.js';
 
@@ -118,7 +119,9 @@ export async function initCommand(source: string | undefined, opts: InitOptions)
     return;
   }
   if (!source)
-    throw new Error('Pass a source: an OpenAPI file or URL, a postgres:// URL, or a SQLite file.');
+    throw new Error(
+      'Pass a source: an OpenAPI file or URL, a postgres:// or mysql:// URL, or a SQLite or DuckDB file.',
+    );
   const detected = detectSource(source);
   if (existsSync(configPath) && !opts.force) {
     throw new Error(
@@ -128,7 +131,12 @@ export async function initCommand(source: string | undefined, opts: InitOptions)
   mkdirSync(outDir, { recursive: true });
 
   if (detected.kind === 'openapi') await initOpenApi(detected.location, outDir, configPath, opts);
-  else await initSql(detected, outDir, configPath, opts);
+  else {
+    // Fail before writing anything when the optional DuckDB driver is missing.
+    if (detected.kind === 'duckdb')
+      await (await import('../../sources/sql/duckdb.js')).loadDuckdb();
+    await initSql(detected, outDir, configPath, opts);
+  }
 }
 
 async function initOpenApi(
@@ -258,7 +266,7 @@ async function initOpenApi(
 async function initSql(
   detected:
     | { kind: 'postgres' | 'mysql'; url: string; fromEnv?: string }
-    | { kind: 'sqlite'; file: string },
+    | { kind: 'sqlite' | 'duckdb'; file: string },
   outDir: string,
   configPath: string,
   opts: InitOptions,
@@ -267,7 +275,7 @@ async function initSql(
   let yaml: string;
   let driverLabel: string;
 
-  if (detected.kind !== 'sqlite') {
+  if ('url' in detected) {
     const envVar = opts.envVar ?? detected.fromEnv ?? 'DATABASE_URL';
     const name = opts.name ? slugify(opts.name) : slugify(databaseName(detected.url), 'db');
     const schemas = opts.schema && opts.schema.length > 0 ? opts.schema : ['public'];
@@ -306,11 +314,11 @@ async function initSql(
     yaml = renderSqlConfig({
       name,
       description: '',
-      type: 'sqlite',
+      type: detected.kind,
       target: rel(outDir, detected.file),
       generatedFrom: basename(detected.file),
     });
-    driverLabel = 'SQLite';
+    driverLabel = detected.kind === 'duckdb' ? 'DuckDB' : 'SQLite';
   }
 
   writeFileSync(configPath, yaml);
@@ -326,7 +334,7 @@ async function initSql(
     console.log(ok(`Connected to ${driverLabel}: ${n(tables.length)} tables and views`));
     console.log(
       ok(
-        'Tools: list_tables, describe_table, query (single SELECT, read-only transaction, row limit, timeout)',
+        `Tools: list_tables, describe_table, query (single SELECT, ${runtime.sourceType === 'duckdb' ? 'read-only file without file access' : 'read-only transaction'}, row limit, timeout)`,
       ),
     );
     console.log(ok(`Tool list costs ~${n(cost.total)} tokens`));
@@ -339,7 +347,7 @@ async function initSql(
     if (privileges?.canWrite) {
       console.log(
         warn(
-          runtime.sourceType === 'sqlite'
+          runtime.sourceType === 'sqlite' || runtime.sourceType === 'duckdb'
             ? `${privileges.detail}. apitame stays read-only anyway; making the file read-only for this user adds a layer.`
             : `${privileges.detail}. apitame stays read-only anyway, but a read-only role is safer: https://github.com/albert-canfield/apitame/blob/main/docs/sql.md#a-read-only-role`,
         ),
@@ -352,19 +360,19 @@ async function initSql(
   } finally {
     await runtime.close();
   }
-  printNext(outDir);
+  printNext(outDir, detected.kind === 'duckdb' ? DUCKDB_NPX : undefined);
 }
 
-function printNext(outDir: string): void {
+function printNext(outDir: string, launcher = 'npx apitame'): void {
   const cfg = rel(process.cwd(), join(outDir, DEFAULT_CONFIG_FILE));
   const flag = cfg === `./${DEFAULT_CONFIG_FILE}` ? '' : ` --config ${cfg}`;
   console.log('');
   console.log(c.bold('Next:'));
   const steps: Array<[string, string]> = [
-    [`npx apitame inspect${flag}`, 'tools, modes and token cost'],
-    [`npx apitame test${flag}`, 'check every read tool and the safety rules'],
-    [`npx apitame add-to claude-code${flag}`, 'or codex, cursor, vscode, gemini, claude-desktop'],
-    [`npx apitame serve${flag}`, 'run the MCP server (stdio)'],
+    [`${launcher} inspect${flag}`, 'tools, modes and token cost'],
+    [`${launcher} test${flag}`, 'check every read tool and the safety rules'],
+    [`${launcher} add-to claude-code${flag}`, 'or codex, cursor, vscode, gemini, claude-desktop'],
+    [`${launcher} serve${flag}`, 'run the MCP server (stdio)'],
   ];
   const width = Math.max(...steps.map(([cmd]) => cmd.length));
   for (const [cmd, note] of steps) console.log(`  ${cmd.padEnd(width)}  ${c.dim(`# ${note}`)}`);

@@ -53,7 +53,9 @@ export async function createRuntime(
         )
       : target.kind === 'mysql'
         ? new (await import('../sources/sql/mysql.js')).MysqlDriver(target.url)
-        : new (await import('../sources/sql/sqlite.js')).SqliteDriver(target.file);
+        : target.kind === 'duckdb'
+          ? await (await import('../sources/sql/duckdb.js')).DuckdbDriver.open(target.file)
+          : new (await import('../sources/sql/sqlite.js')).SqliteDriver(target.file);
   return new SqlRuntime(
     config,
     driver,

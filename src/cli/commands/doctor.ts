@@ -10,6 +10,7 @@ import type { OpenApiRuntime } from '../../server/openapi-runtime.js';
 import { createRuntime, type AnyRuntime } from '../../server/runtime.js';
 import type { SqlRuntime } from '../../server/sql-runtime.js';
 import type { GeneratedFile } from '../../generator/skills.js';
+import { apitameCommand, DUCKDB_PACKAGE } from '../../sources/sql/duckdb-package.js';
 import { c } from '../ui.js';
 import { claudeDesktopConfigPath } from './add-to.js';
 import { skillsFor } from './init.js';
@@ -177,7 +178,7 @@ async function checkDatabase(
       add(
         'warn',
         'Database role',
-        rt.sourceType === 'sqlite'
+        rt.sourceType === 'sqlite' || rt.sourceType === 'duckdb'
           ? `${p.detail}. apitame enforces read-only access itself; a read-only file adds a layer nothing can bypass.`
           : `${p.detail}. apitame enforces read-only access itself, but a read-only role is the layer nothing can bypass: https://github.com/albert-canfield/apitame/blob/main/docs/sql.md#a-read-only-role`,
       );
@@ -208,12 +209,16 @@ function checkSkills(
   const names = [...new Set(files.map((f) => f.path.split('/')[0]))].join(', ');
   if (state === 'current') add('ok', 'Skills', `${names} up to date`);
   else if (state === 'missing')
-    add('warn', 'Skills', `${names} not generated. Run: npx apitame init --skills-only`);
+    add(
+      'warn',
+      'Skills',
+      `${names} not generated. Run: ${apitameCommand(loaded.config.source.type)} init --skills-only`,
+    );
   else
     add(
       'warn',
       'Skills',
-      `${names} out of date (mode, tools or schema changed). Run: npx apitame init --skills-only`,
+      `${names} out of date (mode, tools or schema changed). Run: ${apitameCommand(loaded.config.source.type)} init --skills-only`,
     );
 
   for (const installed of ['.claude/skills', '.agents/skills']) {
@@ -224,7 +229,7 @@ function checkSkills(
       add(
         'warn',
         'Installed skills',
-        `${installed} has an older copy. Run "npx apitame add-to <client> --write" again.`,
+        `${installed} has an older copy. Run "${apitameCommand(loaded.config.source.type)} add-to <client> --write" again.`,
       );
     }
   }
@@ -236,43 +241,54 @@ function checkClients(
 ) {
   const name = loaded.config.name;
   const cwd = process.cwd();
-  const json = (file: string, key: string) => {
+  // A DuckDB server must be started with the optional driver next to apitame.
+  const needsDuckdb = loaded.config.source.type === 'duckdb';
+  const withoutDriver: string[] = [];
+  const entry = (file: string, key: string) => {
     try {
-      const data = JSON.parse(readFileSync(join(cwd, file), 'utf8')) as Record<
+      const data = JSON.parse(readFileSync(file, 'utf8')) as Record<
         string,
         Record<string, unknown>
       >;
-      return Boolean(data[key]?.[name]);
+      return data[key]?.[name];
     } catch {
-      return false;
+      return undefined;
     }
   };
   const found: string[] = [];
-  if (json('.mcp.json', 'mcpServers')) found.push('Claude Code (.mcp.json)');
-  if (json('.cursor/mcp.json', 'mcpServers')) found.push('Cursor');
-  if (json('.vscode/mcp.json', 'servers')) found.push('VS Code');
-  if (json('.gemini/settings.json', 'mcpServers')) found.push('Gemini CLI');
+  const check = (label: string, value: unknown) => {
+    if (!value) return;
+    found.push(label);
+    if (needsDuckdb && !JSON.stringify(value).includes(DUCKDB_PACKAGE)) withoutDriver.push(label);
+  };
+  check('Claude Code (.mcp.json)', entry(join(cwd, '.mcp.json'), 'mcpServers'));
+  check('Cursor', entry(join(cwd, '.cursor/mcp.json'), 'mcpServers'));
+  check('VS Code', entry(join(cwd, '.vscode/mcp.json'), 'servers'));
+  check('Gemini CLI', entry(join(cwd, '.gemini/settings.json'), 'mcpServers'));
+  check('Claude Desktop', entry(claudeDesktopConfigPath(), 'mcpServers'));
   try {
-    const desktop = JSON.parse(readFileSync(claudeDesktopConfigPath(), 'utf8')) as {
-      mcpServers?: Record<string, unknown>;
-    };
-    if (desktop.mcpServers?.[name]) found.push('Claude Desktop');
-  } catch {
-    // no Claude Desktop config
-  }
-  try {
-    if (readFileSync(join(cwd, '.codex/config.toml'), 'utf8').includes(`[mcp_servers.${name}]`)) {
-      found.push('Codex (.codex/config.toml)');
+    const toml = readFileSync(join(cwd, '.codex/config.toml'), 'utf8');
+    const start = toml.indexOf(`[mcp_servers.${name}]`);
+    if (start >= 0) {
+      const next = toml.indexOf('\n[', start + 1);
+      check('Codex (.codex/config.toml)', toml.slice(start, next < 0 ? undefined : next));
     }
   } catch {
     // no Codex project config
+  }
+  if (withoutDriver.length > 0) {
+    add(
+      'warn',
+      'Clients',
+      `${withoutDriver.join(', ')} start${withoutDriver.length === 1 ? 's' : ''} "${name}" without ${DUCKDB_PACKAGE}, so the server cannot open the DuckDB file. Run "add-to <client> --write" again.`,
+    );
   }
   if (found.length > 0) add('ok', 'Clients', `"${name}" configured for ${found.join(', ')}`);
   else {
     add(
       'info',
       'Clients',
-      `no client config for "${name}" in this folder. Run: npx apitame add-to claude-code --write`,
+      `no client config for "${name}" in this folder. Run: ${apitameCommand(loaded.config.source.type)} add-to claude-code --write`,
     );
   }
 }
@@ -297,6 +313,17 @@ export async function runDoctor(opts: DoctorOptions): Promise<Finding[]> {
   checkDotEnv(loaded, add);
   loadDotEnv(loaded.dir);
   checkEnv(loaded, add);
+
+  if (loaded.config.source.type === 'duckdb') {
+    try {
+      const duck = await (await import('../../sources/sql/duckdb.js')).loadDuckdb();
+      add('ok', 'DuckDB driver', `${DUCKDB_PACKAGE} (DuckDB ${duck.version()})`);
+    } catch (err) {
+      add('fail', 'DuckDB driver', (err as Error).message.replace(/\n/g, ' '));
+      checkClients(loaded, add);
+      return findings;
+    }
+  }
 
   const redactor = new Redactor();
   let rt: AnyRuntime;
