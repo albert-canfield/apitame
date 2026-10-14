@@ -23,14 +23,14 @@ Read-only access to a PostgreSQL database through the `shop` MCP server generate
 
 | Table | Rows (approx.) | Primary key | Links to |
 | --- | --- | --- | --- |
-| `customers` | 20 | id | - |
-| `order_items` | 143 | id | orders (order_id); products (product_id) |
-| `orders` | 60 | id | customers (customer_id) |
-| `products` | 12 | id | - |
+| `customers` | ? | id | - |
+| `order_items` | ? | id | orders (order_id); products (product_id) |
+| `orders` | ? | id | customers (customer_id) |
+| `products` | ? | id | - |
 
 ## Example queries
 
-### orders with their customers
+### Orders with their customer
 
 ```sql
 SELECT o.id, c.name, o.status, o.created_at
@@ -40,7 +40,7 @@ ORDER BY o.created_at DESC
 LIMIT 20;
 ```
 
-### order_items with their products
+### Order_items with their product
 
 ```sql
 SELECT oi.id, p.name, oi.quantity
@@ -50,7 +50,7 @@ ORDER BY oi.id
 LIMIT 20;
 ```
 
-### Count orders per customers
+### Count orders per customer
 
 ```sql
 SELECT c.name, count(*) AS orders_count

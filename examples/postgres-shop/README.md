@@ -7,7 +7,7 @@ A small online shop (customers, products, orders, order items) with a read-only 
 ```bash
 cd examples/postgres-shop
 docker compose up -d
-export DATABASE_URL=postgres://apitame_ro:apitame_ro@localhost:5433/shop
+export DATABASE_URL=postgres://apitame_ro:read-only-demo@localhost:5433/shop
 npx apitame inspect
 npx apitame test       # every table, the named queries, and injection payloads that must be refused
 npx apitame serve

@@ -9,7 +9,7 @@ COMMENT ON COLUMN orders.status IS 'pending, paid, shipped or cancelled';
 
 -- A role that can read and nothing else. apitame also enforces read-only
 -- transactions, but the database role is the layer that cannot be bypassed.
-CREATE ROLE apitame_ro LOGIN PASSWORD 'apitame_ro';
+CREATE ROLE apitame_ro LOGIN PASSWORD 'read-only-demo';
 GRANT CONNECT ON DATABASE shop TO apitame_ro;
 GRANT USAGE ON SCHEMA public TO apitame_ro;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO apitame_ro;

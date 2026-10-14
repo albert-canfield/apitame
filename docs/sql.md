@@ -145,7 +145,7 @@ The lists apply to `list_tables`, `describe_table`, `query` (including joins, su
 ```bash
 cd examples/postgres-shop
 docker compose up -d
-export DATABASE_URL=postgres://apitame_ro:apitame_ro@localhost:5433/shop
+export DATABASE_URL=postgres://apitame_ro:read-only-demo@localhost:5433/shop
 npx apitame test
 npx apitame serve
 ```
