@@ -40,7 +40,7 @@ ORDER BY o.created_at DESC
 LIMIT 20;
 ```
 
-### Order_items with their product
+### Order items with their product
 
 ```sql
 SELECT oi.id, p.name, oi.quantity
