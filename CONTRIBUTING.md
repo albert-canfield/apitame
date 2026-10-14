@@ -4,7 +4,7 @@ Thanks for helping. Bug reports with a spec or schema that breaks apitame are es
 
 ## Development setup
 
-Requirements: Node.js 22 or later for development (the package itself supports 20.12+), and pnpm 10.
+Requirements: Node.js 22 or later, and pnpm 10.
 
 ```bash
 git clone https://github.com/albert-canfield/apitame.git

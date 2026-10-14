@@ -12,7 +12,7 @@ A running log of decisions and the reasons behind them. Newest last. Add an entr
 
 **Context.** Node 20 reached end of life on 30 April 2026. Some current dependency majors (commander 15, vitest 5, better-sqlite3 13) require Node 22.
 
-**Decision.** Support Node 20.12+ for v0.1 because many machines still run it and `npx` users do not choose their Node version. Pin dependency majors that still support 20. CI runs on 20, 22 and 24. Plan to require Node 22 in a later minor release.
+**Decision.** Support Node 20.12+ for v0.1 because many machines still run it and `npx` users do not choose their Node version. Pin dependency majors that still support 20. CI runs on 20, 22 and 24. Plan to require Node 22 in a later minor release. Superseded by 016.
 
 ## 003. MCP TypeScript SDK v2 and the low-level `Server`
 
@@ -86,9 +86,8 @@ A running log of decisions and the reasons behind them. Newest last. Add an entr
 
 **Decision.** `serve --transport http --sessions` keeps one server per client, keyed by `Mcp-Session-Id`, with an idle timeout (30 minutes, counted only while no request or stream is open) and a cap (100, the oldest idle session makes room). Stateless stays the default: it is simpler to run behind load balancers and has no per-client memory. All sessions read the same live runtime, so `--watch` reloads and confirmation tokens work the same way in both modes.
 
-## 016. Require Node 22+ and drop Node 20 at EOL
+## 016. Require Node 22 or later
 
-**Context.** Node 20 reached end of life on 30 April 2026. Supporting it held back dependency majors (commander 15, better-sqlite3 13, vitest 5, TypeScript 7) and required workarounds for Node 20 GC quirks (see entry 002).
+**Context.** Node 20 reached end of life on 30 April 2026 (see 002). Supporting it held back dependency majors (commander 15, better-sqlite3 13, vitest 5) and cost workarounds: on Node 20 a timeout signal reachable only through `AbortSignal.any()` can be garbage collected and never fire, which hid a real bug until 0.2.0.
 
-**Decision.** Require Node 22+ (`engines.node: ">=22.0.0"`). Drop Node 20 from the CI matrix, remove the Dependabot ignore rules holding back major dependency updates, and prepare for dependency major upgrades.
-
+**Decision.** From 0.3.0, require Node.js 22 or later (`engines.node: ">=22.0.0"`). CI drops Node 20, `doctor` fails on older versions, and Dependabot no longer holds back majors that need Node 22. Contributed by @Enard52 in #48.
