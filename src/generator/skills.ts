@@ -24,6 +24,19 @@ export function skillName(base: string, suffix: string): string {
   return name || 'api-skill';
 }
 
+/**
+ * Text that comes from a database or a spec, made inert for a markdown file an agent will
+ * read as instructions: one line, no leading heading, list or quote marker, no table breaks.
+ */
+function inline(text: string, max = 300): string {
+  return truncate(text, max)
+    .replace(/^([#>*+-]|\d+[.)])/, '\\$1')
+    .replace(/\|/g, '\\|');
+}
+
+/** A plain SQL identifier, safe to print unquoted in an example query. */
+const plainIdentifier = (s: string | null) => s === null || /^[A-Za-z_][A-Za-z0-9_$]*$/.test(s);
+
 function frontmatter(name: string, description: string): string {
   return `---\n${toYaml({ name, description: truncate(description, 1000) }, { lineWidth: 0 }).trimEnd()}\n---\n`;
 }
@@ -388,7 +401,7 @@ function operationsReference(rt: OpenApiRuntime, refOf: Map<string, ToolRef>): s
         `\`${op.method.toUpperCase()} ${op.path}\`${op.access === 'read' ? '' : ` (${op.access})`}${op.deprecated ? ' (deprecated)' : ''}`,
         '',
       );
-      if (op.summary || op.description) lines.push(truncate(op.summary || op.description, 300), '');
+      if (op.summary || op.description) lines.push(inline(op.summary || op.description, 300), '');
       lines.push(...paramTable(op), '', `Signature: \`${signature(op)}\``, '');
     }
   }
@@ -407,10 +420,11 @@ export function generateSqlSkill(input: {
 }): GeneratedFile[] {
   const engine = { postgres: 'PostgreSQL', sqlite: 'SQLite', mysql: 'MySQL' }[input.engine];
   const name = skillName(input.name, 'db');
-  const qualified = (t: { schema: string | null; name: string }) =>
+  const qualifiedRaw = (t: { schema: string | null; name: string }) =>
     input.engine === 'postgres' && t.schema && t.schema !== 'public'
       ? `${t.schema}.${t.name}`
       : t.name;
+  const qualified = (t: { schema: string | null; name: string }) => inline(qualifiedRaw(t), 200);
   const tableNames = input.tables.map(qualified);
   const description =
     `Query the "${input.name}" ${engine} database through the apitame MCP server (read-only). ` +
@@ -453,7 +467,16 @@ export function generateSqlSkill(input: {
   }
 
   lines.push('', '## Example queries', '');
-  const examples = sqlExamples(input.details, qualified);
+  // Example queries only use tables whose names can be printed unquoted.
+  const examples = sqlExamples(
+    input.details.filter(
+      (d) =>
+        plainIdentifier(d.schema) &&
+        plainIdentifier(d.name) &&
+        d.columns.every((c) => plainIdentifier(c.name)),
+    ),
+    qualifiedRaw,
+  );
   for (const ex of examples) lines.push(`### ${ex.title}`, '', '```sql', ex.sql, '```', '');
   if (examples.length === 0)
     lines.push(
@@ -482,19 +505,19 @@ export function generateSqlSkill(input: {
   const ref = [`# ${input.name}: schema`, ''];
   for (const d of input.details) {
     ref.push(`## ${qualified(d)}${d.type === 'view' ? ' (view)' : ''}`, '');
-    if (d.comment) ref.push(d.comment, '');
+    if (d.comment) ref.push(inline(d.comment, 1000), '');
     ref.push('| Column | Type | Null | Notes |', '| --- | --- | --- | --- |');
     for (const c of d.columns) {
       const fk = d.foreignKeys.find((f) => f.columns.includes(c.name));
       const notes = [
         c.primaryKey ? 'PK' : '',
-        fk ? `FK -> ${fk.references.table}(${fk.references.columns.join(', ')})` : '',
-        c.comment ?? '',
+        fk ? inline(`FK -> ${fk.references.table}(${fk.references.columns.join(', ')})`) : '',
+        c.comment ? inline(c.comment) : '',
       ]
         .filter(Boolean)
         .join('; ');
       ref.push(
-        `| ${c.name} | ${c.type} | ${c.nullable ? 'yes' : 'no'} | ${notes.replace(/\|/g, '\\|')} |`,
+        `| ${inline(c.name, 200)} | ${inline(c.type, 100)} | ${c.nullable ? 'yes' : 'no'} | ${notes} |`,
       );
     }
     ref.push('');

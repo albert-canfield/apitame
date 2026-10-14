@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
@@ -32,32 +32,64 @@ export function parseFrontmatter(text: string): {
   };
 }
 
-function walk(dir: string, root: string, out: SkillFile[]): void {
+/**
+ * Collect the files of one skill folder. Sizes are checked before reading, and a
+ * symlink is only followed when it stays inside the folder.
+ */
+function walk(dir: string, root: string, out: SkillFile[], budget: { bytes: number }): void {
   for (const entry of readdirSync(dir).sort()) {
     if (entry.startsWith('.')) continue;
     const full = join(dir, entry);
-    const st = statSync(full);
-    if (st.isDirectory()) walk(full, root, out);
-    else if (st.isFile())
+    let st = lstatSync(full);
+    if (st.isSymbolicLink()) {
+      let target: string;
+      try {
+        target = realpathSync(full);
+      } catch {
+        continue; // broken link
+      }
+      if (!target.startsWith(`${root}${sep}`)) continue;
+      st = statSync(full);
+    }
+    if (st.isDirectory()) walk(full, root, out, budget);
+    else if (st.isFile()) {
+      budget.bytes += st.size;
+      if (out.length + 1 > MAX_FILES || budget.bytes > MAX_BYTES) {
+        throw new Error(`more than ${MAX_FILES} files or ${MAX_BYTES / 1024 / 1024} MB`);
+      }
       out.push({ path: relative(root, full).split(sep).join('/'), bytes: readFileSync(full) });
+    }
   }
 }
 
-/** Load every `<dir>/<name>/SKILL.md` skill folder. Invalid folders are skipped. */
-export function loadSkills(dir: string): SkillEntry[] {
+/**
+ * Load every `<dir>/<name>/SKILL.md` skill folder. A folder that is not a valid
+ * skill is skipped (and reported through `onSkip`), so one broken skill never
+ * stops the server.
+ */
+export function loadSkills(
+  dir: string,
+  onSkip?: (name: string, reason: string) => void,
+): SkillEntry[] {
   if (!existsSync(dir)) return [];
   const skills: SkillEntry[] = [];
   for (const name of readdirSync(dir).sort()) {
-    const folder = join(dir, name);
-    const skillMd = join(folder, 'SKILL.md');
-    if (!statSync(folder).isDirectory() || !existsSync(skillMd)) continue;
-    const { frontmatter } = parseFrontmatter(readFileSync(skillMd, 'utf8'));
-    if (frontmatter.name !== name || typeof frontmatter.description !== 'string') continue;
-    const files: SkillFile[] = [];
-    walk(folder, folder, files);
-    const total = files.reduce((n, f) => n + f.bytes.length, 0);
-    if (files.length > MAX_FILES || total > MAX_BYTES) continue;
-    skills.push({ name, frontmatter, files });
+    if (name.startsWith('.')) continue;
+    try {
+      const folder = join(dir, name);
+      const skillMd = join(folder, 'SKILL.md');
+      if (!statSync(folder).isDirectory() || !existsSync(skillMd)) continue;
+      const { frontmatter } = parseFrontmatter(readFileSync(skillMd, 'utf8'));
+      if (frontmatter.name !== name || typeof frontmatter.description !== 'string') {
+        onSkip?.(name, 'SKILL.md needs a "name" equal to the folder name and a "description"');
+        continue;
+      }
+      const files: SkillFile[] = [];
+      walk(realpathSync(folder), realpathSync(folder), files, { bytes: 0 });
+      skills.push({ name, frontmatter, files });
+    } catch (err) {
+      onSkip?.(name, (err as Error).message);
+    }
   }
   return skills;
 }

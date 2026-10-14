@@ -8,6 +8,9 @@ import { isUrl } from '../sources/openapi/load.js';
 import { createRuntime, type AnyRuntime } from './runtime.js';
 import { loadSkills, type SkillEntry } from './skills.js';
 
+const skipped = (logger: Logger) => (name: string, reason: string) =>
+  logger.warn(`skill "${name}" skipped: ${reason}`);
+
 export interface LiveOptions {
   redactor: Redactor;
   logger: Logger;
@@ -43,7 +46,7 @@ export class LiveRuntime {
       logger: opts.logger,
       dotenv: false,
     });
-    const skills = loadSkills(resolve(loaded.dir, loaded.config.skills.dir));
+    const skills = loadSkills(resolve(loaded.dir, loaded.config.skills.dir), skipped(opts.logger));
     const live = new LiveRuntime(loaded.path, loaded, runtime, skills, opts);
     live.dotenvKeys = keys;
     return live;
@@ -67,11 +70,12 @@ export class LiveRuntime {
     const previousKeys = this.dotenvKeys;
     const saved = Object.fromEntries(previousKeys.map((k) => [k, process.env[k]]));
     for (const k of previousKeys) delete process.env[k];
+    let keys: string[] = [];
     try {
       const loaded = loadConfig(this.configPath);
-      const keys = loadDotEnv(loaded.dir);
+      keys = loadDotEnv(loaded.dir);
       const runtime = await createRuntime(loaded, { redactor, logger, dotenv: false });
-      const skills = loadSkills(resolve(loaded.dir, loaded.config.skills.dir));
+      const skills = loadSkills(resolve(loaded.dir, loaded.config.skills.dir), skipped(logger));
       const toolsChanged =
         JSON.stringify(runtime.listTools()) !== JSON.stringify(this.runtime.listTools());
       const skillsChanged =
@@ -90,6 +94,9 @@ export class LiveRuntime {
       for (const l of this.listeners) l({ toolsChanged, skillsChanged });
       return true;
     } catch (err) {
+      // Undo what this attempt loaded from .env, then restore the previous values, so the
+      // next reload starts from a clean state (and picks up edited values).
+      for (const k of keys) delete process.env[k];
       Object.assign(process.env, saved);
       logger.error(`reload failed, still serving the previous config: ${(err as Error).message}`);
       return false;
@@ -97,19 +104,29 @@ export class LiveRuntime {
   }
 
   /** The files and folders whose changes trigger a reload. */
-  watchedPaths(): Array<{ dir: string; names?: string[]; recursive?: boolean }> {
+  watchedPaths(): Array<{ dir: string; names?: string[]; recursive?: boolean; ignore?: string[] }> {
     const { loaded } = this;
     const configDir = dirname(loaded.path);
-    const entries: Array<{ dir: string; names?: string[]; recursive?: boolean }> = [
-      { dir: configDir, names: [basename(loaded.path), '.env'] },
-    ];
+    const entries: Array<{
+      dir: string;
+      names?: string[];
+      recursive?: boolean;
+      ignore?: string[];
+    }> = [{ dir: configDir, names: [basename(loaded.path), '.env'] }];
     const src = loaded.config.source;
     if (src.type === 'openapi' && !isUrl(src.spec)) {
       const spec = resolve(loaded.dir, src.spec);
       entries.push({ dir: dirname(spec), names: [basename(spec)] });
     }
     const skillsDir = resolve(loaded.dir, loaded.config.skills.dir);
-    if (existsSync(skillsDir)) entries.push({ dir: skillsDir, recursive: true });
+    // The audit log grows on every call. If it lives under the skills folder, its writes must
+    // not trigger reloads (each reload would also reset the rate limits).
+    const audit = loaded.config.audit.file
+      ? resolve(loaded.dir, loaded.config.audit.file)
+      : undefined;
+    if (existsSync(skillsDir)) {
+      entries.push({ dir: skillsDir, recursive: true, ...(audit ? { ignore: [audit] } : {}) });
+    }
     return entries;
   }
 
@@ -120,9 +137,10 @@ export class LiveRuntime {
       clearTimeout(this.timer);
       this.timer = setTimeout(() => void this.reload(), debounce);
     };
-    for (const { dir, names, recursive } of this.watchedPaths()) {
+    for (const { dir, names, recursive, ignore } of this.watchedPaths()) {
       try {
         const w = watch(dir, { recursive: recursive ?? false }, (_event, file) => {
+          if (file && ignore?.includes(resolve(dir, String(file)))) return;
           if (!names || (file && names.includes(basename(String(file))))) trigger();
         });
         w.on('error', () => {});

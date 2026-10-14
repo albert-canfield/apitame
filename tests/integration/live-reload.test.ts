@@ -1,4 +1,4 @@
-import { copyFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -129,5 +129,46 @@ describe('serve --watch', () => {
     const paths = live.watchedPaths();
     expect(paths[0]).toMatchObject({ names: ['apitame.config.yaml', '.env'] });
     expect(paths.some((x) => x.names?.includes('openapi.yaml'))).toBe(true);
+  });
+
+  it('forgets .env values a failed reload had loaded', async () => {
+    const p = project();
+    writeFileSync(join(p.dir, '.env'), 'LIVE_A=1\n');
+    const live = await LiveRuntime.start(p.file, {
+      redactor: new Redactor(),
+      logger: new Logger(new Redactor(), 'silent'),
+    });
+    cleanups.push(async () => {
+      await live.close();
+      delete process.env.LIVE_A;
+      delete process.env.LIVE_B;
+    });
+    // .env gains LIVE_B, and the spec is missing: the config and .env load, the runtime does not.
+    writeFileSync(join(p.dir, '.env'), 'LIVE_A=1\nLIVE_B=old-value\n');
+    p.write({ source: { type: 'openapi', spec: './missing.yaml' } });
+    expect(await live.reload()).toBe(false);
+    expect(process.env.LIVE_B).toBeUndefined();
+    writeFileSync(join(p.dir, '.env'), 'LIVE_A=1\nLIVE_B=new-value\n');
+    p.write({});
+    expect(await live.reload()).toBe(true);
+    expect(process.env.LIVE_B).toBe('new-value');
+  });
+
+  it('skips a broken skill with a warning, and ignores the audit log in the skills folder', async () => {
+    const p = project({ audit: { file: './skills/audit.jsonl' } });
+    const skills = join(p.dir, 'skills');
+    mkdirSync(join(skills, 'broken'), { recursive: true });
+    writeFileSync(join(skills, 'broken', 'SKILL.md'), '---\nname: [unclosed\n---\n');
+    const logs: string[] = [];
+    const redactor = new Redactor();
+    const live = await LiveRuntime.start(p.file, {
+      redactor,
+      logger: new Logger(redactor, 'warn', (l) => logs.push(l)),
+    });
+    cleanups.push(() => live.close());
+    expect(live.skills).toEqual([]);
+    expect(logs.join('')).toContain('skill "broken" skipped');
+    const watched = live.watchedPaths().find((x) => x.dir === skills);
+    expect(watched?.ignore).toEqual([join(skills, 'audit.jsonl')]);
   });
 });
