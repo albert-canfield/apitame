@@ -138,6 +138,11 @@ async function initOpenApi(
   const specLocation = isUrl(location) ? await discoverSpecUrl(location) : location;
   if (specLocation !== location) console.log(ok(`Found the OpenAPI document at ${specLocation}`));
   const spec = await loadSpec(specLocation);
+  if (spec.convertedFrom) {
+    console.log(
+      ok(`Converted ${spec.convertedFrom} to OpenAPI 3 in memory (the file is not changed)`),
+    );
+  }
   const title = spec.doc.info?.title ?? basename(location);
   const name = opts.name
     ? slugify(opts.name)
