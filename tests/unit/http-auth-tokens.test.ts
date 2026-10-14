@@ -36,7 +36,7 @@ describe('buildRequest', () => {
     const o = await op(PETSTORE, 'addPet');
     const req = buildRequest(o, { body: { name: 'rex', photoUrls: [] } }, 'https://p.test');
     expect(req.headers['Content-Type']).toBe('application/json');
-    expect(JSON.parse(req.body!)).toEqual({ name: 'rex', photoUrls: [] });
+    expect(JSON.parse(req.body as string)).toEqual({ name: 'rex', photoUrls: [] });
   });
 
   it('refuses a missing path parameter instead of calling a wrong URL', async () => {

@@ -22,11 +22,71 @@ export interface ParamSpec {
   explode?: boolean;
 }
 
+export type BodyKind = 'json' | 'form' | 'multipart' | 'binary' | 'text';
+
 export interface BodySpec {
   contentType: string;
+  kind: BodyKind;
   required: boolean;
   schema: JsonSchema;
   rawSchema: unknown;
+  /** Multipart fields that carry files. */
+  fileFields: string[];
+}
+
+/**
+ * How agents pass a file: content inline as base64 (or plain text), never a
+ * local path, so a prompt-injected agent cannot upload files from the machine.
+ */
+export const FILE_SCHEMA: JsonSchema = {
+  type: 'object',
+  description: 'A file: content as base64 (or text), with an optional filename and contentType.',
+  properties: {
+    filename: { type: 'string' },
+    contentType: { type: 'string' },
+    base64: { type: 'string' },
+    text: { type: 'string' },
+  },
+};
+
+export function bodyKind(contentType: string): BodyKind {
+  if (JSON_TYPES.test(contentType)) return 'json';
+  if (/x-www-form-urlencoded/i.test(contentType)) return 'form';
+  if (/^multipart\//i.test(contentType)) return 'multipart';
+  if (/^text\//i.test(contentType) || /xml/i.test(contentType)) return 'text';
+  return 'binary';
+}
+
+function isBinarySchema(s: unknown): boolean {
+  return (
+    isObject(s) &&
+    (s.format === 'binary' ||
+      s.format === 'byte' ||
+      s.contentEncoding === 'base64' ||
+      (s.type === 'string' && typeof s.contentMediaType === 'string'))
+  );
+}
+
+function fileSchemaFor(
+  kind: BodyKind,
+  raw: unknown,
+  compact: JsonSchema,
+): { schema: JsonSchema; fileFields: string[] } {
+  if (kind === 'binary') return { schema: FILE_SCHEMA, fileFields: [] };
+  if (kind !== 'multipart' || !isObject(raw) || !isObject(raw.properties))
+    return { schema: compact, fileFields: [] };
+  const props = { ...((compact.properties as Record<string, JsonSchema> | undefined) ?? {}) };
+  const fileFields: string[] = [];
+  for (const [name, sub] of Object.entries(raw.properties)) {
+    if (isBinarySchema(sub)) {
+      props[name] = FILE_SCHEMA;
+      fileFields.push(name);
+    } else if (isObject(sub) && sub.type === 'array' && isBinarySchema(sub.items)) {
+      props[name] = { type: 'array', items: FILE_SCHEMA };
+      fileFields.push(name);
+    }
+  }
+  return { schema: { ...compact, type: 'object', properties: props }, fileFields };
 }
 
 export interface Operation {
@@ -190,18 +250,19 @@ export function extractOperations(doc: OpenApiDocument, opts: ClassifyOptions = 
       }
 
       let body: BodySpec | undefined;
-      let unsupported: string | undefined;
       if (isObject(raw.requestBody)) {
         const picked = pickContent(raw.requestBody.content);
         if (picked) {
-          if (/multipart\/|octet-stream/i.test(picked.contentType)) {
-            unsupported = `request body type ${picked.contentType} is not supported yet`;
-          }
+          const kind = bodyKind(picked.contentType);
+          const compact = compactSchema(picked.schema ?? {}, { direction: 'request' });
+          const { schema, fileFields } = fileSchemaFor(kind, picked.schema, compact);
           body = {
             contentType: picked.contentType,
+            kind,
             required: raw.requestBody.required === true,
-            schema: compactSchema(picked.schema ?? {}, { direction: 'request' }),
+            schema,
             rawSchema: picked.schema,
+            fileFields,
           };
         }
       }
@@ -254,7 +315,6 @@ export function extractOperations(doc: OpenApiDocument, opts: ClassifyOptions = 
         noAuth: Array.isArray(raw.security) && raw.security.length === 0,
         access,
         inputSchema: buildInputSchema(params, body),
-        ...(unsupported ? { unsupported } : {}),
       });
     }
   }

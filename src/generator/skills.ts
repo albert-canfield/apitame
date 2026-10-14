@@ -280,6 +280,14 @@ export function generateOpenApiSkill(rt: OpenApiRuntime): GeneratedFile[] {
     'Grouped tools take `{"operation": "<operation id>", "params": {...}}`. Results are JSON: `{"status": <http status>, "data": <body>}`.',
     '',
     'Add `"fields"` with dot paths to keep only what you need, for example `"fields": ["id", "name", "items.owner.login"]`. Arrays are handled for you, so `items.name` keeps `name` in every item. It saves a lot of context on large responses.',
+    ...(rt.operations.some(
+      (o) => refOf.has(o.id) && (o.body?.kind === 'multipart' || o.body?.kind === 'binary'),
+    )
+      ? [
+          '',
+          'Files are passed inline as `{"filename": "photo.png", "contentType": "image/png", "base64": "..."}` (or `"text"` instead of `"base64"` for text files). Local file paths are not accepted.',
+        ]
+      : []),
     '',
     '## Workflows',
     '',

@@ -118,7 +118,12 @@ describe('operations', () => {
     const addPet = ops.find((o) => o.id === 'addPet')!;
     expect(addPet.body?.contentType).toBe('application/json');
     expect(addPet.inputSchema.required).toEqual(['body']);
-    expect(ops.find((o) => o.id === 'uploadFile')?.unsupported).toMatch(/octet-stream/);
+    const upload = ops.find((o) => o.id === 'uploadFile')!;
+    expect(upload.unsupported).toBeUndefined();
+    expect(upload.body).toMatchObject({ kind: 'binary', contentType: 'application/octet-stream' });
+    expect(signature(upload)).toBe(
+      'uploadFile(petId: integer, additionalMetadata?: string, body?: file)',
+    );
     expect(
       ops
         .filter((o) => o.access === 'destructive')
@@ -182,7 +187,7 @@ describe('grouping', () => {
       'getPetById',
     ]);
     expect(groups[0]!.description).toBe('Everything about your pets');
-    expect(longTail).toEqual(['uploadFile']);
+    expect(longTail).toEqual([]);
   });
 
   it('respects the tool budget, sending the rest to the long tail', async () => {

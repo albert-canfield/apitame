@@ -282,9 +282,8 @@ Executor is the closest match on safety and is a great choice if you want a mana
 
 ## Roadmap
 
-- v0.2: OpenAPI `multipart/form-data` uploads.
-- v0.3: a published tool-selection eval (curated vs one-per-endpoint vs search-only), per-tool rate limits, audit log export.
-- Later: GraphQL sources, OAuth authorization code flow for remote HTTP serving.
+- Next: a published tool-selection eval (curated vs one-per-endpoint vs search-only), per-tool rate limits, `serve` reloading the config on change.
+- Later: GraphQL sources, OAuth authorization code flow for remote HTTP serving, more databases.
 
 Ideas and votes are welcome in [issues](https://github.com/albert-canfield/apitame/issues).
 

@@ -15,8 +15,45 @@ export interface BuiltRequest {
   method: string;
   url: URL;
   headers: Record<string, string>;
-  body?: string;
+  body?: string | FormData | Uint8Array;
+  /** What the body looks like, for dry runs and confirmations (files are summarized, never inlined). */
+  bodyPreview?: unknown;
 }
+
+export interface BuildOptions {
+  /** Maximum total size of uploaded file content. */
+  maxUploadBytes?: number;
+}
+
+interface FileValue {
+  data: Buffer;
+  filename?: string;
+  contentType?: string;
+}
+
+/** A file argument: {base64} or {text}, with optional filename and contentType. */
+function asFile(v: unknown): FileValue | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const o = v as Record<string, unknown>;
+  const data =
+    typeof o.base64 === 'string'
+      ? Buffer.from(o.base64, 'base64')
+      : typeof o.text === 'string'
+        ? Buffer.from(o.text, 'utf8')
+        : undefined;
+  if (!data) return undefined;
+  return {
+    data,
+    ...(typeof o.filename === 'string' ? { filename: o.filename } : {}),
+    ...(typeof o.contentType === 'string' ? { contentType: o.contentType } : {}),
+  };
+}
+
+const fileSummary = (f: FileValue) => ({
+  file: f.filename ?? '(unnamed)',
+  ...(f.contentType ? { contentType: f.contentType } : {}),
+  bytes: f.data.length,
+});
 
 export interface HttpResult {
   status: number;
@@ -69,6 +106,7 @@ export function buildRequest(
   args: Record<string, unknown>,
   baseUrl: string,
   staticHeaders: Record<string, string> = {},
+  opts: BuildOptions = {},
 ): BuiltRequest {
   let path = op.path;
   for (const p of op.params.filter((x) => x.in === 'path')) {
@@ -112,25 +150,96 @@ export function buildRequest(
   }
   if (cookies.length > 0) headers['Cookie'] = cookies.join('; ');
 
-  let body: string | undefined;
+  let body: BuiltRequest['body'];
+  let bodyPreview: unknown;
+  const maxUpload = opts.maxUploadBytes ?? 10_000_000;
+  let uploaded = 0;
+  const countUpload = (f: FileValue) => {
+    uploaded += f.data.length;
+    if (uploaded > maxUpload) {
+      throw new RequestBuildError(
+        `Upload is larger than ${maxUpload} bytes (limits.maxUploadBytes in apitame.config.yaml).`,
+      );
+    }
+    return f;
+  };
+
   if (op.body && args.body !== undefined) {
     const ct = op.body.contentType;
-    headers['Content-Type'] = ct;
-    if (/x-www-form-urlencoded/i.test(ct)) {
-      const form = new URLSearchParams();
-      for (const [k, v] of Object.entries((args.body as Record<string, unknown>) ?? {})) {
-        if (Array.isArray(v)) for (const item of v) form.append(k, scalar(item));
-        else if (v !== undefined) form.append(k, scalar(v));
+    const value = args.body;
+    switch (op.body.kind) {
+      case 'form': {
+        headers['Content-Type'] = ct;
+        const form = new URLSearchParams();
+        for (const [k, v] of Object.entries((value as Record<string, unknown>) ?? {})) {
+          if (Array.isArray(v)) for (const item of v) form.append(k, scalar(item));
+          else if (v !== undefined) form.append(k, scalar(v));
+        }
+        body = form.toString();
+        bodyPreview = value;
+        break;
       }
-      body = form.toString();
-    } else if (/json/i.test(ct)) {
-      body = JSON.stringify(args.body);
-    } else {
-      body = typeof args.body === 'string' ? args.body : JSON.stringify(args.body);
+      case 'multipart': {
+        // fetch sets the multipart Content-Type with its boundary.
+        const form = new FormData();
+        const preview: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries((value as Record<string, unknown>) ?? {})) {
+          if (v === undefined) continue;
+          const items = Array.isArray(v) && v.some((x) => asFile(x)) ? v : [v];
+          const shown: unknown[] = [];
+          for (const item of items) {
+            const file = asFile(item);
+            if (file) {
+              countUpload(file);
+              form.append(
+                k,
+                new Blob([file.data], { type: file.contentType ?? 'application/octet-stream' }),
+                file.filename ?? k,
+              );
+              shown.push(fileSummary(file));
+            } else {
+              form.append(k, scalar(item));
+              shown.push(item);
+            }
+          }
+          preview[k] = items === v ? shown : shown[0];
+        }
+        body = form;
+        bodyPreview = { multipart: preview };
+        break;
+      }
+      case 'binary': {
+        const file =
+          asFile(value) ?? (typeof value === 'string' ? { data: Buffer.from(value) } : undefined);
+        if (!file) {
+          throw new RequestBuildError(
+            'This operation takes a file: pass "body": {"base64": "...", "contentType": "...", "filename": "..."} (or "text" instead of "base64").',
+          );
+        }
+        countUpload(file);
+        headers['Content-Type'] = file.contentType ?? ct;
+        body = new Uint8Array(file.data);
+        bodyPreview = fileSummary(file);
+        break;
+      }
+      case 'json':
+        headers['Content-Type'] = ct;
+        body = JSON.stringify(value);
+        bodyPreview = value;
+        break;
+      default:
+        headers['Content-Type'] = ct;
+        body = typeof value === 'string' ? value : JSON.stringify(value);
+        bodyPreview = body;
     }
   }
 
-  return { method: op.method.toUpperCase(), url, headers, ...(body !== undefined ? { body } : {}) };
+  return {
+    method: op.method.toUpperCase(),
+    url,
+    headers,
+    ...(body !== undefined ? { body, bodyPreview } : {}),
+  };
 }
 
 /** Read a response body, stopping after `limit` bytes. */

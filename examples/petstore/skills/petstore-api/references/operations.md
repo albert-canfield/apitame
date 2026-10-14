@@ -164,9 +164,9 @@ Uploads an image.
 | --- | --- | --- | --- | --- |
 | `petId` | path | integer | yes | ID of pet to update |
 | `additionalMetadata` | query | string | no | Additional Metadata |
-| `body` | body | string(binary) | no | application/octet-stream |
+| `body` | body | file | no | application/octet-stream |
 
-Signature: `uploadFile(petId: integer, additionalMetadata?: string, body?: string(binary))`
+Signature: `uploadFile(petId: integer, additionalMetadata?: string, body?: file)`
 
 ### placeOrder
 

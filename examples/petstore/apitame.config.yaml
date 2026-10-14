@@ -29,6 +29,7 @@ limits:
   maxResponseBytes: 50000
   maxCallsPerMinute: 120
   maxWritesPerMinute: 20
+  maxUploadBytes: 10000000
 
 # Task-level tools. Each one groups related operations. Rename, regroup or drop operations as you like.
 # In read-only mode, write operations listed here are simply not exposed.
@@ -42,6 +43,7 @@ tools:
       - addPet
       - updatePet
       - updatePetWithForm
+      - uploadFile
       - deletePet
   - name: user
     description: Operations about users

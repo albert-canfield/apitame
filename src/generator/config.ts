@@ -155,6 +155,7 @@ export function renderOpenApiConfig(input: OpenApiConfigInput): string {
       maxResponseBytes: 50_000,
       maxCallsPerMinute: 120,
       maxWritesPerMinute: 20,
+      maxUploadBytes: 10_000_000,
     },
     tools: input.groups,
     longTail: { enabled: true },
