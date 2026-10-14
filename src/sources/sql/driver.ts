@@ -71,6 +71,11 @@ export interface SqlDriver {
   writeQuery(sql: string, params: SqlParams, opts: WriteOptions): Promise<{ rowCount: number }>;
   /** Check what the underlying credentials allow (used by `apitame doctor`). */
   privileges(): Promise<PrivilegeInfo>;
+  /**
+   * The engine's own parse tree of a query, for engines that no bundled parser reads
+   * (DuckDB: `json_serialize_sql`, run on a separate in-memory database).
+   */
+  serializeSelect?(sql: string): Promise<string>;
   close(): Promise<void>;
 }
 

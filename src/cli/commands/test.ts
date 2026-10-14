@@ -291,6 +291,15 @@ async function testSql(loaded: LoadedConfig, redactor: Redactor): Promise<Check[
             // A backslash is just a character in standard SQL strings: two statements, not one.
             `SELECT '\\'; DELETE FROM ${target}; --'`,
           ]),
+      ...(rt.sourceType === 'duckdb'
+        ? [
+            // DuckDB reads files, installs extensions and runs SQL strings unless it is stopped.
+            `SELECT * FROM read_text('/etc/hosts')`,
+            `SELECT * FROM '/etc/hosts'`,
+            `SELECT * FROM query('DELETE FROM ${target.replace(/'/g, "''")}')`,
+            'INSTALL httpfs',
+          ]
+        : []),
     ];
     let refused = 0;
     for (const sql of attacks) if ((await rt.callTool('query', { sql })).isError) refused++;

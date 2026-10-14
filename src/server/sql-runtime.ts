@@ -7,7 +7,14 @@ import { Guardrails, type AuditEntry, type AuditOutcome } from '../safety/guardr
 import { decide, matchesAny } from '../safety/policy.js';
 import { Redactor } from '../safety/redact.js';
 import type { SqlDriver, TableInfo } from '../sources/sql/driver.js';
-import { analyzeWrite, bindNamedParams, guardSelect } from '../sources/sql/guard.js';
+import { guardDuckdbSelect } from '../sources/sql/duckdb-guard.js';
+import {
+  analyzeWrite,
+  bindNamedParams,
+  guardSelect,
+  type GuardOptions,
+  type GuardResult,
+} from '../sources/sql/guard.js';
 import { tokenize } from '../sources/sql/lexer.js';
 import type {
   Access,
@@ -28,16 +35,29 @@ interface NamedTool {
   access: Access;
   sql: string;
   def: ToolDefinition;
+  /** DuckDB: the result of DuckDB's parser check, made on the first call. */
+  engineCheck?: Promise<GuardResult>;
 }
 
 const lower = (s: string) => s.toLowerCase();
 
-const ENGINE = { postgres: 'PostgreSQL', sqlite: 'SQLite', mysql: 'MySQL' } as const;
+const ENGINE = {
+  postgres: 'PostgreSQL',
+  sqlite: 'SQLite',
+  mysql: 'MySQL',
+  duckdb: 'DuckDB',
+} as const;
+
+/** The schema whose tables are listed without a prefix. */
+const DEFAULT_SCHEMA: Partial<Record<keyof typeof ENGINE, string>> = {
+  postgres: '',
+  duckdb: 'main',
+};
 
 export class SqlRuntime implements Runtime {
   readonly name: string;
   readonly mode: Config['mode'];
-  readonly sourceType: 'postgres' | 'sqlite' | 'mysql';
+  readonly sourceType: 'postgres' | 'sqlite' | 'mysql' | 'duckdb';
   readonly warnings: string[] = [];
   private readonly named = new Map<string, NamedTool>();
   private readonly confirmations: ConfirmationStore;
@@ -67,6 +87,27 @@ export class SqlRuntime implements Runtime {
     return this.driver.dialect;
   }
 
+  /**
+   * The lexer and parser layers. PostgreSQL, MySQL and SQLite use the bundled parser;
+   * DuckDB asks DuckDB's own parser, on a separate in-memory database (async).
+   */
+  private async checkSelect(
+    sql: string,
+    opts: Omit<GuardOptions, 'dialect'>,
+  ): Promise<GuardResult> {
+    if (this.dialect !== 'duckdb') return guardSelect(sql, { ...opts, dialect: this.dialect });
+    const serialize = this.driver.serializeSelect?.bind(this.driver);
+    if (!serialize) return { ok: false, reason: 'No DuckDB parser is available.' };
+    return guardDuckdbSelect(sql, opts, serialize);
+  }
+
+  /** How a table is named in tool output: schema-qualified outside the default schema. */
+  private displayName(t: { schema: string | null; name: string }): string {
+    const home = DEFAULT_SCHEMA[this.sourceType];
+    if (home === undefined || !t.schema) return t.name;
+    return this.sourceType === 'postgres' || t.schema !== home ? `${t.schema}.${t.name}` : t.name;
+  }
+
   private registerNamed(q: NamedQueryConfig): void {
     if (['list_tables', 'describe_table', 'query'].includes(q.name)) {
       this.warnings.push(`Named query "${q.name}" clashes with a built-in tool and was skipped.`);
@@ -91,6 +132,13 @@ export class SqlRuntime implements Runtime {
 
     let access: Access = 'read';
     let sql: string;
+    if (q.write && this.dialect === 'duckdb') {
+      // Config validation refuses this too; the driver opens DuckDB files read-only.
+      this.warnings.push(
+        `Named query "${q.name}" skipped: named write queries are not supported for DuckDB.`,
+      );
+      return;
+    }
     if (q.write) {
       const w = analyzeWrite(q.sql, this.dialect);
       if (!w.ok) {
@@ -103,10 +151,12 @@ export class SqlRuntime implements Runtime {
           : 'write';
       sql = w.sql ?? q.sql;
     } else {
+      // DuckDB's parser is asynchronous: the lexer runs now, the parser on the first call.
       let g = guardSelect(q.sql, {
         dialect: this.dialect,
         allowParams: true,
         denyTables: this.config.sql.tables.deny,
+        ...(this.dialect === 'duckdb' ? { skipParser: true } : {}),
       });
       if (!g.ok && g.reason.startsWith('The query could not be parsed')) {
         g = guardSelect(q.sql, {
@@ -219,7 +269,7 @@ export class SqlRuntime implements Runtime {
     const builtIn: ToolDefinition[] = [
       {
         name: 'list_tables',
-        description: `List tables and views in the ${engine} database${this.sourceType === 'postgres' ? ' with row estimates' : ''}.`,
+        description: `List tables and views in the ${engine} database${this.sourceType === 'postgres' || this.sourceType === 'duckdb' ? ' with row estimates' : ''}.`,
         inputSchema: {
           type: 'object',
           properties:
@@ -239,7 +289,7 @@ export class SqlRuntime implements Runtime {
             table: {
               type: 'string',
               description:
-                this.sourceType === 'postgres'
+                this.sourceType === 'postgres' || this.sourceType === 'duckdb'
                   ? 'Table name, optionally schema.table.'
                   : 'Table name.',
             },
@@ -320,7 +370,7 @@ export class SqlRuntime implements Runtime {
     const tables = (await this.tables()).filter((t) => !schema || t.schema === schema);
     return this.fit({
       tables: tables.map((t) => ({
-        name: t.schema && this.sourceType === 'postgres' ? `${t.schema}.${t.name}` : t.name,
+        name: this.displayName(t),
         type: t.type,
         ...(t.rowEstimate !== undefined && t.rowEstimate !== null ? { rows: t.rowEstimate } : {}),
         ...(t.comment ? { comment: t.comment } : {}),
@@ -341,10 +391,7 @@ export class SqlRuntime implements Runtime {
     if (!detail || !this.tableVisible(detail))
       return errorResult(`Table "${table}" not found. Call list_tables to see what exists.`);
     return this.fit({
-      table:
-        detail.schema && this.sourceType === 'postgres'
-          ? `${detail.schema}.${detail.name}`
-          : detail.name,
+      table: this.displayName(detail),
       type: detail.type,
       ...(detail.comment ? { comment: detail.comment } : {}),
       columns: detail.columns.map((c) => ({
@@ -389,8 +436,7 @@ export class SqlRuntime implements Runtime {
   }
 
   private async query(sql: string, limitArg: unknown, ctx?: CallContext): Promise<ToolResult> {
-    const g = guardSelect(sql, {
-      dialect: this.dialect,
+    const g = await this.checkSelect(sql, {
       allowTables: this.config.sql.tables.allow,
       denyTables: this.config.sql.tables.deny,
     });
@@ -468,6 +514,18 @@ export class SqlRuntime implements Runtime {
       });
 
     if (named.access === 'read') {
+      if (this.dialect === 'duckdb') {
+        named.engineCheck ??= this.checkSelect(bound.sql, {
+          allowParams: true,
+          denyTables: this.config.sql.tables.deny,
+        });
+        const g = await named.engineCheck;
+        if (!g.ok) {
+          named.engineCheck = undefined; // only a pass is remembered
+          audit('refused', { reason: g.reason });
+          return errorResult(`Refused: named query "${named.query.name}": ${g.reason}`);
+        }
+      }
       const limit = this.config.limits.rowLimit;
       const res = await this.driver.readQuery(bound.sql, bound.params, {
         rowLimit: limit,
@@ -563,7 +621,8 @@ export function resolveSqlTarget(
 ):
   | { kind: 'postgres'; url: string; schemas: string[] }
   | { kind: 'mysql'; url: string }
-  | { kind: 'sqlite'; file: string } {
+  | { kind: 'sqlite'; file: string }
+  | { kind: 'duckdb'; file: string } {
   const src = config.source;
   if (src.type === 'postgres') {
     const url = resolveEnv(src.url, 'source.url', env);
@@ -587,9 +646,9 @@ export function resolveSqlTarget(
     redactor.addSecret(url);
     return { kind: 'mysql', url };
   }
-  if (src.type === 'sqlite')
+  if (src.type === 'sqlite' || src.type === 'duckdb')
     return {
-      kind: 'sqlite',
+      kind: src.type,
       file: resolvePath(configDir, resolveEnv(src.path, 'source.path', env)),
     };
   throw new Error('Not a SQL source');

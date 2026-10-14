@@ -18,8 +18,11 @@ apitame init postgres://user:pass@host:5432/db
 apitame init mysql://user:pass@host:3306/db
 apitame init '$DATABASE_URL'                        # or env:DATABASE_URL
 apitame init ./shop.db
+apitame init ./data.duckdb                          # or duckdb:./data.duckdb (needs the DuckDB driver, below)
 apitame init --skills-only                          # regenerate skills from the existing config
 ```
+
+DuckDB's driver (`@duckdb/node-api`) is not installed with apitame. Run any command with it through npx, `npx -p apitame -p @duckdb/node-api apitame init ./data.duckdb`, or install both packages; without it the command stops with that hint and writes nothing. See [DuckDB](sql.md#duckdb).
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -102,7 +105,7 @@ For OpenAPI sources it:
 2. with `--live`, validates successful responses against the response schema (against the mock that would only test the sample generator);
 3. calls every blocked write through `call_operation` and checks that each one is refused and that nothing reached the server.
 
-For SQL sources it lists tables, describes each one, runs `SELECT * ... LIMIT 1` on each, runs every named read query with sample parameters, and sends known write and injection payloads (`DELETE`, `COMMIT; DROP SCHEMA ...`, stacked statements, a data-modifying CTE, and for PostgreSQL and SQLite the backslash string trick) that must all be refused.
+For SQL sources it lists tables, describes each one, runs `SELECT * ... LIMIT 1` on each, runs every named read query with sample parameters, and sends known write and injection payloads (`DELETE`, `COMMIT; DROP SCHEMA ...`, stacked statements, a data-modifying CTE, for PostgreSQL, SQLite and DuckDB the backslash string trick, and for DuckDB file reads, `query()` and `INSTALL`) that must all be refused.
 
 Exit code 1 when any check fails. Warnings (for example HTTP 404 for a sample id in `--live` mode) do not fail the run.
 
@@ -130,9 +133,10 @@ $ apitame doctor
 | Environment | Every `${VAR}` the config needs is set (after loading `.env`). |
 | writes.* | Every allowlist or confirm pattern matches at least one operation (catches typos). |
 | API | Calls the first GET that needs no input, to test DNS, TLS and credentials. 401 and 403 are failures. |
-| Database | Connects, lists tables, and checks whether the role (or the SQLite file) could write. |
+| DuckDB driver | For DuckDB sources: `@duckdb/node-api` loads, and its DuckDB version. |
+| Database | Connects, lists tables, and checks whether the role (or the SQLite or DuckDB file) could write. |
 | Skills | Generated skills match the current config, and installed copies in `.claude/skills` or `.agents/skills` match too. |
-| Clients | Which client configs in the current folder reference this server. |
+| Clients | Which client configs in the current folder reference this server, and for DuckDB sources, whether they start it with `@duckdb/node-api`. |
 
 | Option | Description |
 | --- | --- |
@@ -163,3 +167,5 @@ Prints, or writes with `--write`, the configuration for an MCP client, and insta
 | `--command <cmd>` | `npx -y apitame@<major.minor>` | How the client should launch apitame, for example `node /path/to/apitame/dist/cli.js`. |
 
 Paths are written relative to the project (`${CLAUDE_PROJECT_DIR:-.}/...` or `${workspaceFolder}/...`) when the config is inside the current folder, so the files can be committed and shared. Secrets are never written to client configs.
+
+For a DuckDB source the launcher adds the driver: `npx -y -p apitame@<major.minor> -p @duckdb/node-api apitame serve --config ...`.

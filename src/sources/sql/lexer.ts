@@ -1,4 +1,4 @@
-export type Dialect = 'postgres' | 'sqlite' | 'mysql';
+export type Dialect = 'postgres' | 'sqlite' | 'mysql' | 'duckdb';
 
 export type TokenType =
   | 'word'
@@ -46,12 +46,17 @@ const WORD_CHAR = /[A-Za-z0-9_$\u0080-￿]/;
  * - MySQL: backslash escapes in '' and "" strings (both are strings), `identifiers`,
  *   # comments, "--" comments only when followed by whitespace, and /*! ... *\/
  *   executable comments refused outright because MySQL runs their content
+ * - DuckDB: PostgreSQL's rules (nested comments, E'' strings, dollar quoting, a plain
+ *   backslash in standard strings), without U&'' strings, with ? and $name parameters,
+ *   and with `a:b` (list slices, prefix aliases) read as an operator, not a parameter
  */
 export function tokenize(sql: string, dialect: Dialect): Token[] {
   const tokens: Token[] = [];
   let i = 0;
   const n = sql.length;
-  const pg = dialect === 'postgres';
+  const duck = dialect === 'duckdb';
+  // DuckDB's parser is derived from PostgreSQL's and reads quotes and comments the same way.
+  const pg = dialect === 'postgres' || duck;
   const my = dialect === 'mysql';
   const lite = dialect === 'sqlite';
 
@@ -87,9 +92,9 @@ export function tokenize(sql: string, dialect: Dialect): Token[] {
       continue;
     }
     // MySQL only treats "--" as a comment when whitespace (or the end) follows it.
+    // PostgreSQL and DuckDB end it at a carriage return too ("SELECT 1 --\r; DELETE ..." is
+    // two statements there); SQLite and MySQL only at a newline.
     if (c === '-' && next === '-' && (!my || i + 2 >= n || sql.charCodeAt(i + 2) <= 32)) {
-      // PostgreSQL ends the comment at a carriage return too: "SELECT 1 --\r; DELETE ..." is
-      // two statements there. SQLite and MySQL only end it at a newline.
       while (i < n && sql[i] !== '\n' && !(pg && sql[i] === '\r')) i++;
       continue;
     }
@@ -132,7 +137,7 @@ export function tokenize(sql: string, dialect: Dialect): Token[] {
       continue;
     }
     if (
-      pg &&
+      dialect === 'postgres' &&
       (c === 'U' || c === 'u') &&
       next === '&' &&
       (sql[i + 2] === "'" || sql[i + 2] === '"')
@@ -218,14 +223,21 @@ export function tokenize(sql: string, dialect: Dialect): Token[] {
       i = j;
       continue;
     }
-    if ((c === ':' || (lite && c === '@')) && next !== undefined && WORD_START.test(next)) {
+    // DuckDB reads `list[a:b]` and `SELECT alias: expr` with a colon right after a word.
+    const sliceColon = duck && c === ':' && i > 0 && /[A-Za-z0-9_\]"]/.test(sql[i - 1] as string);
+    if (
+      (c === ':' || (lite && c === '@')) &&
+      !sliceColon &&
+      next !== undefined &&
+      WORD_START.test(next)
+    ) {
       let j = i + 1;
       while (j < n && /[A-Za-z0-9_]/.test(sql[j] as string)) j++;
       tokens.push({ type: 'named', value: sql.slice(i + 1, j), start: i, end: j });
       i = j;
       continue;
     }
-    if ((lite || my) && c === '?') {
+    if ((lite || my || duck) && c === '?') {
       let j = i + 1;
       while (j < n && /\d/.test(sql[j] as string)) j++;
       tokens.push({ type: 'param', value: sql.slice(i, j), start: i, end: j });

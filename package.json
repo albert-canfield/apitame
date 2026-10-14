@@ -9,6 +9,7 @@
     "swagger",
     "postgres",
     "sqlite",
+    "duckdb",
     "agent-skills",
     "skills",
     "claude-code",
@@ -84,7 +85,16 @@
   "optionalDependencies": {
     "better-sqlite3": "^13.0.3"
   },
+  "peerDependencies": {
+    "@duckdb/node-api": "*"
+  },
+  "peerDependenciesMeta": {
+    "@duckdb/node-api": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@duckdb/node-api": "1.5.6-r.1",
     "@electric-sql/pglite": "^0.5.9",
     "@electric-sql/pglite-socket": "^0.2.12",
     "@eslint/js": "^10.0.1",

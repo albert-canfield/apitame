@@ -7,11 +7,14 @@ import type { ConfigInput } from '../../src/config/schema.js';
 import { Redactor } from '../../src/safety/redact.js';
 import { SqlRuntime } from '../../src/server/sql-runtime.js';
 import type { SqlDriver } from '../../src/sources/sql/driver.js';
+import { DuckdbDriver } from '../../src/sources/sql/duckdb.js';
 import { MysqlDriver } from '../../src/sources/sql/mysql.js';
 import { PostgresDriver } from '../../src/sources/sql/postgres.js';
 import { SqliteDriver } from '../../src/sources/sql/sqlite.js';
 import {
+  createDuckdbShop,
   createSqliteShop,
+  duckdbForTests,
   jsonOf,
   setupMysqlServer,
   setupPostgresServer,
@@ -20,7 +23,7 @@ import {
   textOf,
 } from '../helpers.js';
 
-type Dialect = 'sqlite' | 'postgres' | 'mysql';
+type Dialect = 'sqlite' | 'postgres' | 'mysql' | 'duckdb';
 
 interface Target {
   name: string;
@@ -36,6 +39,9 @@ type NamedQueries = NonNullable<NonNullable<ConfigInput['sql']>['queries']>;
 const tmp = tempDir();
 let pg: Awaited<ReturnType<typeof startPostgresShop>>;
 const sqliteFile = join(tmp.dir, 'shop.db');
+const duckFile = join(tmp.dir, 'shop.duckdb');
+// DuckDB runs in-process from the optional driver (a devDependency here).
+const { duck } = await duckdbForTests();
 
 // Real servers are opt-in (CI starts them as service containers).
 const PG_SERVER = process.env.APITAME_TEST_POSTGRES_URL;
@@ -45,6 +51,7 @@ let mysqlServer: Awaited<ReturnType<typeof setupMysqlServer>> | undefined;
 
 beforeAll(async () => {
   createSqliteShop(sqliteFile);
+  if (duck) await createDuckdbShop(duckFile, duck);
   pg = await startPostgresShop();
   if (PG_SERVER) pgServer = await setupPostgresServer(PG_SERVER);
   if (MYSQL_SERVER) mysqlServer = await setupMysqlServer(MYSQL_SERVER);
@@ -87,6 +94,17 @@ const targets: Target[] = [
     driver: () => new PostgresDriver(pg.url, ['public'], 5_000),
     count: (table) => countWith(new PostgresDriver(pg.url, ['public']), table),
   },
+  ...(duck
+    ? [
+        {
+          name: 'duckdb',
+          dialect: 'duckdb' as const,
+          realServer: false,
+          driver: () => new DuckdbDriver(duckFile, duck),
+          count: (table: string) => countWith(new DuckdbDriver(duckFile, duck), table),
+        },
+      ]
+    : []),
   ...(PG_SERVER
     ? [
         {
@@ -123,7 +141,11 @@ function config(
   return parseConfig({
     name: 'shop',
     source:
-      type === 'sqlite' ? { type: 'sqlite', path: sqliteFile } : { type, url: '${DATABASE_URL}' },
+      type === 'sqlite'
+        ? { type: 'sqlite', path: sqliteFile }
+        : type === 'duckdb'
+          ? { type: 'duckdb', path: duckFile }
+          : { type, url: '${DATABASE_URL}' },
     limits: { rowLimit: 25, timeoutMs: 3_000 },
     ...(overrides as Partial<ConfigInput>),
   });
@@ -217,11 +239,13 @@ describe.each(targets)('SQL runtime on $name', (target) => {
         const res = await rt.callTool('query', { sql });
         expect(res.isError, `${sql} -> ${textOf(res)}`).toBe(true);
       }
-      // Comments nest in PostgreSQL (one harmless SELECT) but not in SQLite or MySQL (two statements: refused).
+      // Comments nest in PostgreSQL and DuckDB (one harmless SELECT) but not in SQLite or MySQL
+      // (two statements: refused).
       const nested = await rt.callTool('query', {
         sql: 'SELECT 1 /* x /* y */ ; DELETE FROM orders; */',
       });
-      if (target.dialect !== 'postgres') expect(nested.isError).toBe(true);
+      if (target.dialect !== 'postgres' && target.dialect !== 'duckdb')
+        expect(nested.isError).toBe(true);
       else expect(jsonOf<{ rows: unknown[][] }>(nested).rows).toEqual([[1]]);
     });
     expect(await target.count('orders')).toBe(before);
@@ -288,83 +312,90 @@ describe.each(targets)('SQL runtime on $name', (target) => {
     });
   });
 
-  it('named write queries: hidden in read-only mode, dry run and confirmation in read-write mode', async () => {
-    const queries = [
-      {
-        name: 'cancel_order',
-        description: 'Cancel one order',
-        sql: "UPDATE orders SET status = 'cancelled' WHERE id = :id",
-        params: { id: { type: 'integer' } },
-        write: true,
-      },
-      {
-        name: 'purge_cancelled',
-        description: 'Delete cancelled orders items',
-        sql: "DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE status = 'cancelled')",
-        write: true,
-      },
-    ] as const satisfies NamedQueries;
-    await withRuntime(
-      { sql: { queries }, writes: { allow: ['cancel_order', 'purge_cancelled'] } },
-      async (rt) => {
-        expect(rt.listTools().map((t) => t.name)).not.toContain('cancel_order');
-        expect(rt.blockedQueries().map((b) => b.name)).toEqual(['cancel_order', 'purge_cancelled']);
-      },
-    );
+  // DuckDB sources are read-only: config validation refuses named writes (duckdb.test.ts).
+  it.skipIf(target.dialect === 'duckdb')(
+    'named write queries: hidden in read-only mode, dry run and confirmation in read-write mode',
+    async () => {
+      const queries = [
+        {
+          name: 'cancel_order',
+          description: 'Cancel one order',
+          sql: "UPDATE orders SET status = 'cancelled' WHERE id = :id",
+          params: { id: { type: 'integer' } },
+          write: true,
+        },
+        {
+          name: 'purge_cancelled',
+          description: 'Delete cancelled orders items',
+          sql: "DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE status = 'cancelled')",
+          write: true,
+        },
+      ] as const satisfies NamedQueries;
+      await withRuntime(
+        { sql: { queries }, writes: { allow: ['cancel_order', 'purge_cancelled'] } },
+        async (rt) => {
+          expect(rt.listTools().map((t) => t.name)).not.toContain('cancel_order');
+          expect(rt.blockedQueries().map((b) => b.name)).toEqual([
+            'cancel_order',
+            'purge_cancelled',
+          ]);
+        },
+      );
 
-    const itemsBefore = await target.count('order_items');
-    await withRuntime(
-      {
-        mode: 'read-write',
-        sql: { queries },
-        writes: { allow: ['cancel_order', 'purge_cancelled'] },
-      },
-      async (rt) => {
-        const tools = rt.listTools();
-        expect(tools.find((t) => t.name === 'cancel_order')!.annotations).toMatchObject({
-          readOnlyHint: false,
-          destructiveHint: false,
-        });
-        expect(tools.find((t) => t.name === 'purge_cancelled')!.annotations).toMatchObject({
-          destructiveHint: true,
-        });
+      const itemsBefore = await target.count('order_items');
+      await withRuntime(
+        {
+          mode: 'read-write',
+          sql: { queries },
+          writes: { allow: ['cancel_order', 'purge_cancelled'] },
+        },
+        async (rt) => {
+          const tools = rt.listTools();
+          expect(tools.find((t) => t.name === 'cancel_order')!.annotations).toMatchObject({
+            readOnlyHint: false,
+            destructiveHint: false,
+          });
+          expect(tools.find((t) => t.name === 'purge_cancelled')!.annotations).toMatchObject({
+            destructiveHint: true,
+          });
 
-        const dry = jsonOf<{ dryRun: boolean; wouldAffectRows: number }>(
-          await rt.callTool('purge_cancelled', { dryRun: true }),
-        );
-        expect(dry.dryRun).toBe(true);
-        expect(dry.wouldAffectRows).toBeGreaterThan(0);
-        expect(await target.count('order_items')).toBe(itemsBefore);
+          const dry = jsonOf<{ dryRun: boolean; wouldAffectRows: number }>(
+            await rt.callTool('purge_cancelled', { dryRun: true }),
+          );
+          expect(dry.dryRun).toBe(true);
+          expect(dry.wouldAffectRows).toBeGreaterThan(0);
+          expect(await target.count('order_items')).toBe(itemsBefore);
 
-        const challenge = await rt.callTool('purge_cancelled', {});
-        expect(textOf(challenge)).toMatch(/CONFIRMATION REQUIRED/);
-        expect(textOf(challenge)).toMatch(/Rows that would be affected now: \d+/);
-        expect(await target.count('order_items')).toBe(itemsBefore);
+          const challenge = await rt.callTool('purge_cancelled', {});
+          expect(textOf(challenge)).toMatch(/CONFIRMATION REQUIRED/);
+          expect(textOf(challenge)).toMatch(/Rows that would be affected now: \d+/);
+          expect(await target.count('order_items')).toBe(itemsBefore);
 
-        const token = /"confirm": "(confirm_[^"]+)"/.exec(textOf(challenge))![1]!;
-        const done = jsonOf<{ affectedRows: number }>(
-          await rt.callTool('purge_cancelled', { confirm: token }),
-        );
-        expect(done.affectedRows).toBe(dry.wouldAffectRows);
-        expect(await target.count('order_items')).toBe(itemsBefore - dry.wouldAffectRows);
+          const token = /"confirm": "(confirm_[^"]+)"/.exec(textOf(challenge))![1]!;
+          const done = jsonOf<{ affectedRows: number }>(
+            await rt.callTool('purge_cancelled', { confirm: token }),
+          );
+          expect(done.affectedRows).toBe(dry.wouldAffectRows);
+          expect(await target.count('order_items')).toBe(itemsBefore - dry.wouldAffectRows);
 
-        // dryRun fails closed: the string "true" is a dry run, other non-booleans are refused.
-        const asString = jsonOf<{ dryRun?: boolean; affectedRows?: number }>(
-          await rt.callTool('cancel_order', { id: 1, dryRun: 'true' }),
-        );
-        expect(asString.dryRun).toBe(true);
-        expect(asString.affectedRows).toBeUndefined();
-        const refused = await rt.callTool('cancel_order', { id: 1, dryRun: 1 });
-        expect(refused.isError).toBe(true);
-        expect(textOf(refused)).toContain('"dryRun" must be true or false');
+          // dryRun fails closed: the string "true" is a dry run, other non-booleans are refused.
+          const asString = jsonOf<{ dryRun?: boolean; affectedRows?: number }>(
+            await rt.callTool('cancel_order', { id: 1, dryRun: 'true' }),
+          );
+          expect(asString.dryRun).toBe(true);
+          expect(asString.affectedRows).toBeUndefined();
+          const refused = await rt.callTool('cancel_order', { id: 1, dryRun: 1 });
+          expect(refused.isError).toBe(true);
+          expect(textOf(refused)).toContain('"dryRun" must be true or false');
 
-        const updated = jsonOf<{ affectedRows: number }>(
-          await rt.callTool('cancel_order', { id: 1 }),
-        );
-        expect(updated.affectedRows).toBe(1);
-      },
-    );
-  });
+          const updated = jsonOf<{ affectedRows: number }>(
+            await rt.callTool('cancel_order', { id: 1 }),
+          );
+          expect(updated.affectedRows).toBe(1);
+        },
+      );
+    },
+  );
 
   it('skips named queries that are not what they claim', async () => {
     const queries = [

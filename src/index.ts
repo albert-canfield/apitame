@@ -24,6 +24,7 @@ export {
   type GuardResult,
   type GuardOptions,
 } from './sources/sql/guard.js';
+export { guardDuckdbSelect, type DuckdbSerializer } from './sources/sql/duckdb-guard.js';
 export { loadSpec } from './sources/openapi/load.js';
 export { extractOperations, type Operation } from './sources/openapi/operations.js';
 export { groupOperations } from './sources/openapi/grouping.js';

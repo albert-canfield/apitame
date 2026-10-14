@@ -14,4 +14,6 @@ export default defineConfig({
   banner: { js: '#!/usr/bin/env node' },
   // Bundle the three SQL dialect parsers instead of installing the whole package (about 88 MB).
   noExternal: ['node-sql-parser', 'big-integer'],
+  // The DuckDB driver is an optional peer dependency, loaded with import() only for DuckDB sources.
+  external: ['@duckdb/node-api'],
 });

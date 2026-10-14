@@ -411,19 +411,20 @@ function operationsReference(rt: OpenApiRuntime, refOf: Map<string, ToolRef>): s
 /** SKILL.md plus a schema reference for a SQL source. */
 export function generateSqlSkill(input: {
   name: string;
-  engine: 'postgres' | 'sqlite' | 'mysql';
+  engine: 'postgres' | 'sqlite' | 'mysql' | 'duckdb';
   description?: string;
   tables: TableInfo[];
   details: TableDetail[];
   namedQueries: Array<{ name: string; description: string }>;
   rowLimit: number;
 }): GeneratedFile[] {
-  const engine = { postgres: 'PostgreSQL', sqlite: 'SQLite', mysql: 'MySQL' }[input.engine];
+  const engine = { postgres: 'PostgreSQL', sqlite: 'SQLite', mysql: 'MySQL', duckdb: 'DuckDB' }[
+    input.engine
+  ];
   const name = skillName(input.name, 'db');
+  const home = input.engine === 'postgres' ? 'public' : input.engine === 'duckdb' ? 'main' : null;
   const qualifiedRaw = (t: { schema: string | null; name: string }) =>
-    input.engine === 'postgres' && t.schema && t.schema !== 'public'
-      ? `${t.schema}.${t.name}`
-      : t.name;
+    home && t.schema && t.schema !== home ? `${t.schema}.${t.name}` : t.name;
   const qualified = (t: { schema: string | null; name: string }) => inline(qualifiedRaw(t), 200);
   const tableNames = input.tables.map(qualified);
   const description =
@@ -440,7 +441,9 @@ export function generateSqlSkill(input: {
     '',
     '| Tool | Use it to |',
     '| --- | --- |',
-    '| `list_tables` | See every table and view (with row estimates on PostgreSQL). |',
+    input.engine === 'duckdb'
+      ? '| `list_tables` | See every table and view with row estimates. |'
+      : '| `list_tables` | See every table and view (with row estimates on PostgreSQL). |',
     '| `describe_table` | Get columns, keys and indexes before writing SQL. |',
     `| \`query\` | Run one SELECT. At most ${input.rowLimit} rows come back. |`,
     ...input.namedQueries.map((q) => `| \`${q.name}\` | ${q.description.replace(/\|/g, '\\|')} |`),
@@ -495,6 +498,11 @@ export function generateSqlSkill(input: {
       ? ['- Prefer the named query tools when they fit: they are reviewed and parameterized.']
       : []),
     '- If a valid query is refused because the parser cannot read it, simplify it or ask the user to add it as a named query.',
+    ...(input.engine === 'duckdb'
+      ? [
+          "- DuckDB SQL works: `FROM <table> LIMIT 5`, `GROUP BY ALL`, `QUALIFY`, `SELECT * EXCLUDE (col)`. Reading files (`read_csv`, `FROM 'data.csv'`) and table functions other than `range`, `generate_series`, `unnest` and the `duckdb_*` catalog are refused.",
+        ]
+      : []),
     '',
     '## Reference',
     '',

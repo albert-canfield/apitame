@@ -108,3 +108,26 @@ jobs:
           apitame test
           apitame add-to claude-code --write
           test -f .mcp.json && test -f .claude/skills/petstore-api/SKILL.md
+          # The DuckDB driver is an optional peer dependency: never part of the default install.
+          test ! -e "$(npm root -g)/@duckdb"
+      - name: DuckDB through npx -p (optional peer dependency)
+        run: |
+          mkdir -p /tmp/duckdb-run
+          node --input-type=module -e "
+            import { readFileSync } from 'node:fs';
+            const { DuckDBInstance } = await import('@duckdb/node-api');
+            const db = await DuckDBInstance.create('/tmp/duckdb-run/shop.duckdb');
+            const conn = await db.connect();
+            await conn.run(readFileSync('examples/postgres-shop/seed.sql', 'utf8'));
+            conn.closeSync();
+            db.closeSync();
+          "
+          TGZ="$(ls "$GITHUB_WORKSPACE"/apitame-*.tgz)"
+          cd /tmp/duckdb-run
+          npx -y -p "$TGZ" -p @duckdb/node-api apitame init ./shop.duckdb
+          npx -y -p "$TGZ" -p @duckdb/node-api apitame test
+          # Without the driver, init explains how to add it and writes nothing.
+          mkdir -p /tmp/duckdb-missing && cp shop.duckdb /tmp/duckdb-missing/ && cd /tmp/duckdb-missing
+          if apitame init ./shop.duckdb 2> err.txt; then echo "init should fail without the driver"; exit 1; fi
+          grep -q "npx -p apitame -p @duckdb/node-api" err.txt
+          test ! -f apitame.config.yaml

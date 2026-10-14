@@ -21,7 +21,7 @@ program
   .description('Introspect a source and generate apitame.config.yaml and skills')
   .argument(
     '[source]',
-    'OpenAPI or Swagger file or URL, postgres:// or mysql:// URL, or SQLite file',
+    'OpenAPI or Swagger file or URL, postgres:// or mysql:// URL, or SQLite or DuckDB file',
   )
   .option('-o, --out <dir>', 'output folder', '.')
   .option('-n, --name <name>', 'server name (default: from the spec title or database name)')

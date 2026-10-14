@@ -14,7 +14,7 @@ flowchart LR
   end
   subgraph Sources
     oas[sources/openapi<br/>load, Swagger 2 conversion,<br/>normalize, group]
-    sql[sources/sql<br/>lexer, guard,<br/>Postgres, MySQL, SQLite]
+    sql[sources/sql<br/>lexer, guard,<br/>Postgres, MySQL, SQLite, DuckDB]
   end
   cfg[(apitame.config.yaml<br/>skills/)]
   gen --> cfg
@@ -37,7 +37,7 @@ flowchart LR
 | `src/cli.ts`, `src/cli/` | Command parsing (commander) and the six commands: `init`, `serve`, `inspect`, `test`, `doctor`, `add-to`. Terminal output only; no business logic. |
 | `src/config/` | Zod schema for `apitame.config.yaml`, YAML loading, `${VAR}` resolution, `.env` loading. |
 | `src/sources/openapi/` | Load and dereference specs (file or URL, external refs, discovery), convert Swagger 2.0 in memory (`swagger2.ts`), normalize operations and body kinds, compact JSON Schemas, classify access, group operations into tools. |
-| `src/sources/sql/` | Database-accurate lexer (PostgreSQL, MySQL and SQLite rules), the SELECT guard, write classification, named parameter binding, and the PostgreSQL, MySQL and SQLite drivers (each with a `privileges()` check). Loaded on demand. |
+| `src/sources/sql/` | Database-accurate lexer (PostgreSQL, MySQL, SQLite and DuckDB rules), the SELECT guard, write classification, named parameter binding, and the PostgreSQL, MySQL, SQLite and DuckDB drivers (each with a `privileges()` check). DuckDB's parser layer (`duckdb-guard.ts`) asks DuckDB itself, and its driver package is an optional peer dependency loaded with `import()`. Loaded on demand. |
 | `src/server/` | Runtimes that turn a source into tools, the HTTP client (redirect policy, uploads, size caps), response field selection (`fields.ts`), argument validation, the MCP server wiring, transports, OAuth access token checks for the HTTP transport (`oauth.ts`), and skills over MCP. |
 | `src/safety/` | The policy decision (`decide`), confirmation tokens, approval ids and the elicitation flow for both protocol eras, the redactor, and `guardrails.ts` (per-minute rate limits and the JSON Lines audit log, shared by both runtimes). |
 | `src/auth/` | Bearer, API key, basic and OAuth2 client credentials providers. |
@@ -60,8 +60,8 @@ flowchart LR
 
 ## Request flow (SQL)
 
-1. `query` arguments go to `guardSelect` (lexer checks, then parser checks, then table allow and deny lists).
-2. The driver runs the cleaned SQL: PostgreSQL in a read-only transaction through a cursor with the extended protocol; MySQL in a read-only transaction with `max_execution_time` and `sql_select_limit`; SQLite in a worker thread on a read-only connection.
+1. `query` arguments go to `guardSelect` (lexer checks, then parser checks, then table allow and deny lists). For DuckDB, `guardDuckdbSelect` runs the same lexer and then DuckDB's own parser (`json_serialize_sql`) on a separate in-memory database.
+2. The driver runs the cleaned SQL: PostgreSQL in a read-only transaction through a cursor with the extended protocol; MySQL in a read-only transaction with `max_execution_time` and `sql_select_limit`; SQLite in a worker thread on a read-only connection; DuckDB in a new read-only, locked-down instance per call, after DuckDB confirms one SELECT statement.
 3. Rows come back as arrays, trimmed to the row limit and the response size cap, then redacted.
 
 Named queries are validated once at startup. Write queries go through the same policy and confirmation code as HTTP writes; their dry run is a transaction that is rolled back.
@@ -84,9 +84,9 @@ Tool input schemas are generated JSON Schema, not Zod objects written by hand. T
 ## Testing
 
 - `tests/unit`: guard (about 160 cases across three dialects, including parser/database differentials), policy, confirmation, redaction, guardrails, config, schema compaction, Swagger 2.0 conversion, grouping, request building, redirects, uploads, field selection, auth, ZIP output and token estimation.
-- `tests/integration`: the OpenAPI runtime against the mock server (blocking, allowlist, confirmation, dry run, redaction), the MCP protocol over an in-memory transport (including elicitation and skills), approvals for 2026-07-28 clients over stdio, stateless HTTP and HTTP sessions (tampered, replayed and expired approval ids, changed arguments, OAuth users, the checks in front of the handler), `doctor`, and the SQL runtime against SQLite, PGlite and, in CI, real PostgreSQL 17 and MySQL 8.4 servers (timeouts, read-only roles, injection payloads).
+- `tests/integration`: the OpenAPI runtime against the mock server (blocking, allowlist, confirmation, dry run, redaction), the MCP protocol over an in-memory transport (including elicitation and skills), approvals for 2026-07-28 clients over stdio, stateless HTTP and HTTP sessions (tampered, replayed and expired approval ids, changed arguments, OAuth users, the checks in front of the handler), `doctor`, and the SQL runtime against SQLite, DuckDB, PGlite and, in CI, real PostgreSQL 17 and MySQL 8.4 servers (timeouts, read-only roles, injection payloads). DuckDB runs from the development dependency, with no server; its tests check each safety layer on its own.
 - `tests/e2e`: the CLI as users run it, including stdio MCP sessions in both protocol eras, an approval and `--watch` over HTTP for a 2026-07-28 client, and every `add-to` client.
 
-CI runs on Linux (Node 22, 24), macOS and Windows, plus a packed-tarball smoke test and the real-database job.
+CI runs on Linux (Node 22, 24), macOS and Windows, plus a packed-tarball smoke test (which also runs a DuckDB file through `npx -p apitame -p @duckdb/node-api`) and the real-database job.
 
 See [decisions.md](decisions.md) for the reasoning behind the main choices.

@@ -11,6 +11,7 @@ import { extractOperations } from '../src/sources/openapi/operations.js';
 import { Logger } from '../src/log.js';
 import { Redactor } from '../src/safety/redact.js';
 import { OpenApiRuntime } from '../src/server/openapi-runtime.js';
+import { loadDuckdb, type DuckdbModule } from '../src/sources/sql/duckdb.js';
 
 export const ROOT = resolve(import.meta.dirname, '..');
 export const PETSTORE = join(ROOT, 'examples/petstore/openapi.yaml');
@@ -38,6 +39,28 @@ export function createSqliteShop(file: string): void {
   const db = new Database(file);
   db.exec(readFileSync(SHOP_SEED, 'utf8'));
   db.close();
+}
+
+/**
+ * The optional DuckDB driver (a devDependency), or the reason it cannot load on this
+ * platform. DuckDB suites skip themselves only in that case.
+ */
+export async function duckdbForTests(): Promise<{ duck?: DuckdbModule; reason?: string }> {
+  try {
+    return { duck: await loadDuckdb() };
+  } catch (err) {
+    return { reason: (err as Error).message.replace(/\n/g, ' ') };
+  }
+}
+
+/** Create the sample shop database as a DuckDB file (read-write, then closed). */
+export async function createDuckdbShop(file: string, duck: DuckdbModule): Promise<void> {
+  const db = await duck.DuckDBInstance.create(file);
+  const conn = await db.connect();
+  await conn.run(readFileSync(SHOP_SEED, 'utf8'));
+  await conn.run("COMMENT ON TABLE orders IS 'One row per checkout'");
+  conn.closeSync();
+  db.closeSync();
 }
 
 export async function freePort(): Promise<number> {
