@@ -15,7 +15,15 @@ All notable changes to this project are documented here. The format follows [Kee
 - `dryRun` and `confirm` always control apitame. In single-operation tools an API parameter with the same name took them over, so a "dry run" could be sent to the API for real; such parameters are now exposed as `api_dryRun` and `api_confirm`.
 - The write rate limit is checked before confirmation, so a rate-limited call no longer uses up the human's approval token.
 - `writes.destructive` and `writes.treatAsRead` accept `*` patterns like `allow` and `confirm`. Before, `destructive: [archive*]` was ignored at runtime (while `doctor` reported it as matching), so those operations ran without confirmation.
+- Redirect chains that leave the API's origin never get credentials back, even when a later hop returns to the API (an open redirect could bring a request back to another endpoint with credentials). A write is no longer resent by a 307 or 308 redirect outside the base URL.
+- Exploded object query parameters only accept the keys their schema lists, so an agent cannot add parameters such as `_method=DELETE`.
+- `limits.timeoutMs` covers the whole request, including redirects, the token refresh retry and reading the body. Before, it applied per hop.
 - `confirmation.method: elicitation` refuses when there is no way to ask the human, instead of falling back to a token (library use only; the MCP server always offers elicitation).
+
+### Fixed
+
+- JSON media types with a structured suffix (`application/vnd.api+json`, `application/vnd.github+json`) were treated as binary, so JSON:API responses were never returned.
+- A base URL with a query string (`https://api.example.com/v1?api-version=2024-01-01`) put the operation path inside the query.
 
 ### Added
 
