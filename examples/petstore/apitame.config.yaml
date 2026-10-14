@@ -27,6 +27,8 @@ limits:
   maxOperationsPerTool: 15
   timeoutMs: 15000
   maxResponseBytes: 50000
+  maxCallsPerMinute: 120
+  maxWritesPerMinute: 20
 
 # Task-level tools. Each one groups related operations. Rename, regroup or drop operations as you like.
 # In read-only mode, write operations listed here are simply not exposed.
@@ -89,6 +91,11 @@ writes:
 confirmation:
   method: auto
   ttlSeconds: 300
+
+# Add "file: ./apitame-audit.jsonl" to keep a JSON Lines record of every write attempt
+# (blocked, dry run, confirmed, sent) and every refused query. include: all also records reads.
+audit:
+  include: writes
 
 # Generated agent skills. Regenerate with "apitame init --skills-only".
 skills:

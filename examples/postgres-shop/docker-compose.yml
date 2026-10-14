@@ -1,6 +1,6 @@
 # Sample shop database for apitame.
 #   docker compose up -d
-#   export DATABASE_URL=postgres://apitame_ro:apitame_ro@localhost:5433/shop
+#   export DATABASE_URL=postgres://apitame_ro:read-only-demo@localhost:5433/shop
 services:
   postgres:
     image: postgres:17-alpine

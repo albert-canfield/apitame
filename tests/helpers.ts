@@ -105,8 +105,9 @@ export async function setupPostgresServer(
   await admin.query(`DROP DATABASE IF EXISTS ${SERVER_DB} WITH (FORCE)`);
   await admin.query(`CREATE DATABASE ${SERVER_DB}`);
   await admin.query(
-    `DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'apitame_ro') THEN CREATE ROLE apitame_ro LOGIN PASSWORD 'apitame_ro'; END IF; END $$`,
+    `DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'apitame_ro') THEN CREATE ROLE apitame_ro LOGIN; END IF; END $$`,
   );
+  await admin.query(`ALTER ROLE apitame_ro WITH LOGIN PASSWORD 'apitame_ro_pw'`);
   const url = new URL(adminUrl);
   url.pathname = `/${SERVER_DB}`;
   const db = new pg.Client({ connectionString: url.toString() });
@@ -120,7 +121,7 @@ export async function setupPostgresServer(
   await admin.end();
   const ro = new URL(url);
   ro.username = 'apitame_ro';
-  ro.password = 'apitame_ro';
+  ro.password = 'apitame_ro_pw';
   return { url: url.toString(), readOnlyUrl: ro.toString(), close: async () => {} };
 }
 
@@ -141,13 +142,13 @@ export async function setupMysqlServer(
     // MySQL 8 parses inline REFERENCES but ignores them, so foreign keys are added explicitly.
     `ALTER TABLE orders ADD FOREIGN KEY (customer_id) REFERENCES customers(id);
      ALTER TABLE order_items ADD FOREIGN KEY (order_id) REFERENCES orders(id), ADD FOREIGN KEY (product_id) REFERENCES products(id);
-     CREATE USER IF NOT EXISTS 'apitame_ro'@'%' IDENTIFIED BY 'apitame_ro'; GRANT SELECT ON ${SERVER_DB}.* TO 'apitame_ro'@'%'; ANALYZE TABLE customers, products, orders, order_items;`,
+     CREATE USER IF NOT EXISTS 'apitame_ro'@'%' IDENTIFIED BY 'apitame_ro_pw'; ALTER USER 'apitame_ro'@'%' IDENTIFIED BY 'apitame_ro_pw'; GRANT SELECT ON ${SERVER_DB}.* TO 'apitame_ro'@'%'; ANALYZE TABLE customers, products, orders, order_items;`,
   );
   await admin.end();
   const url = new URL(adminUrl);
   url.pathname = `/${SERVER_DB}`;
   const ro = new URL(url);
   ro.username = 'apitame_ro';
-  ro.password = 'apitame_ro';
+  ro.password = 'apitame_ro_pw';
   return { url: url.toString(), readOnlyUrl: ro.toString(), close: async () => {} };
 }
