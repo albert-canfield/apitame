@@ -5,6 +5,7 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/apitame"><img alt="npm version" src="https://img.shields.io/npm/v/apitame.svg"></a>
   <a href="https://github.com/albert-canfield/apitame/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/albert-canfield/apitame/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="Node 20+" src="https://img.shields.io/badge/node-%3E%3D20.12-339933.svg">

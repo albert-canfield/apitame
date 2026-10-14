@@ -34,7 +34,7 @@ See [architecture.md](architecture.md) for modules and request flows, and [decis
 | M3 | SQL sources: PostgreSQL and SQLite, guard, drivers, named queries | Done |
 | M4 | Skill generation, skills over MCP, `inspect` token cost and CI budget | Done |
 | M5 | Write mode: allowlist, confirmation (elicitation and token), dry run, safety tests | Done |
-| M6 | README, examples, demo, documentation, v0.1.0 release notes | Done. Pending: npm publish and release tag (maintainer decision). |
+| M6 | README, examples, demo, documentation, v0.1.0 release notes | Done. v0.1.0 published to npm on 14 October 2026. |
 
 ## Quality bar (v0.1)
 
@@ -42,7 +42,7 @@ See [architecture.md](architecture.md) for modules and request flows, and [decis
 - [x] SQL guard tests include injection attempts, multi-statement tricks and parser/database differentials.
 - [x] Secret redaction is tested (echoed tokens, OAuth errors, database passwords).
 - [x] CI: lint, typecheck and tests on Node 20, 22 and 24; build and smoke test of the packed CLI.
-- [x] `npx apitame init examples/petstore/openapi.yaml && npx apitame serve` works on a clean machine (covered by the e2e tests against the built CLI; works with `npx` once the package is published).
+- [x] `npx apitame init examples/petstore/openapi.yaml && npx apitame serve` works on a clean machine (checked against the published package with an empty npm cache, and covered by the e2e tests and the CI smoke test).
 
 ## Release checklist
 
@@ -50,8 +50,7 @@ See [architecture.md](architecture.md) for modules and request flows, and [decis
 2. `node scripts/render-demo.mjs` if CLI output changed; optionally record the GIF ([demo-script.md](demo-script.md)).
 3. Update `CHANGELOG.md` and `docs/release-notes/`.
 4. `npm pack --dry-run` and check the file list.
-5. Maintainer approval, then tag `vX.Y.Z` and push the tag. The release workflow publishes to npm with provenance.
-6. Add the npm version badge to the README after the first publish.
+5. Maintainer approval, then tag `vX.Y.Z` and push the tag. The release workflow publishes to npm with provenance through npm trusted publishing (see [decisions.md](decisions.md#013-releases-use-npm-trusted-publishing)) and creates the GitHub release.
 
 ## After v0.1
 
