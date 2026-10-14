@@ -141,6 +141,8 @@ describe('guardSelect: dangerous functions and catalogs', () => {
     'SELECT * FROM pg_authid',
     'SELECT query FROM pg_stat_activity',
     'SELECT * FROM pg_user_mappings',
+    'SELECT query FROM pg_stat_statements',
+    'SELECT * FROM information_schema.user_mapping_options',
   ])('postgres refuses %s', (sql) => {
     expect(guardSelect(sql, { dialect: 'postgres' }).ok).toBe(false);
   });
@@ -307,6 +309,7 @@ describe('guardSelect: MySQL specifics', () => {
       'SELECT user, authentication_string FROM mysql.user',
       'SELECT * FROM performance_schema.events_statements_history',
       'SELECT * FROM `mysql`.`user`',
+      'SELECT info FROM information_schema.processlist',
     ]) {
       expect(my(sql).ok, sql).toBe(false);
     }
