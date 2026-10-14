@@ -143,6 +143,18 @@ describe('guardSelect: dangerous functions and catalogs', () => {
     'SELECT * FROM pg_user_mappings',
     'SELECT query FROM pg_stat_statements',
     'SELECT * FROM information_schema.user_mapping_options',
+    // SQL strings run by functions, and their tables, escape the table lists.
+    "SELECT word FROM ts_stat('SELECT to_tsvector(api_key) FROM secrets')",
+    "SELECT ts_rewrite('a'::tsquery, 'SELECT ''a''::tsquery, plainto_tsquery(api_key) FROM secrets')",
+    "SELECT * FROM crosstab('SELECT * FROM secrets') AS t(a text, b text)",
+    "SELECT * FROM connectby('secrets', 'id', 'parent', '1', 0) AS t(id int)",
+    "SELECT * FROM pgstattuple('secrets')",
+    "SELECT get_raw_page('secrets', 0)",
+    'SELECT query FROM pg_stat_get_activity(NULL)',
+    'SELECT pg_stat_get_backend_activity(1)',
+    // Planner statistics sample real values.
+    "SELECT most_common_vals FROM pg_stats WHERE tablename = 'secrets'",
+    'SELECT * FROM pg_catalog.pg_stats_ext',
   ])('postgres refuses %s', (sql) => {
     expect(guardSelect(sql, { dialect: 'postgres' }).ok).toBe(false);
   });
@@ -151,6 +163,7 @@ describe('guardSelect: dangerous functions and catalogs', () => {
     "SELECT load_extension('/tmp/evil.so')",
     "SELECT readfile('/etc/passwd')",
     "SELECT writefile('/tmp/x', 'y')",
+    'SELECT sample FROM sqlite_stat4',
   ])('sqlite refuses %s', (sql) => {
     expect(guardSelect(sql, { dialect: 'sqlite' }).ok).toBe(false);
   });
@@ -185,7 +198,34 @@ describe('guardSelect: table allow and deny lists', () => {
     const opts = { dialect: 'postgres' as const, allowTables: ['orders', 'customers'] };
     expect(guardSelect('SELECT * FROM orders JOIN customers ON true', opts).ok).toBe(true);
     expect(guardSelect('WITH x AS (SELECT * FROM orders) SELECT * FROM x', opts).ok).toBe(true);
+    expect(
+      guardSelect(
+        'WITH a AS (SELECT * FROM orders), b AS (SELECT * FROM a) SELECT * FROM b JOIN a ON true',
+        opts,
+      ).ok,
+    ).toBe(true);
+    expect(
+      guardSelect(
+        'WITH RECURSIVE n AS (SELECT 1 AS i UNION ALL SELECT i + 1 FROM n WHERE i < 5) SELECT * FROM n',
+        opts,
+      ).ok,
+    ).toBe(true);
     expect(guardSelect('SELECT * FROM products', opts).ok).toBe(false);
+  });
+
+  it.each([
+    // A non-recursive CTE is not in scope inside its own body: the inner name is the real table.
+    'WITH products AS (SELECT * FROM products) SELECT * FROM products',
+    // A CTE inside a subquery does not hide the same name in the outer query.
+    'SELECT p.* FROM (WITH products AS (SELECT 1 AS x) SELECT x FROM products) z, products p',
+    'SELECT * FROM orders WHERE EXISTS (WITH products AS (SELECT 1) SELECT 1 FROM products) AND id IN (SELECT id FROM products)',
+    // A CTE is not visible in an earlier sibling.
+    'WITH a AS (SELECT * FROM products), products AS (SELECT 1 AS x) SELECT * FROM a',
+  ])('a CTE name never hides a real table from the allow list: %s', (sql) => {
+    for (const dialect of ['postgres', 'sqlite', 'mysql'] as const) {
+      const r = guardSelect(sql, { dialect, allowTables: ['orders'] });
+      expect(r.ok, `${dialect}: ${sql}`).toBe(false);
+    }
   });
 
   it('returns the referenced tables', () => {
@@ -310,6 +350,8 @@ describe('guardSelect: MySQL specifics', () => {
       'SELECT * FROM performance_schema.events_statements_history',
       'SELECT * FROM `mysql`.`user`',
       'SELECT info FROM information_schema.processlist',
+      'SELECT trx_query FROM information_schema.INNODB_TRX',
+      'SELECT histogram FROM information_schema.COLUMN_STATISTICS',
     ]) {
       expect(my(sql).ok, sql).toBe(false);
     }

@@ -91,6 +91,15 @@ const DENIED_FUNCTIONS = new Set([
   'txid_current',
   'pg_current_xact_id',
   'pg_export_snapshot',
+  // Run a SQL string given as text: the tables inside the string escape the allow and deny lists.
+  'ts_stat',
+  'ts_rewrite',
+  'connectby',
+  'xpath_table',
+  // Read any table by name (extensions), below the allow and deny lists.
+  'get_raw_page',
+  'pgrowlocks',
+  'pg_relpages',
 ]);
 const DENIED_FUNCTION_PREFIXES = [
   'pg_read',
@@ -126,6 +135,11 @@ const DENIED_FUNCTION_PREFIXES = [
   'schema_to_xml',
   'database_to_xml',
   'pg_sequence_last_value',
+  // tablefunc's crosstab*() runs SQL strings; pgstattuple's pgstat*() read tables by name.
+  'crosstab',
+  'pgstat',
+  // pg_stat_get_activity() and friends: other sessions' statements, like pg_stat_activity.
+  'pg_stat_get_',
 ];
 
 /** Catalogs that expose credentials or other sessions' queries. */
@@ -146,6 +160,17 @@ const BUILTIN_DENIED_TABLES = [
   'user_mapping_options',
   // MySQL: statements other sessions are running.
   'processlist',
+  'innodb_trx',
+  // Planner statistics hold sampled column values (most common values, histograms, index
+  // samples), so they would show the contents of denied tables.
+  'pg_stats',
+  'pg_stats_ext',
+  'pg_stats_ext_exprs',
+  'pg_statistic',
+  'pg_statistic_ext_data',
+  'sqlite_stat3',
+  'sqlite_stat4',
+  'column_statistics',
 ];
 
 export function isDeniedFunction(name: string): boolean {
@@ -213,8 +238,8 @@ function tableMatches(ref: { schema: string | null; table: string }, list: strin
 interface AstFacts {
   types: Set<string>;
   functions: string[];
+  /** Table references that are not CTEs in scope where they appear. */
   tables: Array<{ schema: string | null; table: string }>;
-  cteNames: Set<string>;
   selectInto: boolean;
   locking: boolean;
 }
@@ -237,43 +262,69 @@ function collect(ast: unknown): AstFacts {
     types: new Set(),
     functions: [],
     tables: [],
-    cteNames: new Set(),
     selectInto: false,
     locking: false,
   };
   const seen = new WeakSet<object>();
-  const visit = (node: unknown, key?: string): void => {
+  // CTE names are resolved per scope, as the database does: a CTE is visible in later CTEs of
+  // the same WITH and in its main query, never in outer queries, and in its own body only with
+  // RECURSIVE. Otherwise `WITH customers AS (SELECT * FROM customers)` would hide a real table.
+  const visit = (node: unknown, key: string | undefined, scope: ReadonlySet<string>): void => {
     if (!node || typeof node !== 'object') return;
     if (seen.has(node)) return;
     seen.add(node);
     if (Array.isArray(node)) {
-      for (const v of node) visit(v, key);
+      for (const v of node) visit(v, key, scope);
       return;
     }
     const obj = node as Record<string, unknown>;
     const type = typeof obj.type === 'string' ? obj.type.toLowerCase() : undefined;
     if (type) facts.types.add(type);
     if (type === 'function') facts.functions.push(functionName(obj));
+    let inner = scope;
     if (type === 'select') {
       const into = obj.into as { expr?: unknown; position?: unknown } | undefined;
       if (into && (into.expr || into.position)) facts.selectInto = true;
       if (obj.locking_read || obj.for_update) facts.locking = true;
-      for (const w of (obj.with as Array<{ name?: { value?: unknown } | string }> | null) ?? []) {
-        const name = typeof w.name === 'string' ? w.name : w.name?.value;
-        if (typeof name === 'string') facts.cteNames.add(lower(name));
+      const ctes =
+        (obj.with as Array<{
+          name?: { value?: unknown } | string;
+          stmt?: unknown;
+          recursive?: unknown;
+        }> | null) ?? [];
+      const cteName = (w: (typeof ctes)[number]) => {
+        const n = typeof w.name === 'string' ? w.name : w.name?.value;
+        return typeof n === 'string' ? lower(n) : '';
+      };
+      if (ctes.length > 0) {
+        const all = new Set([...scope, ...ctes.map(cteName)]);
+        const recursive = ctes.some((w) => w.recursive === true);
+        let visible = new Set(scope);
+        for (const w of ctes) {
+          visit(w.stmt, 'with', recursive ? all : visible);
+          visible = new Set([...visible, cteName(w)]);
+        }
+        inner = all;
       }
     }
     if (key === 'from' || key === 'join') {
       if (typeof obj.table === 'string') {
         const schema = (obj.schema ?? obj.db) as string | null | undefined;
-        facts.tables.push({ schema: typeof schema === 'string' ? schema : null, table: obj.table });
+        const isCte = (schema === null || schema === undefined) && scope.has(lower(obj.table));
+        if (!isCte) {
+          facts.tables.push({
+            schema: typeof schema === 'string' ? schema : null,
+            table: obj.table,
+          });
+        }
       }
     }
     for (const [k, v] of Object.entries(obj)) {
-      if (v && typeof v === 'object') visit(v, k);
+      if (k === 'with' && inner !== scope) continue;
+      if (v && typeof v === 'object') visit(v, k, inner);
     }
   };
-  visit(ast);
+  visit(ast, undefined, new Set());
   return facts;
 }
 
@@ -409,9 +460,7 @@ export function guardSelect(sql: string, opts: GuardOptions): GuardResult {
     if (isDeniedFunction(fn)) return fail(`Function ${fn}() is not allowed in read-only queries.`);
   }
 
-  const tables = facts.tables.filter(
-    (t) => !(t.schema === null && facts.cteNames.has(lower(t.table))),
-  );
+  const tables = facts.tables;
   for (const t of tables) {
     if (t.schema && systemSchemas.includes(lower(t.schema))) {
       return fail(`The "${t.schema}" schema is not available.`);
