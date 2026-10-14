@@ -3,6 +3,8 @@ name: Release
 # Runs when a maintainer pushes a version tag (for example v0.1.0).
 # Publishes to npm with provenance and creates the GitHub release from docs/release-notes/<tag>.md.
 # Both steps are skipped when already done (for example after a manual `npm publish`).
+# npm auth: configure a trusted publisher on npmjs.com (package settings, GitHub Actions,
+# repository albert-canfield/apitame, workflow release.yml, environment npm). No token needed.
 on:
   push:
     tags: ['v*.*.*']
@@ -29,25 +31,23 @@ jobs:
       - run: pnpm test
       - name: Check the tag matches package.json
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
-      - name: Check npm authentication
-        run: |
-          if ! user="$(npm whoami 2>/dev/null)"; then
-            echo "::error::NPM_TOKEN is missing, revoked or invalid. Create a granular token with read and write access to all packages and bypass 2FA, then run: gh secret set NPM_TOKEN"
-            exit 1
-          fi
-          echo "Publishing as $user"
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Trusted publishing (GitHub signs in to npm with OIDC, no token) needs npm 11.5.1 or later.
+      - name: Use npm 11
+        run: npm install -g npm@11
       - name: Publish to npm
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           if npm view "apitame@$VERSION" version >/dev/null 2>&1; then
             echo "apitame@$VERSION is already on npm, skipping publish."
-          else
-            npm publish --provenance --access public
+            exit 0
           fi
+          if [ -n "$NODE_AUTH_TOKEN" ] && ! npm whoami >/dev/null 2>&1; then
+            echo "::error::The NPM_TOKEN secret is invalid. Delete it (gh secret delete NPM_TOKEN) to use trusted publishing, or replace it."
+            exit 1
+          fi
+          npm publish --provenance --access public
         env:
-          # Leave unset when npm trusted publishing is configured for this repository.
+          # Leave the NPM_TOKEN secret unset when npm trusted publishing is configured (recommended).
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Create GitHub release
         run: |

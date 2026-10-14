@@ -67,3 +67,9 @@ A running log of decisions and the reasons behind them. Newest last. Add an entr
 ## 012. Config files written by `add-to` are portable
 
 **Decision.** When the config is inside the project, client configs reference it through the client's project variable (`${CLAUDE_PROJECT_DIR:-.}` for Claude Code, `${workspaceFolder}` for Cursor and VS Code) so they can be committed. Codex gets an absolute path because its config does not document interpolation. The launcher pins the minor version (`apitame@0.1`).
+
+## 013. Releases use npm trusted publishing
+
+**Context.** npm requires two-factor authentication to publish and is restricting tokens that bypass it. v0.1.0 was published manually with a short-lived token.
+
+**Decision.** Releases run from `.github/workflows/release.yml` on a version tag, with npm trusted publishing (OIDC from GitHub Actions, npm 11.5.1 or later) and provenance. No long-lived npm token is stored in the repository. The workflow skips publishing when the version is already on npm and skips the GitHub release when it already exists, so a release can be finished by hand without breaking the workflow.
