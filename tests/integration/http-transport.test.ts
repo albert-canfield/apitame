@@ -56,6 +56,71 @@ const post = (url: string, sessionId: string) =>
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
   });
 
+const RAW = {
+  'Content-Type': 'application/json',
+  Accept: 'application/json, text/event-stream',
+  'MCP-Protocol-Version': '2025-11-25',
+};
+
+/** An initialize request sent with raw HTTP. */
+const initialize = (url: string, capabilities: Record<string, unknown> = {}) =>
+  fetch(`${url}/mcp`, {
+    method: 'POST',
+    headers: RAW,
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-11-25',
+        capabilities,
+        clientInfo: { name: 'raw', version: '1' },
+      },
+    }),
+  });
+
+/** Start a session with raw HTTP. Unlike the SDK client, it opens no stream in the background. */
+async function rawSession(
+  url: string,
+  capabilities: Record<string, unknown> = {},
+): Promise<string> {
+  const init = await initialize(url, capabilities);
+  const id = init.headers.get('mcp-session-id');
+  await init.text();
+  if (!id) throw new Error(`initialize failed with HTTP ${init.status}`);
+  const ack = await fetch(`${url}/mcp`, {
+    method: 'POST',
+    headers: { ...RAW, 'Mcp-Session-Id': id },
+    body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+  });
+  await ack.text();
+  return id;
+}
+
+/** Open the session's notification stream, as a connected client does. Returns a function that drops it. */
+async function holdStream(url: string, sessionId: string): Promise<() => void> {
+  const ac = new AbortController();
+  const res = await fetch(`${url}/mcp`, {
+    method: 'GET',
+    headers: {
+      Accept: 'text/event-stream',
+      'Mcp-Session-Id': sessionId,
+      'MCP-Protocol-Version': '2025-11-25',
+    },
+    signal: ac.signal,
+  });
+  expect(res.status).toBe(200);
+  return () => ac.abort();
+}
+
+async function eventually(check: () => boolean | Promise<boolean>, ms = 3_000): Promise<void> {
+  const until = Date.now() + ms;
+  while (!(await check())) {
+    if (Date.now() > until) throw new Error('condition not met in time');
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 const stop = (http: HttpServer) =>
   new Promise<void>((r) => {
     http.closeAllConnections();
@@ -242,30 +307,24 @@ describe('streamable HTTP transport', () => {
       onServerClosed: (s) => closed.push(s),
     });
     try {
-      const connect = async () => {
-        const client = new Client({ name: 't', version: '1.0.0' });
-        const transport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`));
-        await client.connect(transport);
-        return { client, transport };
-      };
-      const a = await connect();
-      const aId = a.transport.sessionId!;
-      await a.transport.terminateSession();
-      expect((await post(url, aId)).status).toBe(404);
-      expect(closed.length).toBeGreaterThanOrEqual(1);
+      const a = await rawSession(url);
+      const del = await fetch(`${url}/mcp`, {
+        method: 'DELETE',
+        headers: { 'Mcp-Session-Id': a, 'MCP-Protocol-Version': '2025-11-25' },
+      });
+      expect(del.status).toBeLessThan(300);
+      expect((await post(url, a)).status).toBe(404);
+      expect(closed).toHaveLength(1);
 
-      // A client that went away without DELETE: its streams close, then the session idles out.
-      // A connected client keeps a stream open and is never closed for being idle.
-      const b = await connect();
-      await b.client.listTools();
-      const id = b.transport.sessionId!;
-      const count = closed.length;
-      await new Promise((r) => setTimeout(r, 400));
-      expect(closed.length).toBe(count);
-      await b.transport.close();
-      await new Promise((r) => setTimeout(r, 600));
-      expect(closed.length).toBeGreaterThan(count);
-      expect((await post(url, id)).status).toBe(404);
+      // A connected client keeps its stream open and is never closed for being idle.
+      const b = await rawSession(url);
+      const drop = await holdStream(url, b);
+      await new Promise((r) => setTimeout(r, 450));
+      expect(closed).toHaveLength(1);
+      // A client that went away without DELETE: its stream closes, then the session idles out.
+      drop();
+      await eventually(() => closed.length === 2);
+      expect((await post(url, b)).status).toBe(404);
     } finally {
       await stop(http);
     }
@@ -274,23 +333,20 @@ describe('streamable HTTP transport', () => {
   it('with sessions, makes room by closing the oldest idle session', async () => {
     const { http, url } = await start(undefined, { sessions: true, maxSessions: 1 });
     try {
-      const first = new Client({ name: 'a', version: '1.0.0' });
-      const firstTransport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`));
-      await first.connect(firstTransport);
-      const id = firstTransport.sessionId!;
+      const first = await rawSession(url);
+      const drop = await holdStream(url, first);
       // Still connected: no room for another session.
-      const busy = new Client({ name: 'b', version: '1.0.0' });
-      await expect(
-        busy.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`))),
-      ).rejects.toThrow(/Too many active sessions/);
-      // Gone (streams closed, no DELETE): its session makes room for a new one.
-      await firstTransport.close();
-      await new Promise((r) => setTimeout(r, 50));
-      const second = new Client({ name: 'c', version: '1.0.0' });
-      await second.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`)));
-      await expect(second.listTools()).resolves.toBeTruthy();
-      expect((await post(url, id)).status).toBe(404);
-      await second.close();
+      const busy = await initialize(url);
+      expect(busy.status).toBe(503);
+      expect(await busy.text()).toContain('Too many active sessions');
+      // Gone (stream closed, no DELETE): its session makes room for a new one.
+      drop();
+      await eventually(async () => {
+        const r = await initialize(url);
+        await r.text();
+        return r.status === 200;
+      });
+      expect((await post(url, first)).status).toBe(404);
     } finally {
       await stop(http);
     }
