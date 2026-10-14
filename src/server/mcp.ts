@@ -1,4 +1,10 @@
-import { ProtocolError, ProtocolErrorCode, Server } from '@modelcontextprotocol/server';
+import {
+  ProtocolError,
+  ProtocolErrorCode,
+  SdkError,
+  SdkErrorCode,
+  Server,
+} from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { VERSION } from '../version.js';
 import type { CallContext, ElicitOutcome, Runtime } from '../types.js';
@@ -20,6 +26,9 @@ const CACHE = { ttlMs: 300_000, cacheScope: 'public' as const };
  * tool schemas are plain JSON Schema generated from the source, and what is
  * sent in tools/list is exactly what `apitame inspect` measures.
  */
+/** How long a human has to answer an approval prompt. */
+const ELICIT_TIMEOUT_MS = 5 * 60_000;
+
 export function createMcpServer(
   source: Runtime | (() => Runtime),
   opts: McpServerOptions = {},
@@ -48,29 +57,43 @@ export function createMcpServer(
     const callCtx: CallContext = {
       signal: ctx.mcpReq.signal,
       elicit: async (message: string): Promise<ElicitOutcome> => {
-        const caps = server.getClientCapabilities();
-        if (caps && !caps.elicitation) return 'unsupported';
+        if (!server.getClientCapabilities()?.elicitation) return 'unsupported';
         try {
-          const res = await ctx.mcpReq.elicitInput({
-            mode: 'form',
-            message,
-            requestedSchema: {
-              type: 'object',
-              properties: {
-                approve: {
-                  type: 'boolean',
-                  title: 'Approve this action',
-                  description: 'Check to let the agent run it once.',
-                  default: false,
+          const res = await ctx.mcpReq.elicitInput(
+            {
+              mode: 'form',
+              message,
+              requestedSchema: {
+                type: 'object',
+                properties: {
+                  approve: {
+                    type: 'boolean',
+                    title: 'Approve this action',
+                    description: 'Check to let the agent run it once.',
+                    default: false,
+                  },
                 },
+                required: ['approve'],
               },
-              required: ['approve'],
             },
-          });
+            {
+              // On the tool call's own response stream. Over HTTP the client's standalone
+              // stream may not be open yet, and a request sent there would be dropped.
+              relatedRequestId: ctx.mcpReq.id,
+              timeout: ELICIT_TIMEOUT_MS,
+            },
+          );
           if (res.action === 'accept') return res.content?.approve === true ? 'accept' : 'decline';
           return res.action === 'decline' ? 'decline' : 'cancel';
-        } catch {
-          return 'unsupported';
+        } catch (err) {
+          // Only "this client or protocol version cannot elicit" falls back to the token flow.
+          // A prompt that failed or timed out means the human did not approve: a token now
+          // would let the agent confirm on its own.
+          const cannotElicit =
+            err instanceof SdkError &&
+            (err.code === SdkErrorCode.CapabilityNotSupported ||
+              err.code === SdkErrorCode.MethodNotSupportedByProtocolVersion);
+          return cannotElicit ? 'unsupported' : 'cancel';
         }
       },
     };

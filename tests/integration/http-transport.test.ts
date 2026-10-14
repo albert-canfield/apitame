@@ -295,4 +295,101 @@ describe('streamable HTTP transport', () => {
       await stop(http);
     }
   });
+
+  it('with sessions, sends the elicitation on the tool call stream, not the standalone one', async () => {
+    // A raw client that never opens the GET stream: before the fix the server sent the
+    // prompt there, where it was dropped, and the call hung (seen in CI under load).
+    const { http, url } = await start(undefined, { sessions: true });
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'MCP-Protocol-Version': '2025-11-25',
+      };
+      const rpc = (body: unknown, extra: Record<string, string> = {}) =>
+        fetch(`${url}/mcp`, {
+          method: 'POST',
+          headers: { ...headers, ...extra },
+          body: JSON.stringify(body),
+        });
+      const init = await rpc({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-11-25',
+          capabilities: { elicitation: { form: {} } },
+          clientInfo: { name: 'raw', version: '1' },
+        },
+      });
+      const session = init.headers.get('mcp-session-id')!;
+      await init.text();
+      const s = { 'Mcp-Session-Id': session };
+      await (await rpc({ jsonrpc: '2.0', method: 'notifications/initialized' }, s)).text();
+
+      const before = mock.requests.filter((r) => r.operationId === 'deletePet').length;
+      const call = await rpc(
+        {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'pet', arguments: { operation: 'deletePet', params: { petId: 4 } } },
+        },
+        s,
+      );
+      const reader = call.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const next = async (): Promise<Record<string, unknown>> => {
+        for (;;) {
+          const m = /^data: (.+)$/m.exec(buffer);
+          if (m) {
+            buffer = buffer.slice((m.index ?? 0) + m[0].length);
+            return JSON.parse(m[1] as string) as Record<string, unknown>;
+          }
+          const { value, done } = await reader.read();
+          if (done) throw new Error('stream ended');
+          buffer += decoder.decode(value, { stream: true });
+        }
+      };
+      const prompt = await Promise.race([
+        next(),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('no elicitation')), 3_000)),
+      ]);
+      expect(prompt.method).toBe('elicitation/create');
+      await (await rpc({ jsonrpc: '2.0', id: prompt.id, result: { action: 'decline' } }, s)).text();
+      const result = (await next()) as { id: number; result: { isError?: boolean } };
+      expect(result.id).toBe(2);
+      expect(result.result.isError).toBe(true);
+      expect(mock.requests.filter((r) => r.operationId === 'deletePet').length).toBe(before);
+      await reader.cancel();
+    } finally {
+      await stop(http);
+    }
+  });
+
+  it('with sessions, a prompt that fails stops the call instead of falling back to a token', async () => {
+    const { http, url } = await start(undefined, { sessions: true });
+    try {
+      const client = new Client(
+        { name: 'broken', version: '1.0.0' },
+        { capabilities: { elicitation: { form: {} } } },
+      );
+      client.setRequestHandler('elicitation/create', async () => {
+        throw new Error('the prompt could not be shown');
+      });
+      await client.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`)));
+      const before = mock.requests.filter((r) => r.operationId === 'deletePet').length;
+      const res = await client.callTool({
+        name: 'pet',
+        arguments: { operation: 'deletePet', params: { petId: 4 } },
+      });
+      expect(res.isError).toBe(true);
+      expect(JSON.stringify(res.content)).not.toContain('CONFIRMATION REQUIRED');
+      expect(mock.requests.filter((r) => r.operationId === 'deletePet').length).toBe(before);
+      await client.close();
+    } finally {
+      await stop(http);
+    }
+  });
 });
