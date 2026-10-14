@@ -49,6 +49,38 @@ interface BuiltTool {
   summary: ToolSummary;
   kind: 'group' | 'operation' | 'search' | 'call';
   ops: Operation[];
+  /** Single-operation tools: API parameters exposed under another name (`api_confirm` -> `confirm`). */
+  renamed?: Record<string, string>;
+}
+
+/** Arguments that steer apitame itself rather than the API. */
+const CONTROL_ARGS = ['dryRun', 'confirm', 'fields'] as const;
+
+interface Flags {
+  dryRun: boolean;
+  confirm: string | undefined;
+  fields: string[] | undefined;
+}
+
+/** Read the control arguments. Anything but a clear true or false for dryRun is refused, so a preview is never sent by mistake. */
+function parseFlags(args: { dryRun?: unknown; confirm?: unknown; fields?: unknown }): Flags {
+  const { dryRun } = args;
+  if (!(
+    dryRun === undefined ||
+    dryRun === null ||
+    typeof dryRun === 'boolean' ||
+    dryRun === 'true' ||
+    dryRun === 'false'
+  )) {
+    throw new Error(
+      `"dryRun" must be true or false, not ${JSON.stringify(dryRun)}. Nothing was sent.`,
+    );
+  }
+  return {
+    dryRun: dryRun === true || dryRun === 'true',
+    confirm: typeof args.confirm === 'string' ? args.confirm : undefined,
+    fields: parseFields(args.fields),
+  };
 }
 
 const SEARCH = 'search_operations';
@@ -217,19 +249,34 @@ export class OpenApiRuntime implements Runtime {
         ]
           .filter(Boolean)
           .join('\n');
+        // dryRun and confirm keep their meaning. An API parameter with the same name is
+        // exposed as api_<name>, so an agent can never send a "dry run" to the API for real.
+        // An API's own `fields` wins over field selection: the API trims server-side.
+        const controls = this.safetyProps(ops);
+        const reserved = (k: string) => k in controls && k !== 'fields';
+        const renamed: Record<string, string> = {};
+        const props: Record<string, JsonSchema> = {};
+        for (const [k, v] of Object.entries(
+          (op.inputSchema.properties ?? {}) as Record<string, JsonSchema>,
+        )) {
+          const name = reserved(k) ? `api_${k}` : k;
+          if (name !== k) renamed[name] = k;
+          props[name] = v;
+        }
+        const required = (op.inputSchema.required as string[] | undefined)?.map((r) =>
+          reserved(r) ? `api_${r}` : r,
+        );
         tools.push({
           kind: 'operation',
           ops,
+          renamed,
           def: {
             name: g.name,
             description,
             inputSchema: {
               ...op.inputSchema,
-              // The API's own parameters win if they share a name with fields, dryRun or confirm.
-              properties: {
-                ...this.safetyProps(ops),
-                ...(op.inputSchema.properties as Record<string, JsonSchema>),
-              },
+              properties: { ...controls, ...props },
+              ...(required ? { required } : {}),
             } as ToolDefinition['inputSchema'],
             annotations: this.annotations(title, ops),
           },
@@ -390,31 +437,30 @@ export class OpenApiRuntime implements Runtime {
     ctx?: CallContext,
   ): Promise<ToolResult> {
     const { dryRun, confirm, fields, ...rest } = args;
-    const flags = {
-      dryRun: dryRun === true,
-      confirm: typeof confirm === 'string' ? confirm : undefined,
-      fields: parseFields(fields),
-    };
+    const control: Record<string, unknown> = { dryRun, confirm, fields };
 
     switch (tool.kind) {
       case 'search':
         return this.search(String(args.query ?? ''), Number(args.limit ?? 8));
       case 'operation': {
         const op = tool.ops[0]!;
-        // Give back any control argument that is really one of the operation's parameters.
         const own = (op.inputSchema.properties ?? {}) as Record<string, unknown>;
-        const params = { ...rest };
-        const control = { dryRun, confirm, fields };
-        const ownFlags = { ...flags };
-        for (const [k, v] of Object.entries(control)) {
-          if (k in own && v !== undefined) {
-            params[k] = v;
-            if (k === 'fields') ownFlags.fields = undefined;
-            if (k === 'dryRun') ownFlags.dryRun = false;
-            if (k === 'confirm') ownFlags.confirm = undefined;
+        const renamed = tool.renamed ?? {};
+        const params: Record<string, unknown> = { ...rest };
+        for (const k of CONTROL_ARGS) {
+          // A control this tool does not offer, where the API has a parameter of that name, is the API's.
+          if (k in own && !(`api_${k}` in renamed) && control[k] !== undefined) {
+            params[k] = control[k];
+            control[k] = undefined;
           }
         }
-        return this.execute(op, params, ownFlags, ctx, tool.def.name);
+        for (const [exposed, original] of Object.entries(renamed)) {
+          if (exposed in params) {
+            params[original] = params[exposed];
+            delete params[exposed];
+          }
+        }
+        return this.execute(op, params, parseFlags(control), ctx, tool.def.name);
       }
       case 'group': {
         const id = String(rest.operation ?? '');
@@ -424,7 +470,7 @@ export class OpenApiRuntime implements Runtime {
             `Unknown operation "${id}" for tool "${tool.def.name}". Valid operations: ${tool.ops.map((o) => o.id).join(', ')}.`,
           );
         }
-        return this.execute(op, asObject(rest.params), flags, ctx, tool.def.name);
+        return this.execute(op, asObject(rest.params), parseFlags(control), ctx, tool.def.name);
       }
       case 'call': {
         const id = String(rest.operationId ?? '');
@@ -432,7 +478,7 @@ export class OpenApiRuntime implements Runtime {
           this.byId.get(id) ?? this.operations.find((o) => o.id.toLowerCase() === id.toLowerCase());
         if (!op)
           return errorResult(`Unknown operationId "${id}". Use ${SEARCH} to find valid ids.`);
-        return this.execute(op, asObject(rest.params), flags, ctx, tool.def.name);
+        return this.execute(op, asObject(rest.params), parseFlags(control), ctx, tool.def.name);
       }
     }
   }
@@ -495,7 +541,7 @@ export class OpenApiRuntime implements Runtime {
   private async execute(
     op: Operation,
     params: Record<string, unknown>,
-    flags: { dryRun: boolean; confirm: string | undefined; fields: string[] | undefined },
+    flags: Flags,
     ctx: CallContext | undefined,
     tool: string,
   ): Promise<ToolResult> {
@@ -557,6 +603,13 @@ export class OpenApiRuntime implements Runtime {
     if (flags.dryRun) {
       audit('dry-run');
       return jsonResult({ dryRun: true, note: 'Nothing was sent.', ...preview });
+    }
+
+    // Checked before asking: a call that would be rate-limited must not use up a human approval.
+    const limitedBefore = op.access !== 'read' ? this.guardrails.peekWrite() : undefined;
+    if (limitedBefore) {
+      audit('rate-limited');
+      return errorResult(limitedBefore);
     }
 
     if (decision.needsConfirmation) {

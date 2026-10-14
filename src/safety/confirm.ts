@@ -89,10 +89,12 @@ const text = (t: string, isError = false): ToolResult => ({
  * is returned and the agent must show the preview to the user and call again.
  */
 export async function confirmOrChallenge(req: ConfirmRequest): Promise<ConfirmOutcome> {
-  if (req.method !== 'token' && req.ctx?.elicit) {
-    const outcome = await req.ctx.elicit(
-      `Confirm a destructive action requested by the agent:\n\n${req.preview}\n\nApprove only if you expect this.`,
-    );
+  if (req.method !== 'token') {
+    const outcome = req.ctx?.elicit
+      ? await req.ctx.elicit(
+          `Confirm a destructive action requested by the agent:\n\n${req.preview}\n\nApprove only if you expect this.`,
+        )
+      : 'unsupported';
     if (outcome === 'accept') return { proceed: true };
     if (outcome === 'decline' || outcome === 'cancel') {
       return {

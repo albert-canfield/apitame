@@ -134,8 +134,8 @@ When enabled, `search_operations` and `call_operation` are added. `call_operatio
 writes:
   allow: []          # ids (operations or named queries) allowed to write in read-write mode; "*" wildcards
   confirm: []        # writes that need confirmation even if they are not destructive
-  treatAsRead: []    # OpenAPI: non-GET operations that only read (POST /search)
-  destructive: []    # writes to treat as destructive
+  treatAsRead: []    # OpenAPI: non-GET operations that only read (POST /search), * allowed
+  destructive: []    # writes to treat as destructive, * allowed
 ```
 
 Destructive operations always need confirmation; there is no setting to turn that off.

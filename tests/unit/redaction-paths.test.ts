@@ -1,17 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { parseConfig } from '../../src/config/load.js';
-import type { LoadedSpec } from '../../src/sources/openapi/load.js';
-import { Logger } from '../../src/log.js';
-import { Redactor } from '../../src/safety/redact.js';
-import { OpenApiRuntime } from '../../src/server/openapi-runtime.js';
+import type { OpenApiRuntime } from '../../src/server/openapi-runtime.js';
+import { fakeApi, type SentRequest as Sent } from '../helpers.js';
 
 const SECRET = 'fake-key-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-
-interface Sent {
-  method: string;
-  url: string;
-  headers: Record<string, string>;
-}
 
 /** A runtime over a one-endpoint API whose responses the test controls. */
 function runtime(opts: {
@@ -21,50 +12,24 @@ function runtime(opts: {
   method?: 'get' | 'post';
   respond: (s: Sent) => Response;
 }) {
-  const logs: string[] = [];
-  const fetchImpl = (async (input: string | URL, init: RequestInit = {}) =>
-    opts.respond({
-      method: init.method ?? 'GET',
-      url: String(input),
-      headers: { ...(init.headers as Record<string, string>) },
-    })) as typeof fetch;
-  const config = parseConfig({
-    name: 't',
-    source: {
-      type: 'openapi',
-      spec: 'x.yaml',
-      baseUrl: opts.baseUrl ?? 'https://api.example.com/v1',
-    },
-    ...(opts.method === 'post' ? { mode: 'read-write', writes: { allow: ['send'] } } : {}),
-    ...opts.config,
-  });
-  const spec = {
-    doc: {
-      openapi: '3.0.0',
-      info: { title: 't', version: '1' },
-      paths: {
-        '/echo': {
-          [opts.method ?? 'get']: {
-            operationId: opts.method === 'post' ? 'send' : 'echo',
-            parameters: [{ name: 'pad', in: 'query', schema: { type: 'integer' } }],
-            responses: { '200': { description: 'ok' } },
-          },
+  return fakeApi({
+    paths: {
+      '/echo': {
+        [opts.method ?? 'get']: {
+          operationId: opts.method === 'post' ? 'send' : 'echo',
+          parameters: [{ name: 'pad', in: 'query', schema: { type: 'integer' } }],
+          responses: { '200': { description: 'ok' } },
         },
       },
     },
-    location: '/x.yaml',
-    isUrl: false,
-  } as unknown as LoadedSpec;
-  const redactor = new Redactor();
-  const logger = new Logger(redactor, 'debug', (l) => logs.push(l));
-  const rt = new OpenApiRuntime(config, spec, {
-    configDir: '.',
-    env: opts.env ?? {},
-    fetchImpl,
-    redactor,
-    logger,
+    config: {
+      ...(opts.method === 'post' ? { mode: 'read-write', writes: { allow: ['send'] } } : {}),
+      ...opts.config,
+    },
+    ...(opts.env ? { env: opts.env } : {}),
+    ...(opts.baseUrl ? { baseUrl: opts.baseUrl } : {}),
+    respond: opts.respond,
   });
-  return { rt, logs };
 }
 
 const text = (r: { content: Array<{ type: string; text?: string }> }) =>
