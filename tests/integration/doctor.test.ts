@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
 import { runDoctor, type Finding } from '../../src/cli/commands/doctor.js';
@@ -72,7 +73,7 @@ describe('apitame doctor', () => {
         process.execPath,
         [
           '--import',
-          join(cwd, 'node_modules/tsx/dist/loader.mjs'),
+          pathToFileURL(join(cwd, 'node_modules/tsx/dist/loader.mjs')).href,
           join(cwd, 'src/cli.ts'),
           'init',
           '--skills-only',
@@ -125,10 +126,13 @@ describe('apitame doctor', () => {
       let f = await runDoctor({});
       expect(statusOf(f, 'Database')).toEqual(['ok']);
       expect(statusOf(f, 'Database role')).toEqual(['warn']);
-      chmodSync(db, 0o444);
-      f = await runDoctor({});
-      expect(statusOf(f, 'Database role')).toEqual(['ok']);
-      chmodSync(db, 0o644);
+      // Windows has no POSIX permission bits to drop write access with.
+      if (process.platform !== 'win32') {
+        chmodSync(db, 0o444);
+        f = await runDoctor({});
+        expect(statusOf(f, 'Database role')).toEqual(['ok']);
+        chmodSync(db, 0o644);
+      }
     } finally {
       t.cleanup();
     }
