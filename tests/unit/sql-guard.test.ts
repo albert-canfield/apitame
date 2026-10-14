@@ -5,7 +5,7 @@ import {
   guardSelect,
   isDeniedFunction,
 } from '../../src/sources/sql/guard.js';
-import type { Dialect } from '../../src/sources/sql/lexer.js';
+import { splitStatements, tokenize, type Dialect } from '../../src/sources/sql/lexer.js';
 
 const dialects: Dialect[] = ['postgres', 'sqlite', 'mysql'];
 
@@ -120,6 +120,20 @@ describe('guardSelect: parser and database disagree (differential attacks)', () 
   it('a function hidden from the parser inside a fake string is still seen by the lexer', () => {
     const r = guardSelect("SELECT '\\', pg_terminate_backend(1) --'", { dialect: 'postgres' });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('lexer: line comments', () => {
+  it('ends a -- comment at a carriage return on PostgreSQL, as the server does', () => {
+    const sql = 'SELECT 1 --\r; DELETE FROM orders WHERE true --\nAND true';
+    expect(splitStatements(tokenize(sql, 'postgres'))).toHaveLength(2);
+    const r = guardSelect(sql, { dialect: 'postgres' });
+    expect(r.ok).toBe(false);
+  });
+
+  it('keeps SQLite and MySQL comments running to the newline', () => {
+    expect(splitStatements(tokenize('SELECT 1 --\r; x\n', 'sqlite'))).toHaveLength(1);
+    expect(splitStatements(tokenize('SELECT 1 -- \r; x\n', 'mysql'))).toHaveLength(1);
   });
 });
 

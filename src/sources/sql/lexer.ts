@@ -88,7 +88,9 @@ export function tokenize(sql: string, dialect: Dialect): Token[] {
     }
     // MySQL only treats "--" as a comment when whitespace (or the end) follows it.
     if (c === '-' && next === '-' && (!my || i + 2 >= n || sql.charCodeAt(i + 2) <= 32)) {
-      while (i < n && sql[i] !== '\n') i++;
+      // PostgreSQL ends the comment at a carriage return too: "SELECT 1 --\r; DELETE ..." is
+      // two statements there. SQLite and MySQL only end it at a newline.
+      while (i < n && sql[i] !== '\n' && !(pg && sql[i] === '\r')) i++;
       continue;
     }
     if (my && c === '#') {
