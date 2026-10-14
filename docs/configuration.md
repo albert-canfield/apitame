@@ -4,6 +4,8 @@ apitame reads `apitame.config.yaml` from the current folder (or `--config <path>
 
 Values may reference environment variables as `${NAME}` or `${NAME:-default}`. Secret fields must use a reference; a literal secret is a validation error.
 
+Unknown keys at the top level and under `http` are an error that names the key, so a typo (`scope:` for `scopes:`) or a block at the wrong level cannot silently turn a setting off.
+
 ## Top level
 
 | Field | Type | Default | Description |
@@ -200,7 +202,8 @@ http:
     issuer: https://login.example.com/realms/tools
     resource: https://mcp.example.com/mcp
     scopes: [mcp:tools]
-    audiences: []
+    requireAccessTokenType: true
+    # clients: [mcp-desktop, mcp-web]
     # jwksUri: https://login.example.com/realms/tools/protocol/openid-connect/certs
 ```
 
@@ -208,11 +211,13 @@ http:
 | --- | --- | --- | --- |
 | `oauth.issuer` | URL | required | The authorization server, exactly as it appears in the tokens' `iss` claim (mind a trailing slash). Its metadata must name the same issuer. |
 | `oauth.resource` | URL | required | The public URL of this MCP endpoint, as clients connect to it. Advertised in the protected resource metadata, and accepted in `aud`. |
-| `oauth.scopes` | list | `[]` | Scopes every token must carry. A token without one gets 403 `insufficient_scope`. Also advertised as `scopes_supported`. |
-| `oauth.audiences` | list | `[]` | Other accepted `aud` values, for authorization servers that do not use the resource URL (for example `api://default` on Okta). |
+| `oauth.scopes` | list | `[]` | Scopes every token must carry. A token without one gets 403 `insufficient_scope`. Also advertised as `scopes_supported`. Leaving it empty logs a warning. |
+| `oauth.audiences` | list | `[]` | Other accepted `aud` values, for authorization servers that do not put the resource URL there (for example an Entra ID Application ID URI). Such audiences are often shared by other apps, so `scopes` or `clients` must be set too. |
+| `oauth.clients` | list | `[]` | When set, only tokens issued to these clients are accepted (the `client_id`, `azp`, `cid` or `appid` claim). |
+| `oauth.requireAccessTokenType` | boolean | `false` | Accept only tokens whose header says `typ: at+jwt` (RFC 9068). Turn it on when your authorization server sets it. ID and refresh tokens are refused either way. |
 | `oauth.jwksUri` | URL | discovered | Where the signing keys are, when the issuer publishes no RFC 8414 or OpenID Connect metadata. |
 
-URLs must use `https`, except on loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) for local testing. `http.oauth` cannot be combined with `APITAME_HTTP_TOKEN`, and changes to it need a restart, even with `--watch`. See [clients.md](clients.md#oauth) for the full picture.
+URLs must use `https`, except on loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) for local testing. Metadata and keys are fetched without following redirects, so `issuer` and `jwksUri` must be final URLs. `http.oauth` cannot be combined with `APITAME_HTTP_TOKEN`, and changes to it need a restart, even with `--watch`. See [clients.md](clients.md#oauth) for the full picture.
 
 ## Environment variables
 

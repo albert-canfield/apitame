@@ -1,9 +1,11 @@
 import { OAuthError } from '@modelcontextprotocol/server';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   assertSecureUrl,
   JwtVerifier,
   metadataUrls,
+  oauthChange,
+  oauthWarnings,
   protectedResourceMetadata,
   protectedResourceMetadataPath,
   protectedResourceMetadataUrl,
@@ -41,6 +43,7 @@ beforeEach(() => {
   as.discovery = 'rfc8414';
   as.metadataIssuer = undefined;
   as.hits.clear();
+  as.overrides.clear();
 });
 
 function verifier(opts: Partial<OAuthOptions> = {}, now?: () => number): JwtVerifier {
@@ -102,7 +105,7 @@ describe('JwtVerifier: signatures and algorithms', () => {
   it('refuses alg none and HS256 signed with the public key as the HMAC secret', async () => {
     const v = verifier();
     await refused(v, signJwt({ alg: 'none', kid: 'rsa-1' }, claims(), signers.none()), /"none"/);
-    await refused(v, signJwt({ kid: 'rsa-1' }, claims(), signers.none()), /"none"/);
+    await refused(v, signJwt({ kid: 'rsa-1' }, claims(), signers.none()), /missing/);
     await refused(
       v,
       signJwt({ alg: 'constructor', kid: 'rsa-1' }, claims(), signers.none()),
@@ -187,7 +190,7 @@ describe('JwtVerifier: signatures and algorithms', () => {
 
 describe('JwtVerifier: claims', () => {
   it('refuses a token for another audience, and accepts the configured audiences', async () => {
-    const v = verifier({ audiences: ['api://apitame'] });
+    const v = verifier({ audiences: ['api://apitame'], scopes: ['mcp:tools'] });
     await refused(v, rs256({ aud: 'https://other.example.com/mcp' }), /audience/);
     await refused(v, rs256({ aud: undefined }), /audience/);
     await v.verifyAccessToken(rs256({ aud: `${RESOURCE}/` }));
@@ -203,6 +206,25 @@ describe('JwtVerifier: claims', () => {
     const now = Math.floor(Date.now() / 1000);
     await refused(verifier(), rs256({ exp: now - 1 }), /expired/);
     await refused(verifier(), rs256({ exp: undefined }), /no expiry/);
+    await refused(verifier(), rs256({ exp: String(now + 300) }), /exp claim is not a number/);
+  });
+
+  it('refuses dates that are not finite numbers (an exp of 1e400 never expires)', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const v = verifier();
+    const infinite = signJwt(
+      { alg: 'RS256', kid: 'rsa-1' },
+      claims({ exp: '__EXP__' }),
+      signers.rs(rsa.privateKey),
+    );
+    // JSON cannot express Infinity, but 1e400 parses to it: build that payload by hand.
+    const [h, p] = infinite.split('.') as [string, string];
+    const payload = Buffer.from(p, 'base64url').toString().replace('"__EXP__"', '1e400');
+    const data = `${h}.${Buffer.from(payload).toString('base64url')}`;
+    const token = `${data}.${signers.rs(rsa.privateKey)(Buffer.from(data)).toString('base64url')}`;
+    await refused(v, token, /exp claim is not a number/);
+    await refused(v, rs256({ nbf: String(now + 99_999) }), /nbf claim is not a number/);
+    await refused(v, rs256({ iat: 'yesterday' }), /iat claim is not a number/);
   });
 
   it('tolerates a minute of clock skew on nbf and iat, and no more', async () => {
@@ -217,8 +239,39 @@ describe('JwtVerifier: claims', () => {
     const v = verifier();
     await refused(v, 'not-a-jwt', /not a signed JWT/);
     await refused(v, 'e30.e30', /not a signed JWT/);
-    await refused(v, '!!.e30.', /header is not valid JSON/);
+    await refused(v, '!!.e30.', /not a signed JWT/);
+    await refused(
+      v,
+      `${Buffer.from('not json').toString('base64url')}.e30.`,
+      /header is not valid JSON/,
+    );
     await refused(v, 'a'.repeat(20_000), /too large/);
+    // One token has one spelling: padding, junk or standard base64 in a segment are refused.
+    const good = rs256();
+    await v.verifyAccessToken(good);
+    await refused(v, `${good}==`, /not a signed JWT/);
+    await refused(v, `${good}!!`, /not a signed JWT/);
+    const [h, p, sig] = good.split('.') as [string, string, string];
+    const standard = Buffer.from(sig, 'base64url').toString('base64');
+    expect(standard).toMatch(/[+/=]/);
+    await refused(v, `${h}.${p}.${standard}`, /not a signed JWT/);
+  });
+
+  it('never echoes raw header values into errors and logs', async () => {
+    const v = verifier();
+    const forged = 'X"\r\n[apitame] error: FORGED LOG LINE';
+    for (const header of [
+      { alg: forged },
+      { alg: 'A'.repeat(11_000) },
+      { alg: 'RS256', kid: 'rsa-1', typ: forged },
+    ]) {
+      const err = (await v
+        .verifyAccessToken(signJwt(header, claims(), signers.rs(rsa.privateKey)))
+        .catch((e: unknown) => e)) as Error;
+      expect(err).toBeInstanceOf(OAuthError);
+      expect(err.message).not.toMatch(/[\r\n]/);
+      expect(err.message.length).toBeLessThan(120);
+    }
   });
 });
 
@@ -265,10 +318,52 @@ describe('JwtVerifier: key set', () => {
     const later = Math.floor(clock / 1000);
     const token = rs256({ iat: later, exp: later + 300 });
     expect((await v.verifyAccessToken(token)).clientId).toBe('client-1');
-    expect(as.count(JWKS)).toBe(2);
+    // The refresh runs in the background.
+    await vi.waitFor(() => expect(as.count(JWKS)).toBe(2));
     // The failed refresh is not retried on every request.
     await v.verifyAccessToken(token);
+    await new Promise((r) => setTimeout(r, 50));
     expect(as.count(JWKS)).toBe(2);
+  });
+
+  it('answers known keys from the cache while a refresh is slow; only unknown keys wait', async () => {
+    let clock = Date.now();
+    let release = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    let slow = false;
+    const gatedFetch: typeof fetch = async (input, init) => {
+      if (slow && String(input).endsWith(JWKS)) await gate;
+      return fetch(input, init);
+    };
+    const v = new JwtVerifier(
+      { issuer: as.issuer, resource: RESOURCE, scopes: [], audiences: [] },
+      gatedFetch,
+      () => clock,
+    );
+    await v.warmUp();
+    slow = true;
+    clock += 2 * 60 * 60_000; // a refresh is due, and the key set host hangs
+    const later = Math.floor(clock / 1000);
+    expect((await v.verifyAccessToken(rs256({ iat: later, exp: later + 300 }))).clientId).toBe(
+      'client-1',
+    );
+    // A rotated key is unknown: that request waits for the refresh in flight.
+    const next = makeKey('ec', 'ec-2');
+    as.publish(rsa, next);
+    let settled = false;
+    const rotated = v
+      .verifyAccessToken(
+        signJwt(
+          { alg: 'ES256', kid: 'ec-2' },
+          claims({ iat: later, exp: later + 300 }),
+          signers.es(next.privateKey),
+        ),
+      )
+      .finally(() => (settled = true));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(settled).toBe(false);
+    release();
+    expect((await rotated).clientId).toBe('client-1');
   });
 
   it('retries within seconds while no key has loaded yet', async () => {
@@ -283,6 +378,70 @@ describe('JwtVerifier: key set', () => {
     clock += 5_000;
     expect((await v.verifyAccessToken(rs256())).clientId).toBe('client-1');
     expect(as.count(JWKS)).toBe(2);
+  });
+
+  it('never follows redirects for metadata or keys', async () => {
+    const elsewhere = `${as.issuer}/elsewhere`;
+    as.overrides.set(JWKS, (res) => res.writeHead(302, { Location: elsewhere }).end());
+    await expect(verifier().warmUp()).rejects.toThrow(/Redirects are not followed/);
+    expect(as.count('/elsewhere')).toBe(0);
+    // A redirecting discovery document is skipped like a missing one.
+    as.overrides.clear();
+    as.overrides.set('/.well-known/oauth-authorization-server', (res) =>
+      res.writeHead(301, { Location: elsewhere }).end(),
+    );
+    await expect(verifier().warmUp()).rejects.toThrow(
+      /Could not read .*Redirects are not followed/,
+    );
+    expect(as.count('/elsewhere')).toBe(0);
+  });
+
+  it('refuses metadata or key sets larger than 1 MB', async () => {
+    const huge = JSON.stringify({ keys: [rsa.jwk], padding: 'x'.repeat(1_100_000) });
+    as.overrides.set(JWKS, (res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      // Chunked, without a Content-Length, so only the streaming cap can stop it.
+      res.write(huge.slice(0, 600_000));
+      res.end(huge.slice(600_000));
+    });
+    await expect(verifier().warmUp()).rejects.toThrow(/more than 1 MB/);
+  });
+
+  it('moves on when a discovery URL answers 200 with something that is not metadata', async () => {
+    as.discovery = 'oidc';
+    as.overrides.set('/.well-known/oauth-authorization-server', (res) =>
+      res.writeHead(200, { 'Content-Type': 'text/html' }).end('<html>app</html>'),
+    );
+    expect(await verifier().warmUp()).toBe(3);
+    expect(as.count('/.well-known/openid-configuration')).toBe(1);
+    as.overrides.set('/.well-known/oauth-authorization-server', (res) =>
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}'),
+    );
+    expect(await verifier().warmUp()).toBe(3);
+  });
+
+  it('keeps every key published under one key id and uses the one that fits', async () => {
+    const enc = makeKey('rsa', 'rsa-1', { use: 'enc' });
+    const ecSame = makeKey('ec', 'rsa-1');
+    as.keys = [rsa.jwk, enc.jwk, ecSame.jwk];
+    const v = verifier();
+    expect(await v.warmUp()).toBe(3);
+    await v.verifyAccessToken(rs256());
+    const es = signJwt({ alg: 'ES256', kid: 'rsa-1' }, claims(), signers.es(ecSame.privateKey));
+    await v.verifyAccessToken(es);
+    // The encryption key under the same id never verifies anything.
+    const byEnc = signJwt({ alg: 'RS256', kid: 'rsa-1' }, claims(), signers.rs(enc.privateKey));
+    await refused(v, byEnc, /signature is not valid/);
+  });
+
+  it('honors key_ops', async () => {
+    as.keys = [
+      { ...rsa.jwk, kid: 'encrypt-only', key_ops: ['encrypt'] },
+      { ...rsa.jwk, kid: 'verify', key_ops: ['verify'] },
+    ];
+    const v = verifier();
+    await refused(v, rs256({}, 'encrypt-only'), /does not match the algorithm/);
+    await v.verifyAccessToken(rs256({}, 'verify'));
   });
 
   it('discovers the key set through RFC 8414 or OpenID Connect metadata', async () => {
@@ -326,6 +485,96 @@ describe('JwtVerifier: key set', () => {
     expect(keys).toBe(3);
     expect(info.clientId).toBe('client-1');
     expect(as.count(JWKS)).toBe(1);
+  });
+});
+
+describe('JwtVerifier: token types and identity', () => {
+  const oidc = { scopes: ['mcp:tools'], audiences: ['mcp-client-id'] };
+
+  it('refuses ID tokens and refresh tokens, even when their audience is accepted', async () => {
+    const v = verifier(oidc);
+    const idToken = (extra: Record<string, unknown>) =>
+      signJwt(
+        { alg: 'RS256', kid: 'rsa-1', typ: 'JWT' },
+        claims({ aud: 'mcp-client-id', azp: 'mcp-client-id', ...extra }),
+        signers.rs(rsa.privateKey),
+      );
+    for (const marker of [{ nonce: 'n-0S6' }, { at_hash: 'HK6E' }, { c_hash: 'LDkt' }]) {
+      await refused(v, idToken(marker), /ID or refresh token/);
+    }
+    for (const typ of ['ID', 'Refresh', 'Offline', 'refresh']) {
+      await refused(v, rs256({ typ }), /ID or refresh token/);
+    }
+    // Keycloak access tokens say typ Bearer in the payload.
+    await v.verifyAccessToken(rs256({ typ: 'Bearer' }));
+  });
+
+  it('accepts header typ at+jwt, application/at+jwt, JWT or none, and refuses other types', async () => {
+    const v = verifier();
+    const typed = (typ: unknown) =>
+      signJwt(
+        { alg: 'RS256', kid: 'rsa-1', ...(typ === undefined ? {} : { typ }) },
+        claims(),
+        signers.rs(rsa.privateKey),
+      );
+    for (const ok of [undefined, 'at+jwt', 'application/at+jwt', 'AT+JWT', 'JWT', 'jwt']) {
+      await v.verifyAccessToken(typed(ok));
+    }
+    for (const bad of ['id_token+jwt', 'logout+jwt', 'application/okta-internal-at+jwt', 7]) {
+      await refused(v, typed(bad), /is not an access token type/);
+    }
+  });
+
+  it('with requireAccessTokenType, accepts only at+jwt', async () => {
+    const v = verifier({ requireAccessTokenType: true });
+    await v.verifyAccessToken(rs256());
+    const header = (typ?: string) => ({ alg: 'RS256', kid: 'rsa-1', ...(typ ? { typ } : {}) });
+    await v.verifyAccessToken(
+      signJwt(header('application/at+jwt'), claims(), signers.rs(rsa.privateKey)),
+    );
+    await refused(v, signJwt(header('JWT'), claims(), signers.rs(rsa.privateKey)), /typ at\+jwt/);
+    await refused(v, signJwt(header(), claims(), signers.rs(rsa.privateKey)), /typ at\+jwt/);
+  });
+
+  it('with clients, accepts only tokens issued to those clients', async () => {
+    const v = verifier({ clients: ['mcp-app'] });
+    for (const claim of ['client_id', 'azp', 'cid', 'appid']) {
+      await v.verifyAccessToken(rs256({ client_id: undefined, [claim]: 'mcp-app' }));
+    }
+    await refused(v, rs256({ client_id: 'billing-spa' }), /http\.oauth\.clients/);
+    await refused(v, rs256({ client_id: undefined }), /http\.oauth\.clients/);
+  });
+
+  it('refuses broad audiences without scopes or clients', () => {
+    expect(() => verifier({ audiences: ['api://default'] })).toThrow(/Also set scopes or clients/);
+    expect(() => verifier({ audiences: ['api://default'], clients: ['mcp-app'] })).not.toThrow();
+  });
+
+  it('keeps the client and the subject apart', async () => {
+    const v = verifier();
+    const both = await v.verifyAccessToken(rs256({ client_id: undefined, cid: 'okta-app' }));
+    expect(both.extra).toEqual({ client: 'okta-app', subject: 'user-1' });
+    // client_id wins over azp, cid and appid.
+    const order = await v.verifyAccessToken(rs256({ azp: 'b', cid: 'c', appid: 'd' }));
+    expect(order.extra?.client).toBe('client-1');
+    // The subject is never taken for a client.
+    const userOnly = await v.verifyAccessToken(rs256({ client_id: undefined }));
+    expect(userOnly.extra).toEqual({ subject: 'user-1' });
+    expect(userOnly.clientId).toBe('');
+    const neither = await v.verifyAccessToken(rs256({ client_id: undefined, sub: undefined }));
+    expect(neither.extra).toEqual({});
+  });
+
+  it('warns about a configuration without scopes, and about http.oauth changes on reload', () => {
+    const base = { issuer: 'https://a.example', resource: RESOURCE, audiences: [] };
+    expect(oauthWarnings({ ...base, scopes: [] })[0]).toMatch(/scopes is empty/);
+    expect(oauthWarnings({ ...base, scopes: ['mcp:tools'] })).toEqual([]);
+    const cfg = { ...base, scopes: ['mcp:tools'] };
+    expect(oauthChange(cfg, { ...cfg })).toBeUndefined();
+    expect(oauthChange(undefined, undefined)).toBeUndefined();
+    expect(oauthChange(undefined, cfg)).toMatch(/was added; restart/);
+    expect(oauthChange(cfg, undefined)).toMatch(/was removed; restart/);
+    expect(oauthChange(cfg, { ...cfg, scopes: [] })).toMatch(/changed; restart/);
   });
 });
 

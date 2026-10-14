@@ -94,6 +94,53 @@ const rpc = (url: string, headers: Record<string, string> = {}, body = LIST) =>
 
 const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
 
+const INIT = JSON.stringify({
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'initialize',
+  params: {
+    protocolVersion: '2025-11-25',
+    capabilities: {},
+    clientInfo: { name: 'raw', version: '1' },
+  },
+});
+
+/** Start a session with raw HTTP. Returns the status and the session id, if any. */
+async function initSession(
+  url: string,
+  t: string,
+): Promise<{ status: number; id?: string; body?: string }> {
+  const res = await rpc(url, bearer(t), INIT);
+  const body = await res.text();
+  const id = res.headers.get('mcp-session-id') ?? undefined;
+  if (id) {
+    const ack = await rpc(
+      url,
+      { ...bearer(t), 'Mcp-Session-Id': id },
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    );
+    await ack.text();
+  }
+  return { status: res.status, ...(id ? { id } : { body }) };
+}
+
+/** Open a session's notification stream, as a connected client does. */
+async function openStream(url: string, t: string, id: string) {
+  const ac = new AbortController();
+  const res = await fetch(`${url}/mcp`, {
+    method: 'GET',
+    headers: {
+      ...bearer(t),
+      Accept: 'text/event-stream',
+      'Mcp-Session-Id': id,
+      'MCP-Protocol-Version': '2025-11-25',
+    },
+    signal: ac.signal,
+  });
+  expect(res.status).toBe(200);
+  return { res, close: () => ac.abort() };
+}
+
 async function connect(
   url: string,
   t: string,
@@ -178,6 +225,17 @@ describe('HTTP transport with OAuth', () => {
         operation: 'getPetById',
         outcome: 'sent',
       });
+
+      // A token without a client claim: the subject is not reported as the client.
+      const userOnly = await connect(url, token({ client_id: undefined }));
+      await userOnly.client.callTool({
+        name: 'pet',
+        arguments: { operation: 'getPetById', params: { petId: 2 } },
+      });
+      await userOnly.client.close();
+      const last = JSON.parse(readFileSync(auditFile, 'utf8').trim().split('\n').at(-1) ?? '{}');
+      expect(last).toMatchObject({ subject: 'user-1', operation: 'getPetById' });
+      expect(last).not.toHaveProperty('client');
     } finally {
       await stop(http);
     }
@@ -233,21 +291,26 @@ describe('HTTP transport with OAuth', () => {
   it('on loopback, accepts the public host name of the resource and still rejects others', async () => {
     const { http, url } = await start();
     try {
-      const status = (host: string) =>
+      const status = (host: string, origin?: string) =>
         new Promise<number>((resolve, reject) => {
-          const req = request(
-            `${url}/mcp`,
-            { method: 'POST', headers: { ...HEADERS, ...bearer(token()), Host: host } },
-            (res) => {
-              res.resume();
-              resolve(res.statusCode ?? 0);
-            },
-          );
+          const headers = {
+            ...HEADERS,
+            ...bearer(token()),
+            Host: host,
+            ...(origin ? { Origin: origin } : {}),
+          };
+          const req = request(`${url}/mcp`, { method: 'POST', headers }, (res) => {
+            res.resume();
+            resolve(res.statusCode ?? 0);
+          });
           req.on('error', reject);
           req.end(LIST);
         });
       expect(await status('mcp.example.com')).toBe(200);
       expect(await status('evil.example.com')).toBe(403);
+      // A browser-based client served from the public host sends that origin.
+      expect(await status('mcp.example.com', 'https://mcp.example.com')).toBe(200);
+      expect(await status('mcp.example.com', 'https://app.example.com')).toBe(403);
     } finally {
       await stop(http);
     }
@@ -271,6 +334,127 @@ describe('HTTP transport with OAuth', () => {
       await again.text();
       expect((await client.listTools()).tools.length).toBeGreaterThan(0);
       await client.close();
+
+      // The owner is the client and the subject, apart: a user token without a client is not
+      // the same owner as a token whose client id happens to equal that user name.
+      const userOnly = token({ sub: 'x', client_id: undefined });
+      const x = await initSession(url, userOnly);
+      const clientX = await rpc(url, {
+        'Mcp-Session-Id': x.id ?? '',
+        ...bearer(token({ sub: 'x', client_id: 'x' })),
+      });
+      expect(clientX.status).toBe(404);
+      // A token that names neither cannot own a session.
+      const nobody = await initSession(url, token({ sub: undefined, client_id: undefined }));
+      expect(nobody.status).toBe(401);
+      expect(nobody.body).toContain('neither a client nor a subject');
+    } finally {
+      await stop(http);
+    }
+  });
+
+  it('with sessions, one user makes room only among their own sessions', async () => {
+    const { http, url } = await start({ sessions: true, maxSessions: 3, maxSessionsPerOwner: 2 });
+    const streams: Array<() => void> = [];
+    try {
+      const alice = token({ sub: 'alice' });
+      const mallory = token({ sub: 'mallory' });
+      const a = await initSession(url, alice);
+      expect(a.status).toBe(200);
+      // Mallory fills her quota and keeps both sessions busy.
+      for (let i = 0; i < 2; i++) {
+        const m = await initSession(url, mallory);
+        expect(m.status).toBe(200);
+        streams.push((await openStream(url, mallory, m.id ?? '')).close);
+      }
+      const third = await initSession(url, mallory);
+      expect(third.status).toBe(503);
+      expect(third.body).toContain('for this user');
+      // The table is full, and Carol cannot push Alice's idle session out.
+      const carol = await initSession(url, token({ sub: 'carol' }));
+      expect(carol.status).toBe(503);
+      const stillThere = await rpc(url, { ...bearer(alice), 'Mcp-Session-Id': a.id ?? '' });
+      expect(stillThere.status).toBe(200);
+      await stillThere.text();
+      // Alice can replace her own idle session.
+      expect((await initSession(url, alice)).status).toBe(200);
+      expect((await rpc(url, { ...bearer(alice), 'Mcp-Session-Id': a.id ?? '' })).status).toBe(404);
+    } finally {
+      for (const close of streams) close();
+      await stop(http);
+    }
+  });
+
+  it('with sessions, a request that does not initialize never reaches the session table', async () => {
+    const closed: unknown[] = [];
+    const { http, url } = await start({
+      sessions: true,
+      maxSessions: 1,
+      onServerClosed: (s) => closed.push(s),
+    });
+    try {
+      const alice = token({ sub: 'alice' });
+      const a = await initSession(url, alice);
+      const bob = bearer(token({ sub: 'bob' }));
+      expect((await rpc(url, bob)).status).toBe(400);
+      expect((await rpc(url, bob, '{not json')).status).toBe(400);
+      const get = await fetch(`${url}/mcp`, {
+        headers: { ...bob, Accept: 'text/event-stream' },
+      });
+      expect(get.status).toBe(400);
+      const del = await fetch(`${url}/mcp`, { method: 'DELETE', headers: bob });
+      expect(del.status).toBe(400);
+      const big = await rpc(url, bob, JSON.stringify({ padding: 'x'.repeat(1_100_000) }));
+      expect(big.status).toBe(413);
+      expect(closed).toHaveLength(0);
+      const res = await rpc(url, { ...bearer(alice), 'Mcp-Session-Id': a.id ?? '' });
+      expect(res.status).toBe(200);
+    } finally {
+      await stop(http);
+    }
+  });
+
+  it('closes a stream when the token that opened it expires', async () => {
+    const { http, url } = await start({ sessions: true });
+    try {
+      const shortLived = token({ exp: Math.floor(Date.now() / 1000) + 2 });
+      const s = await initSession(url, shortLived);
+      const started = Date.now();
+      const { res } = await openStream(url, shortLived, s.id ?? '');
+      const reader = res.body!.getReader();
+      const ended = (async () => {
+        for (;;) {
+          const { done } = await reader.read();
+          if (done) return;
+        }
+      })().catch(() => undefined);
+      await Promise.race([
+        ended,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('stream still open')), 5_000)),
+      ]);
+      expect(Date.now() - started).toBeGreaterThan(300);
+    } finally {
+      await stop(http);
+    }
+  });
+
+  it('never writes raw token header values into the log or the challenge', async () => {
+    const lines: string[] = [];
+    const debug = new Logger(new Redactor(), 'debug', (l) => lines.push(l));
+    const { http, url } = await start({ logger: debug });
+    try {
+      const forged = 'X"\r\n[apitame] error: FORGED LOG LINE';
+      for (const alg of [forged, 'A'.repeat(11_000)]) {
+        const header = Buffer.from(JSON.stringify({ alg })).toString('base64url');
+        const res = await rpc(url, bearer(`${header}.e30.AA`));
+        expect(res.status).toBe(401);
+        expect((res.headers.get('www-authenticate') ?? '').length).toBeLessThan(400);
+      }
+      expect(lines.length).toBeGreaterThan(0);
+      for (const line of lines) {
+        expect(line.slice(0, -1)).not.toMatch(/[\r\n]/);
+        expect(line.length).toBeLessThan(300);
+      }
     } finally {
       await stop(http);
     }

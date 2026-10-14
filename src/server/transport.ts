@@ -10,11 +10,15 @@ import {
   localhostHostValidation,
   localhostOriginValidation,
   NodeStreamableHTTPServerTransport,
+  originValidation,
 } from '@modelcontextprotocol/node';
 import {
   bearerAuthChallengeResponse,
+  isInitializeRequest,
   localhostAllowedHostnames,
+  localhostAllowedOrigins,
   OAuthError,
+  OAuthErrorCode,
   verifyBearerToken,
   type AuthInfo,
   type OAuthTokenVerifier,
@@ -23,6 +27,7 @@ import {
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { Logger } from '../log.js';
 import {
+  identityOf,
   protectedResourceMetadata,
   protectedResourceMetadataPath,
   protectedResourceMetadataUrl,
@@ -36,6 +41,10 @@ export async function serveStdio(server: Server): Promise<void> {
 
 /** OAuth 2.1 access tokens from an external authorization server (`http.oauth`). */
 export interface HttpOAuth {
+  /**
+   * Checks each token. Sessions and the audit log read who the token speaks for from
+   * `AuthInfo.extra.client` and `extra.subject`, as `JwtVerifier` reports them.
+   */
   verifier: OAuthTokenVerifier;
   options: OAuthOptions;
   /** Shown as `resource_name` in the protected resource metadata. */
@@ -60,6 +69,11 @@ export interface HttpOptions {
   sessionIdleMs?: number;
   /** Most sessions kept at once; the oldest idle one is closed to make room. Default 100. */
   maxSessions?: number;
+  /**
+   * With OAuth, most sessions one client and subject may hold. A user only ever makes room
+   * among their own idle sessions, never by closing someone else's. Default 10.
+   */
+  maxSessionsPerOwner?: number;
   /** Called whenever a server built by `makeServer` is closed. */
   onServerClosed?: (server: Server) => void;
 }
@@ -117,7 +131,40 @@ function sendMetadata(req: IncomingMessage, res: ServerResponse, body: string): 
 
 /** Who a session belongs to: a session id alone must not let another user into it. */
 function ownerOf(auth: AuthInfo | undefined): string | undefined {
-  return auth && JSON.stringify([auth.clientId, auth.extra?.subject ?? null]);
+  if (!auth) return undefined;
+  const { client, subject } = identityOf(auth);
+  return JSON.stringify([client ?? null, subject ?? null]);
+}
+
+/** Largest body read before the transport sees a request that wants to start a session. */
+const MAX_INIT_BODY_BYTES = 1_000_000;
+/** setTimeout cannot wait longer than this. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+class BodyTooLarge extends Error {}
+
+/**
+ * Read a request body up to `limit` bytes. Past the limit the rest is read and dropped rather
+ * than left unread, so the client can finish sending and receive the 413.
+ */
+function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const tooLarge = () => {
+      req.removeAllListeners('data');
+      req.resume();
+      reject(new BodyTooLarge());
+    };
+    if (Number(req.headers['content-length']) > limit) return tooLarge();
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > limit) return tooLarge();
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
 }
 
 interface Session {
@@ -164,13 +211,19 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
       '/.well-known/oauth-protected-resource/mcp',
     ]),
   };
-  // Behind a reverse proxy on the same machine, requests carry the public host name.
+  // Behind a reverse proxy on the same machine, requests carry the public host name, and
+  // browser-based clients served from it send its origin.
+  const publicHost = oauth?.expectedResource.hostname;
   const validateHost = loopback
-    ? oauth
-      ? hostHeaderValidation([...localhostAllowedHostnames(), oauth.expectedResource.hostname])
+    ? publicHost
+      ? hostHeaderValidation([...localhostAllowedHostnames(), publicHost])
       : localhostHostValidation()
     : undefined;
-  const validateOrigin = loopback ? localhostOriginValidation() : undefined;
+  const validateOrigin = loopback
+    ? publicHost
+      ? originValidation([...localhostAllowedOrigins(), publicHost])
+      : localhostOriginValidation()
+    : undefined;
   const closeServer = (server: Server, transport: NodeStreamableHTTPServerTransport) => {
     void transport.close().catch(() => {});
     void server.close().catch(() => {});
@@ -180,6 +233,7 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
   const sessions = new Map<string, Session>();
   const idleMs = opts.sessionIdleMs ?? 30 * 60_000;
   const maxSessions = opts.maxSessions ?? 100;
+  const maxPerOwner = opts.maxSessionsPerOwner ?? 10;
   const endSession = (id: string) => {
     const s = sessions.get(id);
     if (!s) return;
@@ -191,7 +245,35 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
     for (const [id, s] of sessions) if (s.open === 0 && now - s.lastSeen > idleMs) endSession(id);
   };
 
-  const handleSession = async (req: IncomingMessage, res: ServerResponse, owner?: string) => {
+  const oldestIdle = (match: (s: Session) => boolean) =>
+    [...sessions]
+      .filter(([, s]) => s.open === 0 && match(s))
+      .sort((a, b) => a[1].lastSeen - b[1].lastSeen)[0];
+  /** Close an idle session if a new one would go over a limit. Returns why not, if it cannot. */
+  const makeRoom = (owner: string | undefined): string | undefined => {
+    if (owner === undefined) {
+      if (sessions.size < maxSessions) return undefined;
+      const idle = oldestIdle(() => true);
+      if (!idle) return 'Too many active sessions. Try again later.';
+      endSession(idle[0]);
+      return undefined;
+    }
+    // With OAuth, a user makes room only among their own sessions: one user opening many
+    // sessions must not close, or lock out, anyone else's.
+    const mine = (s: Session) => s.owner === owner;
+    const count = [...sessions.values()].filter(mine).length;
+    if (count < maxPerOwner && sessions.size < maxSessions) return undefined;
+    const idle = oldestIdle(mine);
+    if (!idle)
+      return count >= maxPerOwner
+        ? `Too many active sessions for this user (at most ${maxPerOwner}). Close one and try again.`
+        : 'Too many active sessions. Try again later.';
+    endSession(idle[0]);
+    return undefined;
+  };
+
+  const handleSession = async (req: IncomingMessage, res: ServerResponse, auth?: AuthInfo) => {
+    const owner = ownerOf(auth);
     const header = req.headers['mcp-session-id'];
     const id = Array.isArray(header) ? header[0] : header;
     if (id) {
@@ -208,13 +290,32 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
       return;
     }
 
-    // Only an initialize request starts a session; the transport answers anything else with 400.
-    if (sessions.size >= maxSessions) {
-      const idle = [...sessions].filter(([, s]) => s.open === 0);
-      const oldest = idle.sort((a, b) => a[1].lastSeen - b[1].lastSeen)[0];
-      if (!oldest) return rpcError(res, 503, 'Too many active sessions. Try again later.');
-      endSession(oldest[0]);
+    // Only an initialize request starts a session. Anything else is answered here, before it can
+    // count against, or close, any session.
+    const noSession = 'Bad Request: no valid Mcp-Session-Id. Send initialize to start a session.';
+    if (req.method !== 'POST') return rpcError(res, 400, noSession);
+    let body: unknown;
+    try {
+      body = JSON.parse((await readBody(req, MAX_INIT_BODY_BYTES)).toString('utf8'));
+    } catch (err) {
+      if (err instanceof BodyTooLarge) return rpcError(res, 413, 'Request body too large.');
+      return send(res, 400, {
+        jsonrpc: '2.0',
+        error: { code: -32700, message: 'Parse error' },
+        id: null,
+      });
     }
+    if (!isInitializeRequest(body)) return rpcError(res, 400, noSession);
+    const who = identityOf(auth);
+    if (oauth && !who.client && !who.subject) {
+      const err = new OAuthError(
+        OAuthErrorCode.InvalidToken,
+        'The token names neither a client nor a subject, so it cannot start a session.',
+      );
+      return await sendWeb(res, bearerAuthChallengeResponse(err, oauth));
+    }
+    const full = makeRoom(owner);
+    if (full) return rpcError(res, 503, full);
     const server = makeServer();
     const transport: NodeStreamableHTTPServerTransport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
@@ -230,7 +331,7 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
       s.lastSeen = Date.now();
     });
     await server.connect(transport);
-    await transport.handleRequest(req, res);
+    await transport.handleRequest(req, res, body);
   };
 
   const handleStateless = async (req: IncomingMessage, res: ServerResponse) => {
@@ -265,10 +366,24 @@ export async function serveHttp(makeServer: () => Server, opts: HttpOptions): Pr
       }
       // The transport hands it to request handlers as `ctx.http.authInfo`.
       (req as IncomingMessage & { auth?: AuthInfo }).auth = auth;
+      // A stream outlives no token: when the one that opened it expires, it is closed, and the
+      // client comes back with a fresh token (or not at all, if access was revoked).
+      const ms = (auth.expiresAt ?? Number.POSITIVE_INFINITY) * 1000 - Date.now();
+      if (ms < MAX_TIMER_MS) {
+        const timer = setTimeout(
+          () => {
+            opts.logger.debug('OAuth: closed a response whose token expired.');
+            res.destroy();
+          },
+          Math.max(0, ms),
+        );
+        timer.unref();
+        res.on('close', () => clearTimeout(timer));
+      }
     }
 
     try {
-      await (opts.sessions ? handleSession(req, res, ownerOf(auth)) : handleStateless(req, res));
+      await (opts.sessions ? handleSession(req, res, auth) : handleStateless(req, res));
     } catch (err) {
       opts.logger.error(`HTTP request failed: ${(err as Error).message}`);
       if (!res.headersSent) send(res, 500, { error: 'Internal error' });

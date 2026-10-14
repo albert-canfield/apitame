@@ -39,7 +39,7 @@ export interface CallContext {
   elicit?: (message: string) => Promise<ElicitOutcome>;
   signal?: AbortSignal;
   /** Who made the call, when the HTTP transport checked an OAuth access token. Audited. */
-  caller?: { client: string; subject?: string };
+  caller?: { client?: string; subject?: string };
 }
 
 /** Summary row used by `inspect` and the generators. */

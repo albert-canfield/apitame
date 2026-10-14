@@ -165,7 +165,8 @@ http:
   oauth:
     issuer: https://login.example.com/realms/tools   # exactly as in the tokens' iss claim
     resource: https://mcp.example.com/mcp            # the public URL clients connect to
-    scopes: [mcp:tools]                              # optional: scopes every token must have
+    scopes: [mcp:tools]                              # scopes every token must have
+    requireAccessTokenType: true                     # if your server sets typ at+jwt
 ```
 
 ```bash
@@ -176,19 +177,25 @@ All the keys are described in [configuration.md](configuration.md#http). On ever
 
 - the token is a JWT signed by one of the authorization server's keys (RS, PS, ES or EdDSA algorithms; `none` and shared-secret HMAC are refused). The keys come from the JWKS named in the server's metadata (RFC 8414 or OpenID Connect discovery), or from `jwksUri`;
 - `iss` is `issuer`, `aud` contains `resource` (or one of `audiences`), and `exp` has not passed;
-- the token carries every scope in `scopes`. A token without one gets 403 `insufficient_scope`.
+- it is an access token. ID tokens (with `nonce`, `at_hash` or `c_hash`) and refresh tokens (Keycloak's `typ` claim `ID`, `Refresh` or `Offline`) are refused, and so is a header `typ` other than `at+jwt`, `application/at+jwt` or `JWT`. With `requireAccessTokenType: true`, only `at+jwt` is accepted: turn it on when your authorization server sets it (RFC 9068);
+- the token carries every scope in `scopes`. A token without one gets 403 `insufficient_scope`;
+- with `clients` set, the token was issued to one of those clients (`client_id`, `azp`, `cid` or `appid` claim).
 
 A request without a valid token gets a 401 whose `WWW-Authenticate` header points to `https://mcp.example.com/.well-known/oauth-protected-resource/mcp`. That document (RFC 9728) is public and names the authorization server, so MCP clients that support OAuth start the sign-in on their own. Clients register with the authorization server (dynamic client registration, a client ID metadata document, or a client created there by hand), never with apitame.
 
-Which authorization servers work: any that issues JWT access tokens and puts this server in `aud`. That includes Keycloak (with an audience mapper), Auth0 (an API whose identifier is the resource URL), Okta custom authorization servers and Microsoft Entra ID (an exposed API; list its audience in `audiences`). Servers that only issue opaque tokens, which need token introspection, are not supported yet.
+Which authorization servers work: any that issues JWT access tokens. Best is one that puts the resource URL in `aud`, because then a token can only be meant for this server: Keycloak (with an audience mapper), Auth0 (an API whose identifier is the resource URL), or an Okta custom authorization server created for apitame with the resource URL as its audience. If the audience is something else (Microsoft Entra ID puts its Application ID URI or client id there), list it in `audiences`, together with `scopes` or `clients`: such an audience is often shared by other apps, and apitame refuses `audiences` without one of them. Do not point apitame at an audience that every app on the authorization server uses, such as Okta's default `api://default`, without `clients`. Servers that only issue opaque tokens, which need token introspection, are not supported yet.
 
 Good to know:
 
 - `http.oauth` and `APITAME_HTTP_TOKEN` cannot be used together; apitame refuses to start with both. Either one allows `--host 0.0.0.0`.
-- At startup apitame loads the signing keys and logs how many it found. If the authorization server cannot be reached, it logs the error and keeps running; tokens are refused until the keys load, which it tries again when requests arrive. It fetches the keys again when a token names an unknown key (at most once a minute), so key rotation needs no restart.
-- Changes to `http.oauth` need a restart, even with `--watch`.
-- If apitame listens on `127.0.0.1` behind a reverse proxy on the same machine, the Host check also accepts the host name of `resource`.
-- With `--sessions`, a session belongs to the client and user that started it. The audit log records the token's client id and subject (`client`, `subject`).
+- With `scopes` empty, apitame logs a warning at startup: any token the authorization server issues for this audience is then accepted.
+- At startup apitame loads the signing keys and logs how many it found. If the authorization server cannot be reached, it logs the error and keeps running; tokens are refused until the keys load, which it tries again when requests arrive. It fetches the keys again when a token names an unknown key (at most once a minute), so key rotation needs no restart. Known keys are refreshed every hour in the background; a slow or unreachable authorization server never holds up requests whose key is already known.
+- The issuer's metadata and keys are fetched without following redirects, and each document may be at most 1 MB, so `issuer` and `jwksUri` must be the final URLs.
+- Changes to `http.oauth` need a restart. With `--watch`, apitame warns when `http.oauth` was added, removed or changed since it started.
+- Revoking a token at the authorization server takes effect when the token expires: apitame checks tokens locally and does not ask the server about each one. Keep access tokens short-lived. When the token that opened a stream expires, apitame closes the stream, and the client has to come back with a fresh token.
+- If apitame listens on `127.0.0.1` behind a reverse proxy on the same machine, the Host check also accepts the host name of `resource`, and the Origin check its origin.
+- apitame reads the client from `client_id`, `azp`, `cid` or `appid` (the first one present) and the user from `sub`, and keeps them apart. With `--sessions`, a session belongs to that client and user: another token cannot use its id, each user can hold at most 10 sessions, and making room only ever closes that user's own idle sessions. A token that names neither a client nor a user cannot start a session. The audit log records both (`client`, `subject`).
+- Rate limits are per server, not per user (see [safety.md](safety.md#rate-limits)).
 - `--log-level debug` logs why a token was refused. The 401 body says it too.
 
 ## Pinning and local builds

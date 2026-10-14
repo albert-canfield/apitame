@@ -8,6 +8,7 @@ import {
 import { z } from 'zod';
 import { VERSION } from '../version.js';
 import type { CallContext, ElicitOutcome, Runtime } from '../types.js';
+import { identityOf } from './oauth.js';
 import { findSkillFile, mimeTypeFor, skillListEntry, skillUri, type SkillEntry } from './skills.js';
 
 export const SKILLS_EXTENSION = 'io.modelcontextprotocol/skills';
@@ -55,17 +56,10 @@ export function createMcpServer(
 
   server.setRequestHandler('tools/call', async (request, ctx) => {
     const auth = ctx.http?.authInfo;
-    const subject = auth?.extra?.subject;
     const callCtx: CallContext = {
       signal: ctx.mcpReq.signal,
-      ...(auth
-        ? {
-            caller: {
-              client: auth.clientId,
-              ...(typeof subject === 'string' ? { subject } : {}),
-            },
-          }
-        : {}),
+      // Who the OAuth token speaks for, for the audit log. Client and subject stay separate.
+      ...(auth ? { caller: identityOf(auth) } : {}),
       elicit: async (message: string): Promise<ElicitOutcome> => {
         if (!server.getClientCapabilities()?.elicitation) return 'unsupported';
         try {
