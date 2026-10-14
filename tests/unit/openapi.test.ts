@@ -149,7 +149,7 @@ describe('operations', () => {
     );
   });
 
-  it('refuses Swagger 2.0 with a conversion hint', async () => {
+  it('converts a minimal Swagger 2.0 document instead of refusing it', async () => {
     const { tempDir } = await import('../helpers.js');
     const { writeFileSync } = await import('node:fs');
     const t = tempDir();
@@ -158,7 +158,8 @@ describe('operations', () => {
         `${t.dir}/swagger.json`,
         JSON.stringify({ swagger: '2.0', info: { title: 'x', version: '1' }, paths: {} }),
       );
-      await expect(loadSpec(`${t.dir}/swagger.json`)).rejects.toThrow(/swagger2openapi/);
+      const spec = await loadSpec(`${t.dir}/swagger.json`);
+      expect(spec).toMatchObject({ convertedFrom: 'Swagger 2.0', doc: { openapi: '3.0.3' } });
     } finally {
       t.cleanup();
     }

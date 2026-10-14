@@ -54,6 +54,6 @@ See [architecture.md](architecture.md) for modules and request flows, and [decis
 
 ## After v0.1
 
-- v0.2: multipart uploads, Swagger 2.0 import, response field selection, MySQL.
+- v0.2: multipart uploads, Swagger 2.0 import (done), response field selection, MySQL.
 - v0.3: a published tool-selection eval comparing curated tools, one tool per endpoint and search-only; per-tool rate limits; an audit log.
 - Later: GraphQL, OAuth authorization code flow for remote HTTP serving.

@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { dereference } from '@readme/openapi-parser';
 import { parse as parseYaml } from 'yaml';
 import { isObject } from './schema.js';
+import { convertSwagger2 } from './swagger2.js';
 
 export type OpenApiDocument = Record<string, unknown> & {
   openapi: string;
@@ -17,6 +18,8 @@ export interface LoadedSpec {
   /** Where the spec came from: absolute file path or URL. */
   location: string;
   isUrl: boolean;
+  /** Set when the document was converted in memory, for example from Swagger 2.0. */
+  convertedFrom?: string;
 }
 
 export class SpecError extends Error {
@@ -92,7 +95,7 @@ export async function discoverSpecUrl(url: string): Promise<string> {
   );
 }
 
-/** Load and fully dereference an OpenAPI 3.0 / 3.1 document from a file or URL. */
+/** Load and fully dereference an OpenAPI 3.0 / 3.1 (or Swagger 2.0) document from a file or URL. */
 export async function loadSpec(spec: string, baseDir = process.cwd()): Promise<LoadedSpec> {
   const url = isUrl(spec);
   const location = url ? spec : resolve(baseDir, spec);
@@ -110,10 +113,17 @@ export async function loadSpec(spec: string, baseDir = process.cwd()): Promise<L
 
   if (!isObject(doc)) throw new SpecError(`${location} is not an OpenAPI document.`);
   if (typeof doc.swagger === 'string') {
-    throw new SpecError(
-      `${location} is Swagger ${doc.swagger}. apitame supports OpenAPI 3.0 and 3.1. ` +
-        'Convert it first, for example with "npx swagger2openapi spec.json -o openapi.json".',
-    );
+    if (doc.swagger !== '2.0') {
+      throw new SpecError(
+        `${location} is Swagger ${doc.swagger}. apitame supports Swagger 2.0 and OpenAPI 3.0 and 3.1.`,
+      );
+    }
+    return {
+      doc: convertSwagger2(doc),
+      location,
+      isUrl: url,
+      convertedFrom: 'Swagger 2.0',
+    };
   }
   if (typeof doc.openapi !== 'string' || !/^3\.[01]\./.test(doc.openapi)) {
     throw new SpecError(

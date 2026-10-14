@@ -1,6 +1,6 @@
 # OpenAPI sources
 
-apitame reads an OpenAPI 3.0 or 3.1 document and serves the API as a small set of MCP tools. Requests go straight from the apitame process to the API; there is no generated code and no proxy service.
+apitame reads an OpenAPI 3.0 or 3.1 document (or a Swagger 2.0 one, converted on the fly) and serves the API as a small set of MCP tools. Requests go straight from the apitame process to the API; there is no generated code and no proxy service.
 
 ## Inputs
 
@@ -12,7 +12,17 @@ npx apitame init https://api.example.com             # base URL: apitame looks f
 
 Given a base URL, `init` tries the URL itself, then `/openapi.json`, `/openapi.yaml`, `/swagger.json`, `/v3/api-docs`, `/api-docs`, `/api/openapi.json`, `/docs/openapi.json` and `/.well-known/openapi.json`.
 
-Swagger 2.0 documents are refused with a hint to convert them first (`npx swagger2openapi spec.json -o openapi.json`). Native Swagger 2.0 support is on the roadmap.
+Swagger 2.0 documents are converted to OpenAPI 3 in memory every time they are loaded; the file itself is never changed. The conversion covers what apitame uses:
+
+- `host`, `basePath` and `schemes` become the server URL (https preferred);
+- `body` parameters become a request body for each type in `consumes`;
+- `formData` parameters become an `application/x-www-form-urlencoded` body, or `multipart/form-data` when there is a `file` field;
+- `collectionFormat` becomes `style` and `explode` (`csv`, the Swagger 2.0 default, is not exploded; `multi` is);
+- response schemas are attached to each type in `produces`;
+- `securityDefinitions` become security schemes, so `init` can suggest auth;
+- `x-nullable` becomes `nullable`, and `type: file` becomes a binary string.
+
+Swagger 1.x is not supported.
 
 ## Base URL
 
