@@ -1,7 +1,5 @@
-<h1 align="center">apitame</h1>
-
 <p align="center">
-  <b>Turn any OpenAPI spec or SQL database into a safe MCP server, plus agent skills. One command.</b>
+  <img src="docs/assets/banner.svg" alt="apitame: tame any API or database for AI agents. One command turns an OpenAPI or Swagger spec or a PostgreSQL, MySQL or SQLite database into a safe MCP server plus an agent skill (SKILL.md) for Claude Code, Codex, Cursor, VS Code and Gemini CLI. Stripe's full API goes from 612 endpoints to 12 tools and 99% fewer tokens. Read-only by default, human approval for destructive writes, a dry run for every write, and secrets never reach the agent." width="100%">
 </p>
 
 <p align="center">
@@ -13,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/demo.svg" alt="Terminal demo: apitame init turns a 38-endpoint GitHub API spec into 8 read-only tools, inspect shows about 60% fewer tokens, test passes and add-to installs it in Claude Code" width="900">
+  <b>Turn any OpenAPI spec or SQL database into a safe MCP server, plus agent skills. One command.</b>
 </p>
 
 ```bash
@@ -22,6 +20,12 @@ npx apitame add-to claude-code --write   # or codex, cursor, vscode, gemini, cla
 ```
 
 That is the whole setup. Your agent now has a small set of task-level tools for the API, read-only by default, plus a skill that teaches it how to use them.
+
+## See it run
+
+<p align="center">
+  <img src="docs/assets/demo.svg" alt="Terminal demo: apitame init turns a 38-endpoint GitHub API spec into 8 read-only tools, inspect shows about 60% fewer tokens, test passes and add-to installs it in Claude Code" width="900">
+</p>
 
 ## Why apitame
 
