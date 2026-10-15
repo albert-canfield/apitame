@@ -5,7 +5,7 @@ import { asksForConfirmation, type ConfirmationMethod } from '../../safety/confi
 import { Redactor } from '../../safety/redact.js';
 import { LiveRuntime } from '../../server/live.js';
 import { createMcpServer } from '../../server/mcp.js';
-import { JwtVerifier, oauthChange, oauthWarnings } from '../../server/oauth.js';
+import { JwtVerifier, oauthChange, oauthReloadRefusal, oauthWarnings } from '../../server/oauth.js';
 import { serveHttp, serveStdio } from '../../server/transport.js';
 import type { ToolDefinition } from '../../types.js';
 
@@ -28,6 +28,17 @@ export function trackOpen(servers: Set<Server>, server: Server): Server {
   servers.add(server);
   server.onclose = () => servers.delete(server);
   return server;
+}
+
+/**
+ * Over HTTP with OAuth, the transport checks tokens with the `http.oauth` it started with, while
+ * a `--watch` reload rebuilds the runtime (and its per-user permissions) from the file. A reload
+ * that removes or changes `http.oauth` is therefore refused: OAuth callers would otherwise be
+ * served without the permissions meant for them. `permissions` alone may change.
+ */
+export function guardOAuthReloads(live: LiveRuntime, started: unknown): void {
+  if (started === undefined) return;
+  live.refuseReloadIf((next) => oauthReloadRefusal(started, next.config.http.oauth));
 }
 
 /**
@@ -127,6 +138,7 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
   // http.oauth need a restart (a --watch reload says so).
   const oauthConfig = live.loaded.config.http.oauth;
   const verifier = oauthConfig && new JwtVerifier(oauthConfig);
+  guardOAuthReloads(live, oauthConfig);
   if (oauthConfig) for (const w of oauthWarnings(oauthConfig)) logger.warn(w);
   const unauthenticatedHttp = !token && !oauthConfig;
   const url = `http://${host.includes(':') ? `[${host}]` : host}:${port}/mcp`;

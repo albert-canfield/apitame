@@ -524,15 +524,35 @@ export function oauthWarnings(opts: OAuthOptions): string[] {
 }
 
 /**
- * What a `--watch` reload should say when `http.oauth` differs from what the server started with.
- * `permissions` is left out: the runtime applies it, so a reload picks it up.
+ * How `http.oauth` differs from what the server started with, if it does. `permissions` is left
+ * out: the runtime applies it, so a reload picks it up.
  */
-export function oauthChange(before: unknown, after: unknown): string | undefined {
+function oauthDiff(before: unknown, after: unknown): string | undefined {
   const withoutPermissions = (v: unknown) =>
     JSON.stringify(v && typeof v === 'object' ? { ...v, permissions: undefined } : (v ?? null));
   if (withoutPermissions(before) === withoutPermissions(after)) return undefined;
-  const what = before === undefined ? 'was added' : after === undefined ? 'was removed' : 'changed';
-  return `http.oauth ${what}; restart apitame to apply it.`;
+  return before === undefined ? 'was added' : after === undefined ? 'was removed' : 'changed';
+}
+
+/** What a `--watch` reload should say when `http.oauth` differs from what the server started with. */
+export function oauthChange(before: unknown, after: unknown): string | undefined {
+  const what = oauthDiff(before, after);
+  return what && `http.oauth ${what}; restart apitame to apply it.`;
+}
+
+/**
+ * Why a `--watch` reload must be refused, when the server checks OAuth tokens with `before`.
+ * The transport keeps those settings until a restart, so a reload that removes or changes
+ * `http.oauth` would serve OAuth callers with a config that no longer describes them: without
+ * `http.oauth`, every caller would get the full server config instead of its permissions.
+ */
+export function oauthReloadRefusal(before: unknown, after: unknown): string | undefined {
+  if (before === undefined) return undefined;
+  const what = oauthDiff(before, after);
+  return (
+    what &&
+    `http.oauth ${what}, but this server checks OAuth tokens with the settings it started with. Restart apitame to change http.oauth (per-user permissions apply on reload without one).`
+  );
 }
 
 /** The RFC 9728 Protected Resource Metadata document for this server. */

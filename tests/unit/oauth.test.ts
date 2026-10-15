@@ -5,6 +5,7 @@ import {
   JwtVerifier,
   metadataUrls,
   oauthChange,
+  oauthReloadRefusal,
   oauthWarnings,
   protectedResourceMetadata,
   protectedResourceMetadataPath,
@@ -582,6 +583,11 @@ describe('JwtVerifier: token types and identity', () => {
     expect(oauthChange({ ...cfg, permissions }, { ...cfg, permissions, scopes: [] })).toMatch(
       /changed; restart/,
     );
+    // A server that checks OAuth tokens refuses reloads that remove or change http.oauth.
+    expect(oauthReloadRefusal(undefined, cfg)).toBeUndefined();
+    expect(oauthReloadRefusal(cfg, { ...cfg, permissions })).toBeUndefined();
+    expect(oauthReloadRefusal(cfg, undefined)).toMatch(/^http\.oauth was removed, but this server/);
+    expect(oauthReloadRefusal(cfg, { ...cfg, scopes: [] })).toMatch(/^http\.oauth changed, but/);
   });
 });
 

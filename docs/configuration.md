@@ -302,12 +302,11 @@ http:
     # clients: [mcp-desktop, mcp-web]
     # jwksUri: https://login.example.com/realms/tools/protocol/openid-connect/certs
     permissions:
+      default: { mode: read-only, tools: [issues, search_operations] }   # every OAuth caller
       byScope:
-        mcp:read: { mode: read-only }
-        mcp:write: { writes: [createIssue, updateIssue] }
+        mcp:write: { tools: [issues], writes: [createIssue, updateIssue] }
       byClient:
         release-bot: { tools: [issues], writes: [closeIssue] }
-      # default: { mode: read-only }
 ```
 
 | Field | Type | Default | Description |
@@ -319,23 +318,25 @@ http:
 | `oauth.clients` | list | `[]` | When set, only tokens issued to these clients are accepted (the `client_id`, `azp`, `cid` or `appid` claim). |
 | `oauth.requireAccessTokenType` | boolean | `false` | Accept only tokens whose header says `typ: at+jwt` (RFC 9068). Turn it on when your authorization server sets it. ID and refresh tokens are refused either way. |
 | `oauth.jwksUri` | URL | discovered | Where the signing keys are, when the issuer publishes no RFC 8414 or OpenID Connect metadata. |
-| `oauth.permissions.byScope` | map | `{}` | Permissions for callers whose token carries the scope (the key). |
-| `oauth.permissions.byClient` | map | `{}` | Permissions for callers whose token was issued to the client (the key; `client_id`, `azp`, `cid` or `appid`). |
-| `oauth.permissions.default` | entry | read-only | Permissions for callers that no entry matches. Unset means read-only access. |
+| `oauth.permissions.default` | entry | read-only | What every OAuth caller gets. Unset: read-only access with every tool. Entries can only add to it. |
+| `oauth.permissions.byScope` | map | `{}` | What callers whose token carries the scope (the key) get on top of `default`. |
+| `oauth.permissions.byClient` | map | `{}` | What callers whose token was issued to the client (the key; `client_id`, `azp`, `cid` or `appid`) get on top of `default`. |
 
-URLs must use `https`, except on loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) for local testing. Metadata and keys are fetched without following redirects, so `issuer` and `jwksUri` must be final URLs. `http.oauth` cannot be combined with `APITAME_HTTP_TOKEN`, and changes to it need a restart, even with `--watch`, except `permissions`, which apply on reload. See [clients.md](clients.md#oauth) for the full picture.
+URLs must use `https`, except on loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) for local testing. Metadata and keys are fetched without following redirects, so `issuer` and `jwksUri` must be final URLs. `http.oauth` cannot be combined with `APITAME_HTTP_TOKEN`, and changes to it need a restart, except `permissions`, which apply on a `--watch` reload. While apitame checks OAuth tokens, a reload that removes or changes the rest of `http.oauth` is refused and the previous config keeps being served. See [clients.md](clients.md#oauth) for the full picture.
 
 ### `http.oauth.permissions`
 
-Each entry narrows what a caller may do. A field that is not set narrows nothing.
+Every OAuth caller gets `default`, and each entry that matches its token's scopes or client adds to it. An entry can set:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `mode` | `read-only` or `read-write` | `read-only` hides and refuses every write for this caller. `read-write` never makes a read-only server writable. |
-| `writes` | list | Writes this caller may run (operation ids or named queries, `*` wildcards). A write must also be in `writes.allow`. Unset: every write in `writes.allow`. Cannot be combined with `mode: read-only`. |
-| `tools` | list | Tools this caller sees (`*` wildcards). Unset: every tool. |
+| `mode` | `read-only` or `read-write` | `read-only`: the entry grants no writes. `read-write` never makes a read-only server writable. |
+| `writes` | list | Writes the entry grants (operation ids or named queries, `*` wildcards). Unset: every write in `writes.allow`. Cannot be combined with `mode: read-only`. |
+| `tools` | list | Tools the entry shows (`*` wildcards). Unset: every tool. |
 
-A caller gets the union of every entry that matches its token's scopes or client, then the server config narrows it. A name that matches no tool or operation grants nothing: `serve`, `doctor` and `inspect` warn about it. Mistakes in the shape (a wrong type, `mode: read-only` with `writes`, a scope directly under `permissions`) are errors. Permissions only apply over HTTP with `http.oauth`; over stdio and other transports the server config applies. See [safety.md](safety.md#per-user-permissions) for the rules.
+A tool is shown when one of the caller's entries shows it. A write runs only when one single entry grants it in `writes` and reaches it through one of its own `tools`, and the server config (`mode`, `writes.allow`) allows it too. The operations of a group a caller does not see are out of reach of `call_operation` and `search_operations` as well. Since entries only add, `default` must be the least any caller should get.
+
+Names that match no tool or operation, write patterns that grant nothing and entries that add nothing to `default` are warnings in `serve`, `doctor` and `inspect`. Mistakes in the shape (a wrong type, `mode: read-only` with `writes`, a scope directly under `permissions`) are errors. Permissions only apply over HTTP with `http.oauth`; over stdio and other transports the server config applies. See [safety.md](safety.md#per-user-permissions) for the rules.
 
 ## Environment variables
 

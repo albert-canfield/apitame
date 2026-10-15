@@ -9,6 +9,7 @@ import {
   checkPermissions,
   toolAllowed,
   type CallerPermissions,
+  type Reach,
 } from '../safety/permissions.js';
 import { decide, matchesAny } from '../safety/policy.js';
 import { Redactor } from '../safety/redact.js';
@@ -64,6 +65,9 @@ const DEFAULT_SCHEMA: Partial<Record<keyof typeof ENGINE, string>> = {
 
 /** Tools every SQL source has, whatever the config. */
 const BUILT_IN_TOOLS = ['list_tables', 'describe_table', 'query'];
+
+/** Each SQL tool is its own named query (or a built-in read), so an entry reaches what it shows. */
+const reach: Reach = (tools, id) => tools === undefined || matchesAny(id, tools);
 
 /** The audit fields that say which permissions applied to an OAuth caller. */
 const appliedTo = (perm: CallerPermissions | undefined) =>
@@ -127,6 +131,7 @@ export class SqlRuntime implements Runtime {
         tools: [...BUILT_IN_TOOLS, ...config.sql.queries.map((q) => q.name)],
         operations: config.sql.queries.map((q) => ({ id: q.name, write: q.write })),
         noun: 'named query',
+        reach,
       }),
     );
   }
@@ -269,6 +274,10 @@ export class SqlRuntime implements Runtime {
     this.named.set(q.name, { query: q, access, sql, def });
   }
 
+  private permissionsOf(who: CallerContext | undefined): CallerPermissions | undefined {
+    return callerPermissions(this.config, who, reach);
+  }
+
   /** The server config, narrowed by an OAuth caller's permissions when there are any. */
   private policy(perm?: CallerPermissions) {
     return { mode: this.config.mode, writes: this.config.writes, caller: perm };
@@ -377,7 +386,7 @@ export class SqlRuntime implements Runtime {
       },
     ];
     const all = [...builtIn, ...[...this.named.values()].map((n) => n.def)];
-    const perm = callerPermissions(this.config, who);
+    const perm = this.permissionsOf(who);
     return perm ? all.filter((t) => this.visibleTo(t.name, perm)) : all;
   }
 
@@ -400,8 +409,13 @@ export class SqlRuntime implements Runtime {
     args: Record<string, unknown>,
     ctx?: CallContext,
   ): Promise<ToolResult> {
-    // A tool the caller may not see is unknown to it, exactly like one that does not exist.
-    if (!toolAllowed(name, callerPermissions(this.config, ctx))) {
+    // An unknown name is refused before anything else looks at it, and a tool the caller may not
+    // see answers exactly like one that does not exist.
+    const perm = this.permissionsOf(ctx);
+    if (
+      !(BUILT_IN_TOOLS.includes(name) || this.named.has(name)) ||
+      (perm && !this.visibleTo(name, perm))
+    ) {
       return errorResult(`Unknown tool "${name}".`);
     }
     const limited = this.guardrails.checkCall(ctx?.caller) ?? this.guardrails.checkTool(name);
@@ -499,7 +513,7 @@ export class SqlRuntime implements Runtime {
   }
 
   private async query(sql: string, limitArg: unknown, ctx?: CallContext): Promise<ToolResult> {
-    const perm = callerPermissions(this.config, ctx);
+    const perm = this.permissionsOf(ctx);
     const g = await this.checkSelect(sql, {
       allowTables: this.config.sql.tables.allow,
       denyTables: this.config.sql.tables.deny,
@@ -570,7 +584,7 @@ export class SqlRuntime implements Runtime {
     }
     const { dryRun: _dryRun, confirm, ...params } = checked;
     const bound = bindNamedParams(named.sql, this.dialect, params);
-    const perm = callerPermissions(this.config, ctx);
+    const perm = this.permissionsOf(ctx);
     const audit = (outcome: AuditOutcome, extra: Partial<AuditEntry> = {}) =>
       this.guardrails.record({
         tool: named.query.name,

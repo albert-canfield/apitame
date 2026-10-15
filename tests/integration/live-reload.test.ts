@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
 import { Logger } from '../../src/log.js';
 import { Redactor } from '../../src/safety/redact.js';
+import { guardOAuthReloads } from '../../src/cli/commands/serve.js';
 import { LiveRuntime } from '../../src/server/live.js';
 import { createMcpServer } from '../../src/server/mcp.js';
 import { PETSTORE, tempDir } from '../helpers.js';
@@ -141,6 +142,55 @@ describe('serve --watch', () => {
     expect(await live.reload()).toBe(true);
     expect(live.runtime.config.http.oauth?.permissions).toBeDefined();
     expect(logs.join('')).toMatch(/byScope\.mcp:read\.tools: no tool matches "pets"/);
+  });
+
+  it('refuses a reload that removes or changes http.oauth while the transport checks OAuth tokens', async () => {
+    const oauth = {
+      issuer: 'https://login.example.com',
+      resource: 'https://mcp.example.com/mcp',
+      scopes: ['mcp:tools'],
+      permissions: { byScope: { 'mcp:write': {} } },
+    };
+    const p = project({ mode: 'read-write', writes: { allow: ['addPet'] } });
+    p.write({ http: { oauth } });
+    const errors: string[] = [];
+    const redactor = new Redactor();
+    const live = await LiveRuntime.start(p.file, {
+      redactor,
+      logger: new Logger(redactor, 'error', (l) => errors.push(l)),
+    });
+    cleanups.push(() => live.close());
+    guardOAuthReloads(live, live.loaded.config.http.oauth);
+    const before = live.runtime;
+    const reader = { caller: { subject: 'r' }, scopes: ['mcp:tools'] };
+
+    // Without http.oauth the runtime would apply no permissions: every caller could write.
+    p.write({});
+    expect(await live.reload()).toBe(false);
+    expect(live.runtime).toBe(before);
+    expect(errors.join('')).toMatch(
+      /reload failed, still serving the previous config: http\.oauth was removed, but this server checks OAuth tokens with the settings it started with\. Restart apitame to change http\.oauth/,
+    );
+    expect(operations(live.runtime.listTools(reader))).not.toContain('addPet');
+    p.write({ http: { oauth: { ...oauth, scopes: ['other'] } } });
+    expect(await live.reload()).toBe(false);
+    expect(errors.join('')).toMatch(/http\.oauth changed, but this server checks OAuth tokens/);
+
+    // Permissions alone still apply on reload.
+    p.write({ http: { oauth: { ...oauth, permissions: { default: {} } } } });
+    expect(await live.reload()).toBe(true);
+    expect(operations(live.runtime.listTools(reader))).toContain('addPet');
+
+    // Without OAuth at startup (stdio, a static token), nothing is refused.
+    const q = project();
+    const other = await LiveRuntime.start(q.file, {
+      redactor,
+      logger: new Logger(redactor, 'silent'),
+    });
+    cleanups.push(() => other.close());
+    guardOAuthReloads(other, other.loaded.config.http.oauth);
+    q.write({ http: { oauth } });
+    expect(await other.reload()).toBe(true);
   });
 
   it('keeps serving the previous config when the new one is invalid', async () => {

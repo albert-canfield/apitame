@@ -67,15 +67,16 @@ afterAll(async () => {
 beforeEach(() => as.publish(key));
 
 /**
- * The Petstore, read-write, with four writes allowed by the server config, and permissions that
- * give each scope or client a different part of it.
+ * The Petstore, read-write, with four writes allowed by the server config. Every OAuth caller
+ * reads pets and the store (not users); scopes and clients add writes on top.
  */
 const PERMISSIONS = {
-  byScope: {
-    'mcp:read': { mode: 'read-only' as const },
-    'mcp:write': { writes: ['addPet', 'deletePet'] },
+  default: {
+    mode: 'read-only' as const,
+    tools: ['pet', 'store', 'search_operations', 'call_operation'],
   },
-  byClient: { 'ci-bot': { tools: ['pet', 'search_operations'], writes: ['updatePet'] } },
+  byScope: { 'mcp:write': { tools: ['pet'], writes: ['addPet', 'deletePet'] } },
+  byClient: { 'ci-bot': { tools: ['pet'], writes: ['updatePet'] } },
 };
 
 async function petServer(permissions: unknown = PERMISSIONS, extra: Partial<ConfigInput> = {}) {
@@ -118,7 +119,7 @@ const token = (claims: Record<string, unknown>) =>
     signers.rs(key.privateKey),
   );
 
-/** Tokens for four callers: by scope, by client, and one that no entry matches. */
+/** Tokens for four callers: by scope, by client, and two that no entry matches. */
 const callers = () => ({
   reader: token({ sub: 'rita', scope: 'mcp:tools mcp:read' }),
   writer: token({ sub: 'walt', scope: 'mcp:tools mcp:write' }),
@@ -212,23 +213,37 @@ describe.each<Kind>(['http', 'http --sessions', `http (${MODERN})`])(
         const all = surface(rt.listTools());
         expect(writesIn(all.pet!)).toEqual(['addPet', 'updatePet', 'deletePet']);
 
+        expect(Object.keys(all)).toEqual([
+          'pet',
+          'user',
+          'store',
+          'search_operations',
+          'call_operation',
+        ]);
+
+        // mcp:read has no entry: only the default, read-only and without the user tool.
         const reader = await listed(t.reader);
-        expect(Object.keys(reader)).toEqual(Object.keys(all));
+        expect(Object.keys(reader)).toEqual([
+          'pet',
+          'store',
+          'search_operations',
+          'call_operation',
+        ]);
         expect(writesIn(reader.pet!)).toEqual([]);
         expect(writesIn(reader.store!)).toEqual([]);
         expect(reader.pet).toContain('getPetById');
 
         // writes [addPet, deletePet] meets writes.allow: updatePet and placeOrder stay hidden.
         const writer = await listed(t.writer);
+        expect(Object.keys(writer)).toEqual(Object.keys(reader));
         expect(writesIn(writer.pet!)).toEqual(['addPet', 'deletePet']);
         expect(writesIn(writer.store!)).toEqual([]);
 
-        // tools [pet, search_operations]: no call_operation, user or store tool at all.
         const bot = await listed(t.bot);
-        expect(Object.keys(bot).sort()).toEqual(['pet', 'search_operations']);
+        expect(Object.keys(bot)).toEqual(Object.keys(reader));
         expect(writesIn(bot.pet!)).toEqual(['updatePet']);
 
-        // No entry matches: read-only by default.
+        // No scope beyond the required one: the default, like the reader.
         const nobody = await listed(t.nobody);
         expect(nobody).toEqual(reader);
       } finally {
@@ -258,7 +273,7 @@ describe('a read-only caller and an allowlisted write', () => {
         expect(res.isError).toBe(true);
         const text = textOf(res as never);
         expect(text).toContain('your access token allows read-only access');
-        expect(text).toContain('scope mcp:read');
+        expect(text).toContain('only the default: no entry in http.oauth.permissions matches');
         // Other callers' permissions are never named.
         expect(text).not.toMatch(/mcp:write|ci-bot|byScope|byClient/);
         expect(text).not.toContain('CONFIRMATION REQUIRED');
@@ -275,7 +290,7 @@ describe('a read-only caller and an allowlisted write', () => {
       const blocked = audit().filter((e) => e.outcome === 'blocked');
       expect(blocked.map((e) => e.operation)).toEqual(['deletePet', 'addPet']);
       for (const e of blocked) {
-        expect(e).toMatchObject({ subject: 'rita', permissions: ['byScope.mcp:read'] });
+        expect(e).toMatchObject({ subject: 'rita', permissions: ['default'] });
       }
 
       // The control: the writer is asked, and the delete is sent once approved.
@@ -291,7 +306,7 @@ describe('a read-only caller and an allowlisted write', () => {
         operation: 'deletePet',
         outcome: 'sent',
         subject: 'walt',
-        permissions: ['byScope.mcp:write'],
+        permissions: ['default', 'byScope.mcp:write'],
       });
     } finally {
       await s.close();
@@ -413,7 +428,7 @@ describe('permissions only narrow the server config', () => {
     expect(sent).toHaveLength(0);
   });
 
-  it('gives the union of every entry that matches the token scopes and client', async () => {
+  it('adds every entry that matches the token scopes and client to the default', async () => {
     const { rt } = api({
       byScope: { a: { writes: ['createPet'] }, ro: { mode: 'read-only' } },
       byClient: { app: { writes: ['deletePet'] } },
@@ -428,12 +443,12 @@ describe('permissions only narrow the server config', () => {
     expect(await writableIn(rt, withScopes([], { subject: 'app' }))).toEqual([]);
   });
 
-  it('gives callers that no entry matches read-only access, or the default entry', async () => {
+  it('gives every caller the default, read-only when unset, and entries only add to it', async () => {
     const readOnly = api({ byScope: { a: { writes: ['createPet'] } } });
     expect(await writableIn(readOnly.rt, withScopes(['other']))).toEqual([]);
     const res = await call(readOnly.rt, 'createPet', withScopes(['other']));
     expect(textOf(res)).toContain('allows read-only access');
-    expect(textOf(res)).toContain('no entry in http.oauth.permissions matches');
+    expect(textOf(res)).toContain('only the default: no entry in http.oauth.permissions matches');
     expect(readOnly.sent).toHaveLength(0);
     // Object members are not entries.
     expect(await writableIn(readOnly.rt, withScopes(['constructor', 'toString']))).toEqual([]);
@@ -445,9 +460,85 @@ describe('permissions only narrow the server config', () => {
     const ctx = withScopes(['other']);
     expect(withDefault.rt.listTools(ctx).map((t) => t.name)).toEqual(['call_operation']);
     expect(textOf(await call(withDefault.rt, 'deletePet', ctx))).toContain('CONFIRMATION REQUIRED');
-    // A caller that matches an entry does not also get the default.
-    expect(textOf(await call(withDefault.rt, 'deletePet', withScopes(['a'])))).toContain(
-      'does not allow',
+    // A caller that matches an entry keeps the default and gets the entry on top.
+    expect(await writableIn(withDefault.rt, withScopes(['a']))).toEqual(['createPet', 'deletePet']);
+  });
+
+  it('never gives a token more access for leaving a scope out', async () => {
+    // A contractor entry narrower than the default cannot restrict anything: it is reported.
+    const { rt, sent } = api({ byScope: { contractor: { mode: 'read-only' } }, default: {} });
+    expect(rt.warnings).toEqual([
+      'http.oauth.permissions.byScope.contractor: adds nothing to permissions.default, so it has no effect. Every caller gets default, and entries can only add to it: to restrict callers, narrow default and grant more in entries.',
+    ]);
+    expect(await writableIn(rt, withScopes(['contractor']))).toEqual(
+      await writableIn(rt, withScopes([])),
+    );
+    // Configured the right way round, the token without the scope gets less, never more.
+    const right = api({ byScope: { staff: { writes: ['createPet'] } } });
+    expect(right.rt.warnings).toEqual([]);
+    expect(await writableIn(right.rt, withScopes(['staff']))).toEqual(['createPet']);
+    expect(await writableIn(right.rt, withScopes([]))).toEqual([]);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('grants a write only through one entry that both allows it and reaches it with its own tools', async () => {
+    const ok = { '200': { description: 'ok' } };
+    const { rt, sent } = fakeApi({
+      paths: {
+        '/orders': {
+          get: { operationId: 'listOrders', responses: ok },
+          post: { operationId: 'createOrder', responses: ok },
+        },
+        '/pets/{id}': {
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          get: { operationId: 'getPet', responses: ok },
+          put: { operationId: 'updatePet', responses: ok },
+        },
+      },
+      config: {
+        mode: 'read-write',
+        writes: { allow: ['createOrder', 'updatePet'] },
+        tools: [
+          { name: 'orders', operations: ['listOrders', 'createOrder'] },
+          { name: 'pets', operations: ['getPet', 'updatePet'] },
+        ],
+        http: {
+          oauth: {
+            issuer: 'https://login.example.com',
+            resource: RESOURCE,
+            permissions: {
+              byScope: {
+                // All tools, no writes; and the orders tool with every write it holds.
+                'mcp:read': { mode: 'read-only' },
+                'orders-admin': { tools: ['orders'], writes: ['*'] },
+                pets: { tools: ['orders'], writes: ['updatePet'] },
+              },
+            },
+          },
+        },
+      },
+    });
+    const both = withScopes(['mcp:read', 'orders-admin']);
+    // Seeing the pets tool (default) and holding writes: ['*'] (orders-admin) do not add up.
+    const updated = await rt.callTool(
+      'pets',
+      { operation: 'updatePet', params: { id: '1' } },
+      both,
+    );
+    expect(textOf(updated)).toContain('Unknown operation "updatePet"');
+    const viaCall = await rt.callTool(
+      'call_operation',
+      { operationId: 'updatePet', params: { id: '1' } },
+      both,
+    );
+    expect(textOf(viaCall)).toContain('that your access token does not allow');
+    expect(sent).toHaveLength(0);
+    const created = await rt.callTool('orders', { operation: 'createOrder', params: {} }, both);
+    expect(created.isError).toBeFalsy();
+    expect(sent.map((x) => x.method)).toEqual(['POST']);
+    // An entry whose writes are out of reach of its own tools is reported.
+    expect(rt.warnings).toContain(
+      'http.oauth.permissions.byScope.pets.writes: "updatePet" grants nothing, because no write it matches is in a tool this entry shows (orders).',
     );
   });
 
@@ -496,17 +587,83 @@ describe('permissions only narrow the server config', () => {
   });
 
   it('hides tools a caller may not use, and treats them as unknown', async () => {
-    const { rt, sent } = api({ byScope: { narrow: { tools: ['search_*'] } } });
+    const { rt, sent } = api({ default: { tools: ['search_*'] } });
     const ctx = withScopes(['narrow']);
     expect(rt.listTools(ctx).map((t) => t.name)).toEqual(['search_operations']);
     const res = await call(rt, 'createPet', ctx);
     expect(textOf(res)).toBe('Unknown tool "call_operation".');
     expect(sent).toHaveLength(0);
-    // Its search does not offer operations it cannot reach.
-    const found = jsonOf<{ results: Array<{ operationId: string; status: string }> }>(
+    // Its search does not list operations it cannot reach at all.
+    const found = jsonOf<{ results: Array<{ operationId: string }> }>(
       await rt.callTool('search_operations', { query: 'list pets' }, ctx),
-    ).results.find((r) => r.operationId === 'listPets');
-    expect(found?.status).toMatch(/^blocked: it is in no tool/);
+    ).results;
+    expect(found).toEqual([]);
+  });
+
+  it('keeps the operations of hidden groups out of call_operation and search_operations', async () => {
+    const ok = { '200': { description: 'ok' } };
+    const { rt, sent } = fakeApi({
+      paths: {
+        '/pets': { get: { operationId: 'listPets', responses: ok } },
+        '/admin/salaries': {
+          get: {
+            operationId: 'listSalaries',
+            parameters: [{ name: 'department', in: 'query', schema: { type: 'string' } }],
+            responses: ok,
+          },
+        },
+        '/status': { get: { operationId: 'getStatus', responses: ok } },
+      },
+      config: {
+        tools: [
+          { name: 'pets', operations: ['listPets'] },
+          { name: 'hr', operations: ['listSalaries'] },
+        ],
+        http: {
+          oauth: {
+            issuer: 'https://login.example.com',
+            resource: RESOURCE,
+            permissions: { default: { tools: ['pets', 'search_operations', 'call_operation'] } },
+          },
+        },
+      },
+    });
+    const staff = withScopes([]);
+    for (const id of ['listSalaries', 'listsalaries']) {
+      const res = await rt.callTool('call_operation', { operationId: id, params: {} }, staff);
+      expect(textOf(res)).toBe(
+        `Unknown operationId "${id}". Use search_operations to find valid ids.`,
+      );
+    }
+    const search = async (query: string, ctx?: CallContext) =>
+      jsonOf<{ results: Array<{ operationId: string; status: string }> }>(
+        await rt.callTool('search_operations', { query }, ctx),
+      );
+    expect((await search('salaries', staff)).results).toEqual([]);
+    // Operations in no group stay reachable through call_operation, and so do visible groups.
+    expect(
+      (await rt.callTool('call_operation', { operationId: 'getStatus' }, staff)).isError,
+    ).toBeFalsy();
+    expect(
+      (await rt.callTool('call_operation', { operationId: 'listPets' }, staff)).isError,
+    ).toBeFalsy();
+    expect(sent.map((x) => new URL(x.url).pathname)).toEqual(['/v1/status', '/v1/pets']);
+    // Without a caller, everything as before.
+    expect((await search('salaries')).results.map((r) => r.operationId)).toEqual(['listSalaries']);
+  });
+
+  it('keeps a configured group grouped for a caller that may use only one of its operations', () => {
+    const { rt } = api(
+      {},
+      {
+        tools: [{ name: 'pets', operations: ['listPets', 'createPet'] }],
+      },
+    );
+    const shape = (ctx?: CallContext) =>
+      Object.keys(rt.listTools(ctx).find((t) => t.name === 'pets')!.inputSchema.properties ?? {});
+    expect(shape()).toEqual(['operation', 'params', 'dryRun']);
+    // Read-only by default: only listPets is left, and the tool keeps its shape.
+    expect(shape(withScopes([]))).toEqual(['operation', 'params']);
   });
 
   it('keeps a bounded number of per-caller tool lists, and rebuilds evicted ones the same', async () => {
@@ -657,10 +814,13 @@ describe('SQL named queries', () => {
             issuer: 'https://login.example.com',
             resource: RESOURCE,
             permissions: {
+              // Every caller: the order count. Scopes add free-form reads, or one write.
+              default: { mode: 'read-only', tools: ['order_count'] },
               byScope: {
-                'db:read': { mode: 'read-only' },
-                'db:touch': { writes: ['touch_order'] },
-                'db:curated': { tools: ['order_count', 'touch_order'] },
+                'db:read': { mode: 'read-only', tools: ['list_tables', 'describe_table', 'query'] },
+                'db:touch': { tools: ['touch_order'], writes: ['touch_order'] },
+                // Shows the archive query, but grants no write: it stays hidden.
+                'db:look': { mode: 'read-only', tools: ['archive_order'] },
               },
             },
           },
@@ -677,36 +837,33 @@ describe('SQL named queries', () => {
     try {
       const builtIn = ['list_tables', 'describe_table', 'query'];
       expect(names(rt)).toEqual([...builtIn, 'archive_order', 'touch_order', 'order_count']);
+      expect(names(rt, scope('nothing'))).toEqual(['order_count']);
       expect(names(rt, scope('db:read'))).toEqual([...builtIn, 'order_count']);
-      expect(names(rt, scope('db:touch'))).toEqual([...builtIn, 'touch_order', 'order_count']);
-      expect(names(rt, scope('db:curated'))).toEqual(['touch_order', 'order_count']);
+      expect(names(rt, scope('db:touch'))).toEqual(['touch_order', 'order_count']);
+      expect(names(rt, scope('db:look'))).toEqual(['order_count']);
 
-      // Refused before a confirmation token is issued or anything runs.
-      const archived = await rt.callTool('archive_order', { id: 1 }, scope('db:read'));
-      expect(archived.isError).toBe(true);
-      expect(textOf(archived)).toContain('your access token allows read-only access');
-      expect(textOf(await rt.callTool('touch_order', { id: 1 }, scope('db:read')))).toContain(
-        'read-only access',
-      );
-      const other = await rt.callTool('archive_order', { id: 1 }, scope('db:touch'));
-      expect(textOf(other)).toContain('that your access token does not allow');
-      expect(textOf(other)).not.toContain('CONFIRMATION REQUIRED');
+      // A hidden named query answers exactly like a tool that does not exist, whatever the
+      // arguments: nothing about its parameters or the caller's entries.
+      for (const args of [{}, { id: 'x' }, { id: 1 }, { id: 999 }]) {
+        for (const [name, who] of [
+          ['archive_order', 'db:read'],
+          ['touch_order', 'db:read'],
+          ['archive_order', 'db:touch'],
+          ['archive_order', 'db:look'],
+          ['query', 'db:touch'],
+        ] as const) {
+          expect(textOf(await rt.callTool(name, args, scope(who)))).toBe(`Unknown tool "${name}".`);
+        }
+        expect(textOf(await rt.callTool('no_such_tool', args, scope('db:read')))).toBe(
+          'Unknown tool "no_such_tool".',
+        );
+      }
       const touched = jsonOf(await rt.callTool('touch_order', { id: 1 }, scope('db:touch')));
       expect(touched).toMatchObject({ affectedRows: 1 });
-      // Permissions come before argument rules; rules still apply to permitted callers.
-      expect(textOf(await rt.callTool('touch_order', { id: 999 }, scope('db:read')))).toContain(
-        'read-only access',
-      );
+      // Argument rules still apply to the callers who may use the query.
       expect(textOf(await rt.callTool('touch_order', { id: 999 }, scope('db:touch')))).toContain(
         'Refused by writes.rules for "touch_order"',
       );
-
-      // Tools outside `tools` do not exist for that caller, the free-form query included.
-      for (const name of ['query', 'archive_order']) {
-        expect(textOf(await rt.callTool(name, { sql: 'SELECT 1' }, scope('db:curated')))).toBe(
-          `Unknown tool "${name}".`,
-        );
-      }
       // Without a caller, the server config applies: the destructive query asks first.
       expect(textOf(await rt.callTool('archive_order', { id: 1 }))).toContain(
         'CONFIRMATION REQUIRED',
@@ -716,16 +873,78 @@ describe('SQL named queries', () => {
         .trim()
         .split('\n')
         .map((l) => JSON.parse(l) as Record<string, unknown>);
-      expect(entries.slice(0, 6)).toMatchObject([
-        { tool: 'archive_order', outcome: 'blocked', permissions: ['byScope.db:read'] },
-        { tool: 'touch_order', outcome: 'blocked', permissions: ['byScope.db:read'] },
-        { tool: 'archive_order', outcome: 'blocked', permissions: ['byScope.db:touch'] },
-        { tool: 'touch_order', outcome: 'sent', permissions: ['byScope.db:touch'] },
-        { tool: 'touch_order', outcome: 'blocked', permissions: ['byScope.db:read'] },
-        { tool: 'touch_order', outcome: 'blocked', permissions: ['byScope.db:touch'] },
+      expect(entries).toMatchObject([
+        { tool: 'touch_order', outcome: 'sent', permissions: ['default', 'byScope.db:touch'] },
+        { tool: 'touch_order', outcome: 'blocked', permissions: ['default', 'byScope.db:touch'] },
+        { tool: 'archive_order', outcome: 'confirmation-requested' },
       ]);
-      expect(entries[4]!.reason).toContain('read-only access');
       expect(entries.at(-1)).not.toHaveProperty('permissions');
+    } finally {
+      await rt.close();
+    }
+  });
+
+  it('decide named writes with the caller even past the visibility check', async () => {
+    const rt = sqlRuntime();
+    try {
+      // runNamed is reached only for visible tools; its own decision is a second line.
+      const named = (rt as unknown as { named: Map<string, unknown> }).named.get('touch_order');
+      const runNamed = (
+        rt as unknown as {
+          runNamed: (n: unknown, a: object, c: CallContext) => Promise<{ content: [] }>;
+        }
+      ).runNamed.bind(rt);
+      expect(textOf(await runNamed(named, { id: 1 }, scope('db:read')))).toContain(
+        'your access token allows read-only access',
+      );
+    } finally {
+      await rt.close();
+    }
+  });
+
+  it('refuse unknown tool names before anything else, the rate limit included', async () => {
+    const rt = new SqlRuntime(
+      parseConfig({
+        name: 'shop',
+        source: { type: 'sqlite', path: db },
+        limits: { maxCallsPerMinute: 1 },
+        sql: { queries: [{ name: 'order_count', description: 'n', sql: 'SELECT 1 AS n' }] },
+      }),
+      new SqliteDriver(db),
+      new Redactor(),
+    );
+    try {
+      for (let i = 0; i < 3; i++) {
+        expect(textOf(await rt.callTool(`nope_${i}`, {}))).toBe(`Unknown tool "nope_${i}".`);
+      }
+      expect((await rt.callTool('order_count', {})).isError).toBeFalsy();
+    } finally {
+      await rt.close();
+    }
+  });
+
+  it('refuse a huge unknown tool name at once, whatever the patterns', async () => {
+    const rt = new SqlRuntime(
+      parseConfig({
+        name: 'shop',
+        source: { type: 'sqlite', path: db },
+        sql: { queries: [{ name: 'sales_report', description: 'Sales', sql: 'SELECT 1' }] },
+        http: {
+          oauth: {
+            issuer: 'https://login.example.com',
+            resource: RESOURCE,
+            permissions: { default: { tools: ['*report*', '*e*e*e*x'] } },
+          },
+        },
+      }),
+      new SqliteDriver(db),
+      new Redactor(),
+    );
+    try {
+      const name = `${'report'.repeat(700_000)}\n`; // about 4 MB
+      const started = performance.now();
+      expect(textOf(await rt.callTool(name, {}, scope('analyst')))).toMatch(/^Unknown tool/);
+      expect(performance.now() - started).toBeLessThan(1_000);
     } finally {
       await rt.close();
     }
@@ -767,14 +986,18 @@ describe('config validation', () => {
     const { rt, sent } = api({
       byScope: { 'mcp:read': { tools: ['pets'] } },
       byClient: { app: { writes: ['createPett'] } },
-      default: { tools: ['call_*'], writes: ['*Pet'] },
+      default: { mode: 'read-only', tools: ['call_*'] },
     });
+    const noEffect = (path: string) =>
+      `http.oauth.permissions.${path}: adds nothing to permissions.default, so it has no effect. Every caller gets default, and entries can only add to it: to restrict callers, narrow default and grant more in entries.`;
     expect(rt.warnings).toEqual([
       'http.oauth.permissions.byScope.mcp:read.tools: no tool matches "pets" (typo?), so it shows nothing. Tools: search_operations, call_operation.',
+      noEffect('byScope.mcp:read'),
       'http.oauth.permissions.byClient.app.writes: no operation matches "createPett" (typo?), so it grants nothing.',
+      // byClient.app still adds something: without `tools`, it shows search_operations.
     ]);
     // A name that matches nothing only fails to grant: these callers get less, never more.
-    expect(rt.listTools(withScopes(['mcp:read']))).toEqual([]);
+    expect(rt.listTools(withScopes(['mcp:read'])).map((t) => t.name)).toEqual(['call_operation']);
     const app = withScopes([], { client: 'app', subject: 'u' });
     expect(textOf(await call(rt, 'createPet', app))).toContain(
       'that your access token does not allow',
@@ -810,13 +1033,24 @@ describe('config validation', () => {
           new SqliteDriver(db),
           new Redactor(),
         );
-      const rt = build({ byScope: { a: { tools: ['run_sql'], writes: ['archive'] } } });
+      const rt = build({
+        default: { mode: 'read-only', tools: ['order_count'] },
+        byScope: { a: { tools: ['run_sql'], writes: ['archive'] } },
+      });
       expect(rt.warnings).toEqual([
         'http.oauth.permissions.byScope.a.tools: no tool matches "run_sql" (typo?), so it shows nothing. Tools: list_tables, describe_table, query, order_count.',
         'http.oauth.permissions.byScope.a.writes: no named query matches "archive" (typo?), so it grants nothing.',
+        'http.oauth.permissions.byScope.a: adds nothing to permissions.default, so it has no effect. Every caller gets default, and entries can only add to it: to restrict callers, narrow default and grant more in entries.',
       ]);
-      expect(rt.listTools({ caller: { subject: 'u' }, scopes: ['a'] })).toEqual([]);
-      expect(build({ byScope: { a: { tools: ['query', 'order_count'] } } }).warnings).toEqual([]);
+      expect(rt.listTools({ caller: { subject: 'u' }, scopes: ['a'] }).map((t) => t.name)).toEqual([
+        'order_count',
+      ]);
+      expect(
+        build({
+          default: { mode: 'read-only', tools: ['list_tables'] },
+          byScope: { a: { tools: ['query', 'order_count'] } },
+        }).warnings,
+      ).toEqual([]);
     } finally {
       t.cleanup();
     }
@@ -884,24 +1118,27 @@ describe.skipIf(!duck)('DuckDB sources', () => {
         oauth: {
           issuer: 'https://login.example.com',
           resource: RESOURCE,
-          permissions: { byScope: { analyst: { tools: ['order_count'] } }, default: {} },
+          permissions: {
+            default: { tools: ['order_count'] },
+            byScope: { analyst: { tools: ['list_tables', 'describe_table', 'query'] } },
+          },
         },
       },
     });
     const rt = new SqlRuntime(config, new DuckdbDriver(file), new Redactor());
     try {
-      const analyst: CallContext = { caller: { subject: 'a' }, scopes: ['analyst'] };
-      expect(rt.listTools(analyst).map((x) => x.name)).toEqual(['order_count']);
-      expect(textOf(await rt.callTool('query', { sql: 'SELECT 1' }, analyst))).toBe(
+      const other: CallContext = { caller: { subject: 'b' }, scopes: [] };
+      expect(rt.listTools(other).map((x) => x.name)).toEqual(['order_count']);
+      expect(textOf(await rt.callTool('query', { sql: 'SELECT 1' }, other))).toBe(
         'Unknown tool "query".',
       );
       expect(
-        jsonOf<{ rows: unknown[][] }>(await rt.callTool('order_count', {}, analyst)).rows,
+        jsonOf<{ rows: unknown[][] }>(await rt.callTool('order_count', {}, other)).rows,
       ).toHaveLength(1);
-      // The default entry, {}, narrows nothing: every read tool, as without a caller.
-      const other: CallContext = { caller: { subject: 'b' }, scopes: [] };
-      expect(rt.listTools(other).map((x) => x.name)).toEqual(rt.listTools().map((x) => x.name));
-      expect((await rt.callTool('query', { sql: 'SELECT 1 AS one' }, other)).isError).toBeFalsy();
+      // The analyst scope adds the free-form reads: every read tool, as without a caller.
+      const analyst: CallContext = { caller: { subject: 'a' }, scopes: ['analyst'] };
+      expect(rt.listTools(analyst).map((x) => x.name)).toEqual(rt.listTools().map((x) => x.name));
+      expect((await rt.callTool('query', { sql: 'SELECT 1 AS one' }, analyst)).isError).toBeFalsy();
     } finally {
       await rt.close();
     }

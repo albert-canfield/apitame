@@ -63,6 +63,45 @@ describe('policy.decide', () => {
     expect(matchesAny('a.b', ['a.b'])).toBe(true);
     expect(matchesAny('axb', ['a.b'])).toBe(false);
   });
+
+  it('matches * against any run of characters, the whole id and case-sensitively', () => {
+    const cases: Array<[string, string, boolean]> = [
+      ['', '*', true],
+      ['', '', true],
+      ['a', '', false],
+      ['abc', '*', true],
+      ['abc', 'a*', true],
+      ['abc', '*c', true],
+      ['abc', 'a*c', true],
+      ['ac', 'a*c', true],
+      ['abc', 'a**c', true],
+      ['abcabc', '*bc*bc', true],
+      ['abcab', '*bc*bc', false],
+      ['issues/list-for-repo', 'issues/*', true],
+      ['Issues/list', 'issues/*', false],
+      ['xissues/list', 'issues/*', false],
+      ['create.pet', 'create.*', true],
+      ['createXpet', 'create.*', false],
+      ['a(b)[c]$^+?', 'a(b)*?', true],
+      ['line\nbreak', 'line*', true],
+      ['aaa', '*aaaa', false],
+      ['mississippi', 'm*iss*ppi', true],
+      ['mississippi', 'm*iss*pi*x', false],
+    ];
+    for (const [id, pattern, expected] of cases) {
+      expect([id, pattern, matchesAny(id, [pattern])]).toEqual([id, pattern, expected]);
+    }
+  });
+
+  it('takes linear time on ids crafted against backtracking', () => {
+    const id = `${'report'.repeat(700_000)}\n`; // about 4 MB
+    const started = performance.now();
+    for (const pattern of ['*report*', '*r*e*p*o*r*t*x', '*report*report*z']) {
+      expect(matchesAny(id, [pattern])).toBe(pattern === '*report*');
+    }
+    expect(matchesAny('a'.repeat(4_000_000), ['*a*a*a*a*b'])).toBe(false);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
 });
 
 describe('ConfirmationStore', () => {
