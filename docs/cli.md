@@ -22,7 +22,7 @@ apitame init ./data.duckdb                          # or duckdb:./data.duckdb (n
 apitame init --skills-only                          # regenerate skills from the existing config
 ```
 
-DuckDB's driver (`@duckdb/node-api`) is not installed with apitame. Run any command with it through npx, `npx -p apitame -p @duckdb/node-api apitame init ./data.duckdb`, or install both packages; without it the command stops with that hint and writes nothing. See [DuckDB](sql.md#duckdb).
+DuckDB's driver (`@duckdb/node-api`) is not installed with apitame. Run any command with it through npx, `npx -p apitame -p @duckdb/node-api@1.5.6-r.1 apitame init ./data.duckdb` (the tested release), or install both packages; without it the command stops with that hint and writes nothing. See [DuckDB](sql.md#duckdb).
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -133,10 +133,10 @@ $ apitame doctor
 | Environment | Every `${VAR}` the config needs is set (after loading `.env`). |
 | writes.* | Every allowlist or confirm pattern matches at least one operation (catches typos). |
 | API | Calls the first GET that needs no input, to test DNS, TLS and credentials. 401 and 403 are failures. |
-| DuckDB driver | For DuckDB sources: `@duckdb/node-api` loads, and its DuckDB version. |
+| DuckDB driver | For DuckDB sources: `@duckdb/node-api` loads in a child process, and its DuckDB version (a warning when it is newer than the tested release). |
 | Database | Connects, lists tables, and checks whether the role (or the SQLite or DuckDB file) could write. |
 | Skills | Generated skills match the current config, and installed copies in `.claude/skills` or `.agents/skills` match too. |
-| Clients | Which client configs in the current folder reference this server, and for DuckDB sources, whether they start it with `@duckdb/node-api`. |
+| Clients | Which client configs in the current folder reference this server, and for DuckDB sources, whether they start it with `@duckdb/node-api` at the tested version. |
 
 | Option | Description |
 | --- | --- |
@@ -168,4 +168,4 @@ Prints, or writes with `--write`, the configuration for an MCP client, and insta
 
 Paths are written relative to the project (`${CLAUDE_PROJECT_DIR:-.}/...` or `${workspaceFolder}/...`) when the config is inside the current folder, so the files can be committed and shared. Secrets are never written to client configs.
 
-For a DuckDB source the launcher adds the driver: `npx -y -p apitame@<major.minor> -p @duckdb/node-api apitame serve --config ...`.
+For a DuckDB source the launcher adds the driver, pinned to the tested release: `npx -y -p apitame@<major.minor> -p @duckdb/node-api@1.5.6-r.1 apitame serve --config ...`.

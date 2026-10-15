@@ -3,7 +3,7 @@ import type { ConfigInput, ToolGroupConfig } from '../config/schema.js';
 import type { OpenApiDocument } from '../sources/openapi/load.js';
 import type { Operation } from '../sources/openapi/operations.js';
 import { isObject } from '../sources/openapi/schema.js';
-import { apitameCommand } from '../sources/sql/duckdb-package.js';
+import { apitameCommand, DUCKDB_NPX } from '../sources/sql/duckdb-package.js';
 
 const DOCS = 'https://github.com/albert-canfield/apitame/blob/main/docs/configuration.md';
 
@@ -282,7 +282,11 @@ export function renderSqlConfig(input: SqlConfigInput): string {
       maxCallsPerMinute: 120,
       maxWritesPerMinute: 20,
     },
-    sql: { queries: [], tables: { allow: [], deny: [] } },
+    sql: {
+      queries: [],
+      tables: { allow: [], deny: [] },
+      ...(input.type === 'duckdb' ? { duckdb: { memoryLimit: '1GB', threads: 2 } } : {}),
+    },
     writes: { allow: [], confirm: [] },
     confirmation: { method: 'auto', ttlSeconds: 300 },
     audit: { include: 'writes' },
@@ -301,7 +305,7 @@ export function renderSqlConfig(input: SqlConfigInput): string {
     input.type === 'postgres' || input.type === 'mysql'
       ? 'The connection string comes from an environment variable (or .env next to this file).\nUse a read-only database role: https://github.com/albert-canfield/apitame/blob/main/docs/sql.md#a-read-only-role'
       : duckdb
-        ? 'Path to the DuckDB file, relative to this config. It is opened read-only, with file access and extensions turned off.\nRun apitame with the DuckDB driver: npx -p apitame -p @duckdb/node-api apitame <command>'
+        ? `Path to the DuckDB file, relative to this config. It is opened read-only, with file access and extensions turned off.\nRun apitame with the DuckDB driver: ${DUCKDB_NPX} <command>`
         : 'Path to the database file, relative to this config. It is opened read-only.',
   );
   comment(
@@ -327,6 +331,12 @@ export function renderSqlConfig(input: SqlConfigInput): string {
       '    params:',
       '      customer_id: { type: integer }',
       'tables.allow / tables.deny: limit which tables can be listed, described and queried.',
+      ...(duckdb
+        ? [
+            'duckdb: memory and threads for each call. DuckDB runs in a separate process that is stopped',
+            'when a query takes longer than limits.timeoutMs or uses too much memory; results never spill to disk.',
+          ]
+        : []),
     ].join('\n'),
   );
   comment(

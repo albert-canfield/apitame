@@ -134,7 +134,7 @@ export async function initCommand(source: string | undefined, opts: InitOptions)
   else {
     // Fail before writing anything when the optional DuckDB driver is missing.
     if (detected.kind === 'duckdb')
-      await (await import('../../sources/sql/duckdb.js')).loadDuckdb();
+      await (await import('../../sources/sql/duckdb.js')).probeDuckdb();
     await initSql(detected, outDir, configPath, opts);
   }
 }

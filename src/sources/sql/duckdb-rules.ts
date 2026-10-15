@@ -4,12 +4,15 @@ import type { Token } from './lexer.js';
  * DuckDB functions that are refused anywhere in a query: they run SQL passed as a
  * string, read files or other databases, read a table by name (escaping the table
  * allow and deny lists), expose secrets or logs, or change the state of the
- * engine. DuckDB runs several of these even on a read-only database with a locked
- * configuration: `query()` and `query_table()` run, `enable_logging(storage =
- * 'stdout')` prints every later query to standard output (the MCP channel over
- * stdio), and `enable_peg_parser()` switches the parser for every connection.
+ * engine, or read settings (DuckDB copies a proxy URL, password included, from the
+ * environment into a setting). DuckDB runs several of these even on a read-only
+ * database with a locked configuration: `query()` and `query_table()` run,
+ * `enable_logging(storage = 'stdout')` prints every later query to standard output,
+ * and `enable_peg_parser()` switches the parser for every connection.
  */
 export const DUCKDB_DENIED_FUNCTIONS = new Set([
+  'current_setting',
+  'getvariable',
   'query',
   'query_table',
   'json_execute_serialized_sql',
@@ -41,8 +44,14 @@ export const DUCKDB_DENIED_FUNCTIONS = new Set([
   'copy_database',
 ]);
 
-/** File and foreign database readers: read_csv, read_parquet, parquet_metadata, sqlite_scan, ... */
+/**
+ * File and foreign database readers (read_csv, read_blob, parquet_metadata, sqlite_scan),
+ * and the catalog functions (duckdb_tables(), duckdb_settings(), pragma_table_info()),
+ * which show every table, its DDL, settings and file paths, past the table lists.
+ */
 export const DUCKDB_DENIED_PREFIXES = [
+  'duckdb_',
+  'pragma_',
   'read_',
   'parquet_',
   'iceberg_',
@@ -62,10 +71,36 @@ export const DUCKDB_DENIED_TABLES = [
   'duckdb_log_contexts',
 ];
 
+/** Schemas of the DuckDB catalog views (information_schema.tables, pg_catalog.pg_settings). */
+export const DUCKDB_CATALOG_SCHEMAS = ['information_schema', 'pg_catalog'];
+
+/**
+ * Whether a table reference names the DuckDB catalog: duckdb_* and pragma_* views,
+ * sqlite_master and friends, pg_catalog views (pg_settings holds every setting) and
+ * information_schema. The query tool cannot read the catalog on DuckDB: list_tables and
+ * describe_table show structure and apply the table allow and deny lists.
+ */
+export function isDuckdbCatalog(ref: {
+  catalog?: string | null;
+  schema: string | null;
+  table: string;
+}): boolean {
+  const name = ref.table.toLowerCase();
+  const schema = ref.schema?.toLowerCase();
+  return (
+    /^(duckdb_|pragma_|sqlite_|pg_)/.test(name) ||
+    (schema !== undefined && DUCKDB_CATALOG_SCHEMAS.includes(schema)) ||
+    ref.catalog?.toLowerCase() === 'system'
+  );
+}
+
+export const DUCKDB_CATALOG_REFUSAL =
+  'The DuckDB catalog (duckdb_* views and functions, information_schema, pg_catalog, sqlite_master, SHOW, DESCRIBE) is not available in query. Use list_tables and describe_table, which apply the table lists.';
+
 /**
  * The only table functions a query may call in FROM. Everything else is refused,
  * so a table function added by a future DuckDB release is refused until it is
- * reviewed. These generate rows or read the catalog (structure, not data).
+ * reviewed. These generate rows from their arguments and read no table.
  */
 export const DUCKDB_TABLE_FUNCTIONS = new Set([
   'range',
@@ -75,30 +110,6 @@ export const DUCKDB_TABLE_FUNCTIONS = new Set([
   'repeat_row',
   'json_each',
   'json_tree',
-  'summary',
-  'duckdb_columns',
-  'duckdb_constraints',
-  'duckdb_databases',
-  'duckdb_dependencies',
-  'duckdb_extensions',
-  'duckdb_functions',
-  'duckdb_indexes',
-  'duckdb_keywords',
-  'duckdb_optimizers',
-  'duckdb_schemas',
-  'duckdb_sequences',
-  'duckdb_settings',
-  'duckdb_tables',
-  'duckdb_types',
-  'duckdb_views',
-  'pragma_table_info',
-  'pragma_show',
-  'pragma_version',
-  'pragma_platform',
-  'pragma_database_size',
-  'pragma_collations',
-  'pg_timezone_names',
-  'icu_calendar_names',
 ]);
 
 export function isDeniedDuckdbFunction(bare: string): boolean {
@@ -198,10 +209,17 @@ export function duckdbFromCheck(stmt: Token[]): string | undefined {
     if (stmt[j + 1]?.type === 'lparen') {
       const fn = last.value.toLowerCase();
       if (!DUCKDB_TABLE_FUNCTIONS.has(fn)) {
-        return `Table function ${fn}() is not allowed. Allowed table functions: ${[...DUCKDB_TABLE_FUNCTIONS].slice(0, 6).join(', ')} and the duckdb_* catalog functions.`;
+        return `Table function ${fn}() is not allowed. Allowed table functions: ${[...DUCKDB_TABLE_FUNCTIONS].join(', ')}.`;
       }
     } else if (last.type === 'quoted' && looksLikeFilePath(last.value)) {
       return `Reading files is not allowed: DuckDB reads "${last.value}" as a file path.`;
+    } else {
+      const parts: string[] = [];
+      for (let p = k; p <= j; p += 2) parts.push((stmt[p] as Token).value);
+      const table = parts[parts.length - 1] ?? '';
+      const schema = parts.length >= 2 ? (parts[parts.length - 2] ?? null) : null;
+      const catalog = parts.length >= 3 ? (parts[parts.length - 3] ?? null) : null;
+      if (isDuckdbCatalog({ catalog, schema, table })) return DUCKDB_CATALOG_REFUSAL;
     }
     k = j;
   }

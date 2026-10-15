@@ -229,7 +229,7 @@ const DIALECT_KEYWORDS: Record<Dialect, string[]> = {
   postgres: [],
   sqlite: [],
   mysql: ['LOCK', 'SHARE', 'HANDLER', 'OUTFILE', 'DUMPFILE', 'LOAD'],
-  duckdb: ['INSTALL', 'LOAD', 'EXPORT', 'IMPORT', 'SET', 'RESET'],
+  duckdb: ['INSTALL', 'LOAD', 'EXPORT', 'IMPORT', 'SET', 'RESET', 'SHOW', 'DESCRIBE', 'SUMMARIZE'],
 };
 
 /** Schemas that hold credentials or other sessions' statements. */
@@ -237,7 +237,8 @@ const SYSTEM_SCHEMAS: Record<Dialect, string[]> = {
   postgres: [],
   sqlite: [],
   mysql: ['mysql', 'performance_schema', 'sys'],
-  duckdb: [],
+  // The catalog shows every table and setting past the table lists (see duckdb-rules.ts).
+  duckdb: ['information_schema', 'pg_catalog'],
 };
 
 /** Statements a query may start with. DuckDB also accepts FROM-first queries (`FROM orders`). */

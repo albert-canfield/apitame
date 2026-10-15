@@ -18,7 +18,7 @@ npx apitame init '$DATABASE_URL'
 npx apitame init ./shop.db
 
 # DuckDB: the driver is an optional extra, so run apitame together with it (see DuckDB below)
-npx -p apitame -p @duckdb/node-api apitame init ./data.duckdb
+npx -p apitame -p @duckdb/node-api@1.5.6-r.1 apitame init ./data.duckdb
 
 npx apitame test       # describes every table, runs a sample query, tries known injection payloads
 npx apitame inspect
@@ -100,26 +100,28 @@ DuckDB's Node.js driver, `@duckdb/node-api`, ships one native binary per platfor
 
 ```bash
 # npx: both packages in one temporary install (works for every command)
-npx -p apitame -p @duckdb/node-api apitame init ./data.duckdb
-npx -p apitame -p @duckdb/node-api apitame test
+npx -p apitame -p @duckdb/node-api@1.5.6-r.1 apitame init ./data.duckdb
+npx -p apitame -p @duckdb/node-api@1.5.6-r.1 apitame test
 
 # pnpm
-pnpm --package=apitame --package=@duckdb/node-api dlx apitame init ./data.duckdb
+pnpm --package=apitame --package=@duckdb/node-api@1.5.6-r.1 dlx apitame init ./data.duckdb
 
 # a global install
-npm install -g apitame @duckdb/node-api
+npm install -g apitame @duckdb/node-api@1.5.6-r.1
 
 # or a project install
-npm install apitame @duckdb/node-api
+npm install apitame @duckdb/node-api@1.5.6-r.1
 ```
 
 Without the driver, every command that needs it stops with a message that shows the `npx -p` line above, and `init` writes nothing. `add-to` writes client configs that start the server the same way, so MCP clients get the driver too:
 
 ```json
-{ "command": "npx", "args": ["-y", "-p", "apitame@<major.minor>", "-p", "@duckdb/node-api", "apitame", "serve", "--config", "..."] }
+{ "command": "npx", "args": ["-y", "-p", "apitame@<major.minor>", "-p", "@duckdb/node-api@1.5.6-r.1", "apitame", "serve", "--config", "..."] }
 ```
 
-`doctor` checks that the driver loads, shows the DuckDB version, and warns when a client config in the folder starts the server without it. DuckDB releases are versioned as prereleases (`1.5.6-r.1`), so the peer dependency accepts any version and apitame checks at startup that DuckDB is 1.4 or later. It has been tested with 1.4.5 and 1.5.6.
+The driver is pinned to the release apitame is tested with (1.5.6-r.1), so every start runs the same DuckDB instead of whatever is newest that day. DuckDB releases are versioned as prereleases, so the peer dependency itself accepts any version: apitame refuses DuckDB older than 1.4 and warns (in the server log and in `doctor`) when the driver is newer than the tested minor release. `doctor` also checks that the driver loads and warns when a client config in the folder starts the server without it, or with a different version.
+
+To move to a newer DuckDB release, update the `@duckdb/node-api` development dependency and `DUCKDB_TESTED_VERSION` in `src/sources/sql/duckdb-package.ts` together, run the test suite (the DuckDB tests compare the lexer with DuckDB's own parser and check the parse tree shapes apitame reads), and update the version in this page and in the README.
 
 ### Sources
 
@@ -129,33 +131,43 @@ Without the driver, every command that needs it stops with a message that shows 
 source:
   type: duckdb
   path: ./data.duckdb
+sql:
+  duckdb:
+    memoryLimit: 1GB   # DuckDB memory_limit for each call
+    threads: 2         # DuckDB threads for each call
 ```
 
 ### What runs
 
 - Free-form `query` and named read queries. DuckDB syntax works: `FROM orders LIMIT 5`, `GROUP BY ALL`, `QUALIFY`, `SELECT * EXCLUDE (col)`, list and struct literals, lambdas.
 - No named write queries: the file is always opened read-only, and a config with `write: true` on a DuckDB source is refused when it loads.
+- No catalog: the DuckDB catalog (`duckdb_tables()` and the other `duckdb_*` views and functions, `information_schema`, `pg_catalog`, `sqlite_master`, `pragma_*`, `SHOW`, `DESCRIBE` and `SUMMARIZE`) is not available in `query`, because it shows every table, its DDL, row counts, settings and file paths, past `sql.tables.allow` and `deny`. Use `list_tables` and `describe_table`, which apply the lists.
+- DuckDB runs in a separate process. All work for a call (opening the file, parsing, planning, running and converting the result) happens there, one call at a time, and `limits.timeoutMs` covers all of it: DuckDB ignores `interrupt()` while it plans a query or folds constants (a 600-way self-join, `len(list_sort(range(30000000)))`), so apitame stops the process instead and starts a new one on the next call. A query that runs that process out of memory, or crashes it, ends only that call, with an error that says so; the MCP server keeps running.
+- Resources are bounded per call: `memory_limit` (`sql.duckdb.memoryLimit`, default 1GB), `threads` (`sql.duckdb.threads`, default 2) and no spilling to disk (`temp_directory` is empty and `max_temp_directory_size` is 0), so a query that needs more memory fails instead of writing temporary files next to the database. DuckDB does not count every list value against `memory_limit`; the separate process and the timeout cover those.
+- Results are read until the row limit or `limits.maxResponseBytes`, whichever comes first, checking the size of lists, maps and structs before reading them: a row that alone is larger than the limit (a list of 25 million items, for example) is refused with a message instead of being built in memory.
 - Each call opens the file in its own read-only DuckDB instance and closes it afterwards (a few milliseconds). Other programs can write to the file between calls, and every call sees the latest data.
 - DuckDB lets one process write to a file or several read it, not both. While another program (a DuckDB shell, a notebook, a data job) has the file open for writing, calls fail with a message that says so; close it, or point apitame at a copy of the file.
 - Results: integers come back as numbers (as strings above 2^53), `DECIMAL` as strings so no digits are lost, dates and timestamps as strings, lists and structs as JSON, and `BLOB` values as `<binary N bytes>`.
 
 ### How a DuckDB query is checked
 
-1. **Lexer.** PostgreSQL's quoting rules, which DuckDB follows: nested block comments, `E''` strings with backslash escapes, dollar quoting, and a plain backslash in standard strings (so `SELECT '\'; DELETE FROM t; --'` is two statements, as DuckDB reads it). A query may also start with `FROM`. On top of the shared keyword list it refuses `INSTALL`, `LOAD`, `EXPORT`, `IMPORT`, `SET` and `RESET` (`ATTACH`, `DETACH`, `PRAGMA`, `COPY` and `CHECKPOINT` are refused for every engine). It refuses a string in a FROM clause (`FROM 'orders.csv'`, which DuckDB reads as a file) and a quoted table name that looks like a path, and it only accepts reviewed table functions in FROM.
-2. **Parser.** No bundled SQL parser reads DuckDB's dialect (the PostgreSQL parser refuses `EXCLUDE`, `GROUP BY ALL`, `QUALIFY` and FROM-first queries), so apitame asks DuckDB: `json_serialize_sql(?)` on a separate in-memory database with the query bound as a parameter. The query is parsed there, never run. The result must be exactly one SELECT with no error. apitame walks the parse tree for table references, resolving CTE names per scope as DuckDB does (a CTE never hides a real table of the same name in its own body or in outer queries), for function calls and for table functions, and refuses any tree shape it does not know. This layer cannot disagree with DuckDB about what a query means, but it is not independent of DuckDB either: a DuckDB parser bug would affect both.
-3. **Database.** The file is opened with `access_mode=READ_ONLY`, `enable_external_access=false` (no `read_csv`, no `FROM 'file.csv'`, no `COPY`, `ATTACH` or `INSTALL`, no network), extension autoloading and autoinstalling off, community and unsigned extensions off, persistent secrets off, and `lock_configuration=true`, so `SET` cannot undo any of it. apitame reads these settings back and refuses to run anything if one did not apply. Then DuckDB's own `extractStatements()` must find exactly one statement and `prepare()` must report a SELECT, rows are streamed until the row limit, and `interrupt()` stops the query at `limits.timeoutMs`.
+1. **Lexer.** PostgreSQL's quoting rules, which DuckDB follows: nested block comments, `E''` strings with backslash escapes, dollar quoting, a plain backslash in standard strings (so `SELECT '\'; DELETE FROM t; --'` is two statements, as DuckDB reads it), and `--` comments that end at a carriage return. A query may also start with `FROM`. On top of the shared keyword list it refuses `INSTALL`, `LOAD`, `EXPORT`, `IMPORT`, `SET`, `RESET`, `SHOW`, `DESCRIBE` and `SUMMARIZE` (`ATTACH`, `DETACH`, `PRAGMA`, `COPY` and `CHECKPOINT` are refused for every engine). It refuses a string in a FROM clause (`FROM 'orders.csv'`, which DuckDB reads as a file), a quoted table name that looks like a path, catalog tables and views, and table functions that are not on the reviewed list.
+2. **Parser.** No bundled SQL parser reads DuckDB's dialect (the PostgreSQL parser refuses `EXCLUDE`, `GROUP BY ALL`, `QUALIFY` and FROM-first queries), so apitame asks DuckDB: `json_serialize_sql(?)` on a separate in-memory database with the query bound as a parameter. The query is parsed there, never run. The result must be exactly one SELECT with no error. apitame walks the parse tree for table references, resolving CTE names per scope as DuckDB does (a CTE never hides a real table of the same name in its own body or in outer queries), for function calls and for table functions, refuses catalog references and `SHOW`, `DESCRIBE` and `SUMMARIZE`, and refuses any tree shape it does not know. This layer cannot disagree with DuckDB about what a query means, but it is not independent of DuckDB either: a DuckDB parser bug would affect both.
+3. **Database.** In the separate process, the file is opened with `access_mode=READ_ONLY`, `enable_external_access=false`, extension autoloading and autoinstalling off, community and unsigned extensions off, persistent secrets off, an explicit `http_proxy` placeholder, the memory, thread and spill limits above, and `lock_configuration=true`, so `SET` cannot undo any of it. apitame reads every one of these settings back and refuses to run anything if one did not apply. Then DuckDB's own `extractStatements()` must find exactly one statement and `prepare()` must report a SELECT, and rows are streamed until the row limit or the byte budget. `enable_external_access=false` stops other files (`read_csv`, `FROM 'file.csv'`, `COPY`, `ATTACH` of other files, `INSTALL`) and the network, but DuckDB still allows the database file itself and its write-ahead log: `read_blob('data.duckdb')` returns raw pages, denied tables included, and `ATTACH 'data.duckdb'` works. The lexer and the parser refuse those readers by name (every `read_*` function, `ATTACH`, a path in FROM), and the tests check that both do.
 4. **Role.** DuckDB has no users or roles. A file that is read-only for the user running apitame is the layer that does not depend on apitame; `doctor` and `init` report whether the file is writable.
+
+The separate process starts with an empty environment (on Windows, only the variables Node needs to start), so DuckDB cannot pick up a proxy URL with its password, credentials or `NODE_OPTIONS` from your shell, and its output never reaches the MCP channel.
 
 ### DuckDB functions that are refused
 
-DuckDB runs some functions even on a read-only database with a locked configuration: `query()` and `query_table()` run SQL strings and read tables by name, `enable_logging(storage = 'stdout')` prints every later query to standard output (the MCP channel over stdio), and `enable_peg_parser()` switches the SQL parser for every connection. apitame refuses these by name in the lexer and the parser, and because each call uses a fresh DuckDB instance, nothing such a function changes could outlive one call even if it got through.
+DuckDB runs some functions even on a read-only database with a locked configuration: `query()` and `query_table()` run SQL strings and read tables by name, `enable_logging(storage = 'stdout')` prints every later query to standard output, and `enable_peg_parser()` switches the SQL parser for every connection. apitame refuses these by name in the lexer and the parser, and because each call uses a fresh DuckDB instance in a process whose output is discarded, nothing such a function changes could outlive one call even if it got through.
 
-- Run SQL strings or read tables by name: `query`, `query_table`, `json_execute_serialized_sql`, `json_serialize_plan`, `duckdb_table_sample`, `pragma_storage_info` (it holds minimum and maximum values).
+- Run SQL strings or read tables by name: `query`, `query_table`, `json_execute_serialized_sql`, `json_serialize_plan`.
 - Read files or other databases: every `read_*` function (`read_csv`, `read_json`, `read_parquet`, `read_text`, `read_blob` and their variants), `glob`, `sniff_csv`, `parquet_*` metadata readers, `iceberg_*`, `delta_*`, `sqlite_*`, `postgres_*`, `mysql_*`, `arrow_*`, and any function ending in `_scan`, `_attach`, `_query` or `_execute`.
+- Read settings, variables, the catalog, secrets or logs: `current_setting`, `getvariable`, every `duckdb_*` and `pragma_*` function (`duckdb_settings`, `duckdb_tables`, `duckdb_databases`, `duckdb_secrets`, `duckdb_logs`, `pragma_table_info`, `pragma_storage_info` and the rest), `which_secret`, `getenv`.
 - Change the engine: `enable_logging`, `disable_logging`, `truncate_duckdb_logs`, `enable_profiling`, `disable_profiling`, `enable_peg_parser`, `disable_peg_parser`, `check_peg_parser`, `checkpoint`, `force_checkpoint`, `write_log`, `sleep_ms`.
-- Secrets and logs: `duckdb_secrets`, `which_secret`, `getenv`, `duckdb_logs`, `duckdb_logs_parsed`, `duckdb_log_contexts`.
 
-Table functions in FROM must be on a reviewed list: `range`, `generate_series`, `unnest`, `repeat`, `repeat_row`, `json_each`, `json_tree`, `summary`, the `duckdb_*` catalog functions (`duckdb_tables`, `duckdb_columns`, `duckdb_constraints` and others), `pragma_table_info`, `pragma_show`, `pragma_version`, `pragma_platform`, `pragma_database_size`, `pragma_collations`, `pg_timezone_names` and `icu_calendar_names`. A table function added by a future DuckDB release is refused until it is reviewed.
+Table functions in FROM must be on a reviewed list: `range`, `generate_series`, `unnest`, `repeat`, `repeat_row`, `json_each` and `json_tree`. They build rows from their arguments and read no table. A table function added by a future DuckDB release is refused until it is reviewed.
 
 ## Named queries
 
@@ -204,7 +216,7 @@ The lists apply to `list_tables`, `describe_table`, `query` (including joins, su
 
 CTE names are resolved the way the database does, so `WITH customers AS (SELECT * FROM customers)` still counts as reading the real `customers` table. Functions that run a SQL string or read a table by name (`ts_stat`, `crosstab`, `pgstattuple` and similar) are refused, and so are planner statistics (`pg_stats`, `sqlite_stat4`, MySQL's `column_statistics`), which hold sampled values.
 
-The lists hide data, not structure. Catalog queries (`information_schema.columns`, `sqlite_master`, `pragma_table_info`) still show the names and columns of denied tables. A view, partition or child table of a denied table is a table of its own: deny it too, or better, keep sensitive tables out of reach with the database role.
+The lists hide data, not structure. Catalog queries (`information_schema.columns`, `sqlite_master`, `pragma_table_info`) still show the names and columns of denied tables, except on DuckDB, where `query` cannot read the catalog at all. A view, partition or child table of a denied table is a table of its own: deny it too, or better, keep sensitive tables out of reach with the database role.
 
 ## Limits
 

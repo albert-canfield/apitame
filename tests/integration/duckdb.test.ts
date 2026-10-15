@@ -1,6 +1,7 @@
-import { spawn } from 'node:child_process';
-import { chmodSync, copyFileSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { chmodSync, copyFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { detectSource } from '../../src/cli/detect.js';
 import { parseConfig } from '../../src/config/load.js';
@@ -9,9 +10,11 @@ import { SqlRuntime } from '../../src/server/sql-runtime.js';
 import {
   DUCKDB_READ_ONLY_SETTINGS,
   DuckdbDriver,
-  loadDuckdb,
+  probeDuckdb,
+  resolveDuckdb,
 } from '../../src/sources/sql/duckdb.js';
 import { duckdbParserCheck, guardDuckdbSelect } from '../../src/sources/sql/duckdb-guard.js';
+import { guardSelect } from '../../src/sources/sql/guard.js';
 import { splitStatements, tokenize } from '../../src/sources/sql/lexer.js';
 import { createDuckdbShop, duckdbForTests, jsonOf, ROOT, tempDir, textOf } from '../helpers.js';
 
@@ -34,11 +37,22 @@ function runtime(extra: Record<string, unknown> = {}, path = file) {
     limits: { rowLimit: 25, timeoutMs: 3_000 },
     ...extra,
   });
-  return new SqlRuntime(config, new DuckdbDriver(path, duck!), new Redactor());
+  return new SqlRuntime(
+    config,
+    new DuckdbDriver(path, {
+      memoryLimit: config.sql.duckdb?.memoryLimit,
+      threads: config.sql.duckdb?.threads,
+    }),
+    new Redactor(),
+  );
 }
 
-async function withDriver<T>(fn: (d: DuckdbDriver) => Promise<T>, path = file): Promise<T> {
-  const driver = new DuckdbDriver(path, duck!);
+async function withDriver<T>(
+  fn: (d: DuckdbDriver) => Promise<T>,
+  path = file,
+  options: ConstructorParameters<typeof DuckdbDriver>[1] = {},
+): Promise<T> {
+  const driver = new DuckdbDriver(path, options);
   try {
     return await fn(driver);
   } finally {
@@ -49,35 +63,71 @@ async function withDriver<T>(fn: (d: DuckdbDriver) => Promise<T>, path = file): 
 describe('DuckDB driver package', () => {
   it.runIf(!duck)(`is skipped: @duckdb/node-api cannot load here (${reason})`, () => {});
 
-  it('explains exactly how to run apitame when @duckdb/node-api is missing', async () => {
-    const missing = () =>
-      Promise.reject(
-        Object.assign(
-          new Error("Cannot find package '@duckdb/node-api' imported from /x/dist/cli.js"),
-          {
-            code: 'ERR_MODULE_NOT_FOUND',
-          },
-        ),
+  it('explains exactly how to run apitame when @duckdb/node-api is missing', () => {
+    const missing = () => {
+      throw Object.assign(
+        new Error("Cannot find package '@duckdb/node-api' imported from /x/dist/cli.js"),
+        { code: 'ERR_MODULE_NOT_FOUND' },
       );
-    await expect(loadDuckdb(missing)).rejects.toThrow(
-      'Run apitame together with it, for example: npx -p apitame -p @duckdb/node-api apitame init ./data.duckdb',
+    };
+    expect(() => resolveDuckdb(missing)).toThrow(
+      'Run apitame together with it, for example: npx -p apitame -p @duckdb/node-api@1.5.6-r.1 apitame init ./data.duckdb',
     );
-    await expect(loadDuckdb(missing)).rejects.toThrow('npm install @duckdb/node-api');
-    // A native binary that does not load on this platform says why.
-    const broken = () =>
-      Promise.reject(Object.assign(new Error('dlopen failed: GLIBC_2.38 not found'), {}));
-    await expect(loadDuckdb(broken)).rejects.toThrow(/loading it failed with: dlopen failed/);
-    // Too old for the parse tree and settings apitame checks.
-    await expect(loadDuckdb(async () => ({ version: () => 'v1.3.2' }))).rejects.toThrow(
-      /needs DuckDB 1\.4 or later, but @duckdb\/node-api provides v1\.3\.2/,
+    expect(() => resolveDuckdb(missing)).toThrow('npm install @duckdb/node-api@1.5.6-r.1');
+    // The driver checks for the package before it starts anything.
+    expect(() => new DuckdbDriver(csv, { resolve: missing })).toThrow(
+      /needs the "@duckdb\/node-api" package/,
     );
+  });
+
+  // Fake driver packages: the child process loads them like the real one.
+  const fake = (name: string, body: string) => {
+    const path = join(tmp.dir, name);
+    writeFileSync(path, body);
+    return () => pathToFileURL(path).href;
+  };
+
+  it('reports a driver that does not load, and checks its version', async () => {
+    const broken = fake('broken.mjs', "throw new Error('dlopen failed: GLIBC_2.38 not found');");
+    await expect(probeDuckdb({ resolve: broken })).rejects.toThrow(
+      /loading it failed with: dlopen failed/,
+    );
+    await expect(
+      probeDuckdb({ resolve: fake('old.mjs', "export const version = () => 'v1.3.2';") }),
+    ).rejects.toThrow(/needs DuckDB 1\.4 or later, but @duckdb\/node-api provides v1\.3\.2/);
+    // A newer release than the tested one runs, with a warning.
+    const newer = fake('newer.mjs', "export const version = () => 'v1.6.0';");
+    expect(await probeDuckdb({ resolve: newer })).toMatchObject({
+      version: 'v1.6.0',
+      warning: expect.stringMatching(
+        /newer than the release apitame is tested with \(1\.5\.6-r\.1\)/,
+      ),
+    });
+    const warnings: string[] = [];
+    const driver = new DuckdbDriver(csv, { resolve: newer, warn: (m) => warnings.push(m) });
+    try {
+      expect(await driver.version()).toBe('v1.6.0');
+      expect(warnings).toEqual([expect.stringMatching(/DuckDB v1\.6\.0 is newer/)]);
+    } finally {
+      await driver.close();
+    }
+  });
+
+  it.runIf(Boolean(duck))('loads the tested release in a child process', async () => {
+    expect(await probeDuckdb()).toEqual({ version: 'v1.5.6' });
   });
 });
 
 describe.skipIf(!duck)('DuckDB', () => {
   describe('layer 2 on its own: DuckDB parser', () => {
+    // One driver (one child process) for all parser checks.
+    let parser: DuckdbDriver;
+    beforeAll(() => {
+      parser = new DuckdbDriver(file);
+    });
+    afterAll(() => parser.close());
     const check = (sql: string, extra: Record<string, unknown> = {}) =>
-      withDriver((d) => duckdbParserCheck(sql, extra, (s) => d.serializeSelect(s)));
+      duckdbParserCheck(sql, extra, (s) => parser.serializeSelect(s));
 
     it.each([
       ['a delete', 'DELETE FROM orders', /Only SELECT queries/],
@@ -100,6 +150,18 @@ describe.skipIf(!duck)('DuckDB', () => {
       ],
       ['enable_peg_parser', 'SELECT * FROM enable_peg_parser()', /not allowed/],
       ['sleep_ms in a subquery', 'SELECT (SELECT sleep_ms(10))', /sleep_ms\(\) is not allowed/],
+      ['a setting', "SELECT current_setting('http_proxy')", /current_setting\(\) is not allowed/],
+      ['a variable', "SELECT getvariable('x')", /getvariable\(\) is not allowed/],
+      ['the settings', 'SELECT * FROM duckdb_settings()', /duckdb_settings\(\) is not allowed/],
+      ['a catalog function', 'SELECT sql FROM duckdb_tables()', /duckdb_tables\(\) is not allowed/],
+      ['a catalog view', 'SELECT sql FROM duckdb_tables', /catalog .* is not available/],
+      ['information_schema', 'SELECT * FROM information_schema.tables', /catalog/],
+      ['pg_settings', 'SELECT * FROM pg_settings', /catalog/],
+      ['sqlite_master', 'SELECT sql FROM sqlite_master', /catalog/],
+      ['SHOW TABLES', 'SELECT * FROM (SHOW TABLES)', /catalog/],
+      ['DESCRIBE', 'SELECT * FROM (DESCRIBE orders)', /catalog/],
+      ['pragma_table_info', "SELECT * FROM pragma_table_info('orders')", /pragma_table_info/],
+      ['the database file itself', "SELECT * FROM read_blob('shop.duckdb')", /read_blob/],
     ])('refuses %s', async (_name, sql, why) => {
       const r = await check(sql);
       expect(r.ok).toBe(false);
@@ -347,6 +409,243 @@ describe.skipIf(!duck)('DuckDB', () => {
     });
   });
 
+  describe('resources and isolation (child process)', () => {
+    /** Run fn while sampling how long this process's event loop is blocked. */
+    async function stalls<T>(fn: () => Promise<T>): Promise<{ value: T; maxStallMs: number }> {
+      let last = Date.now();
+      let maxStallMs = 0;
+      const tick = setInterval(() => {
+        const now = Date.now();
+        maxStallMs = Math.max(maxStallMs, now - last - 20);
+        last = now;
+      }, 20);
+      try {
+        return { value: await fn(), maxStallMs };
+      } finally {
+        clearInterval(tick);
+      }
+    }
+
+    it('refuses a result too large to convert, without blocking or crashing the server', async () => {
+      const rt = runtime({ limits: { timeoutMs: 10_000, rowLimit: 10 } });
+      try {
+        for (const sql of [
+          // Before: these ran Node out of memory or blocked the event loop for seconds.
+          "SELECT list_transform(range((SELECT 2500000)), x -> {'a': x, 'b': x + 1, 'c': x + 2}) AS l",
+          'SELECT range((SELECT 4000000)) AS l',
+        ]) {
+          const { value, maxStallMs } = await stalls(() => rt.callTool('query', { sql }));
+          expect(textOf(value)).toMatch(/first row is larger than the 50000-byte response limit/);
+          expect(maxStallMs).toBeLessThan(1_000);
+        }
+        expect(
+          jsonOf<{ rows: unknown[][] }>(
+            await rt.callTool('query', { sql: 'SELECT count(*) FROM orders' }),
+          ).rows,
+        ).toEqual([[60]]);
+      } finally {
+        await rt.close();
+      }
+    }, 60_000);
+
+    it('a crash of the DuckDB process is an error for that call only', async () => {
+      // A small heap makes converting a 100 MB string run the child out of memory for real.
+      await withDriver(
+        async (d) => {
+          await expect(
+            d.readQuery("SELECT repeat('x', 100000000) AS s", [], {
+              rowLimit: 1,
+              timeoutMs: 30_000,
+              maxBytes: 1e9,
+            }),
+          ).rejects.toThrow(/used too much memory and was stopped/);
+          expect((await d.readQuery('SELECT 42 AS n', [], opts)).rows).toEqual([[42]]);
+        },
+        file,
+        { heapMb: 32 },
+      );
+    }, 60_000);
+
+    it('the timeout covers planning, which interrupt() cannot stop', async () => {
+      const rt = runtime({ limits: { timeoutMs: 500, rowLimit: 10 } });
+      try {
+        // DuckDB plans a 200-way join for seconds and ignores interrupt() while it does.
+        const joins = Array.from(
+          { length: 200 },
+          (_, i) => ` JOIN orders o${i + 1} USING (id)`,
+        ).join('');
+        const started = Date.now();
+        const res = await rt.callTool('query', { sql: `SELECT 1 FROM orders o0${joins}` });
+        expect(textOf(res)).toMatch(/took longer than 500 ms and was stopped/);
+        expect(Date.now() - started).toBeLessThan(5_000);
+        expect(
+          jsonOf<{ rows: unknown[][] }>(await rt.callTool('query', { sql: 'SELECT 1 AS n' })).rows,
+        ).toEqual([[1]]);
+      } finally {
+        await rt.close();
+      }
+    }, 30_000);
+
+    it.runIf(process.env.APITAME_HEAVY_TESTS === '1')(
+      'the timeout covers constant folding of a large list (heavy: about 2 GB)',
+      async () => {
+        const rt = runtime({ limits: { timeoutMs: 500, rowLimit: 10 } });
+        try {
+          const started = Date.now();
+          const res = await rt.callTool('query', {
+            sql: 'SELECT len(list_sort(range(30000000))) AS n',
+          });
+          expect(textOf(res)).toMatch(/took longer than 500 ms and was stopped/);
+          expect(Date.now() - started).toBeLessThan(5_000);
+        } finally {
+          await rt.close();
+        }
+      },
+      60_000,
+    );
+
+    it('applies and reads back memory, thread and spill limits', async () => {
+      const read = (d: DuckdbDriver) =>
+        d.readQuery(
+          "SELECT current_setting('memory_limit') AS m, current_setting('threads')::INT AS t, current_setting('max_temp_directory_size') AS s, current_setting('temp_directory') AS d",
+          [],
+          opts,
+        );
+      await withDriver(async (d) => {
+        expect((await read(d)).rows).toEqual([['953.6 MiB', 2, '0 bytes', '']]);
+      });
+      const limited = join(tmp.dir, 'limited.duckdb');
+      copyFileSync(file, limited);
+      await withDriver(
+        async (d) => {
+          expect((await read(d)).rows).toEqual([['244.1 MiB', 1, '0 bytes', '']]);
+          // Over the memory limit, DuckDB stops instead of spilling next to the database.
+          await expect(
+            d.readQuery('SELECT count(*) FROM (SELECT DISTINCT range FROM range(50000000))', [], {
+              rowLimit: 1,
+              timeoutMs: 30_000,
+            }),
+          ).rejects.toThrow(/Out of Memory/);
+          expect(readdirSync(tmp.dir).filter((f) => f.startsWith('limited.duckdb.tmp'))).toEqual(
+            [],
+          );
+        },
+        limited,
+        { memoryLimit: '256MB', threads: 1 },
+      );
+      // A setting DuckDB does not apply as asked is caught by the read-back.
+      await withDriver(
+        async (d) => {
+          await expect(d.readQuery('SELECT 1', [], opts)).rejects.toThrow(
+            /did not apply apitame's read-only settings \(memory_limit\)/,
+          );
+        },
+        file,
+        { memoryLimit: '-1' },
+      );
+    }, 60_000);
+
+    it('gives the child no environment, so a proxy password never reaches DuckDB', async () => {
+      const saved = { http: process.env.HTTP_PROXY, https: process.env.HTTPS_PROXY };
+      process.env.HTTP_PROXY = 'http://user:hunter2@proxy.example:3128';
+      process.env.HTTPS_PROXY = 'http://user:hunter2@proxy.example:3128';
+      try {
+        await withDriver(async (d) => {
+          // Through the driver alone (no lexer or parser): the setting is the placeholder.
+          const r = await d.readQuery(
+            "SELECT current_setting('http_proxy') AS p, current_setting('http_proxy_password') AS w",
+            [],
+            opts,
+          );
+          expect(r.rows).toEqual([['none', '']]);
+        });
+        const rt = runtime();
+        try {
+          for (const sql of [
+            "SELECT current_setting('http_proxy')",
+            "SELECT value FROM duckdb_settings() WHERE name = 'http_proxy'",
+            "SELECT setting FROM pg_settings WHERE name = 'http_proxy'",
+          ]) {
+            const res = await rt.callTool('query', { sql });
+            expect(res.isError, sql).toBe(true);
+            expect(textOf(res)).not.toMatch(/hunter2/);
+          }
+        } finally {
+          await rt.close();
+        }
+      } finally {
+        if (saved.http === undefined) delete process.env.HTTP_PROXY;
+        else process.env.HTTP_PROXY = saved.http;
+        if (saved.https === undefined) delete process.env.HTTPS_PROXY;
+        else process.env.HTTPS_PROXY = saved.https;
+      }
+    });
+
+    it('releases the file after a truncated result and after a timeout', async () => {
+      const shared = join(tmp.dir, 'shared.duckdb');
+      copyFileSync(file, shared);
+      // Another program opening the file for writing, as a data job would between calls.
+      const writerCanOpen = async () => {
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const res = spawnSync(
+            process.execPath,
+            [
+              '--input-type=module',
+              '-e',
+              `const { DuckDBInstance } = await import('@duckdb/node-api');
+               const db = await DuckDBInstance.create(process.env.DUCK_FILE);
+               db.closeSync();`,
+            ],
+            { cwd: ROOT, env: { ...process.env, DUCK_FILE: shared }, encoding: 'utf8' },
+          );
+          if (res.status === 0) return true;
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        return false;
+      };
+      await withDriver(async (d) => {
+        const r = await d.readQuery('SELECT * FROM range(1000000)', [], {
+          rowLimit: 3,
+          timeoutMs: 5_000,
+        });
+        expect(r.truncated).toBe(true);
+        expect(await writerCanOpen()).toBe(true);
+        await expect(
+          d.readQuery('SELECT count(*) FROM range(100000000000)', [], {
+            rowLimit: 1,
+            timeoutMs: 300,
+          }),
+        ).rejects.toThrow(/took longer than 300 ms/);
+        expect(await writerCanOpen()).toBe(true);
+      }, shared);
+    }, 60_000);
+
+    it('the database file itself is reachable by DuckDB, so the name lists refuse its readers', async () => {
+      // With external access off, DuckDB still allows the database file and its WAL.
+      const db = await duck!.DuckDBInstance.create(file, DUCKDB_READ_ONLY_SETTINGS);
+      const conn = await db.connect();
+      try {
+        const raw = await conn.runAndReadAll(`SELECT size FROM read_blob('${file}')`);
+        expect(Number(raw.getRowsJS()[0]?.[0])).toBeGreaterThan(0);
+      } finally {
+        conn.closeSync();
+        db.closeSync();
+      }
+      for (const sql of [
+        `SELECT content FROM read_blob('${file}')`,
+        `SELECT * FROM read_text('${file}')`,
+        `SELECT count(*) FROM '${file}'`,
+        `ATTACH '${file}' AS again (READ_ONLY)`,
+      ]) {
+        expect(guardSelect(sql, { dialect: 'duckdb', skipParser: true }).ok, sql).toBe(false);
+        const parsed = await withDriver((d) =>
+          duckdbParserCheck(sql, {}, (q) => d.serializeSelect(q)),
+        );
+        expect(parsed.ok, sql).toBe(false);
+      }
+    });
+  });
+
   describe('runtime', () => {
     it('serves DuckDB SQL through all three layers', async () => {
       const rt = runtime();
@@ -388,7 +687,7 @@ describe.skipIf(!duck)('DuckDB', () => {
         const res = await rt.callTool('query', {
           sql: 'SELECT count(*) FROM range(100000000000) t1',
         });
-        expect(textOf(res)).toMatch(/timed out after 300 ms/);
+        expect(textOf(res)).toMatch(/timed out: it took longer than 300 ms and was stopped/);
         expect(Date.now() - started).toBeLessThan(5_000);
         const ok = jsonOf<{ rows: unknown[][] }>(
           await rt.callTool('query', { sql: 'SELECT count(*) FROM orders' }),

@@ -4,7 +4,7 @@ import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { loadConfig } from '../../config/load.js';
 import { zip } from '../../generator/zip.js';
 import { loadSkills } from '../../server/skills.js';
-import { DUCKDB_PACKAGE } from '../../sources/sql/duckdb-package.js';
+import { DUCKDB_SPEC } from '../../sources/sql/duckdb-package.js';
 import { VERSION } from '../../version.js';
 import { c, ok, warn } from '../ui.js';
 
@@ -33,7 +33,7 @@ interface ServerCommand {
 /**
  * Default launcher: npx with the current minor version, so updates do not break configs.
  * Optional packages (the DuckDB driver) are added with `-p`, so npx installs them next
- * to apitame: `npx -y -p apitame@0.2 -p @duckdb/node-api apitame serve ...`.
+ * to apitame: `npx -y -p apitame@0.2 -p @duckdb/node-api@1.5.6-r.1 apitame serve ...`.
  */
 function launcher(opts: AddToOptions, configArg: string, extras: string[] = []): ServerCommand {
   if (opts.command) {
@@ -143,7 +143,8 @@ export async function addToCommand(clientArg: string, opts: AddToOptions): Promi
 
   const loaded = loadConfig(opts.config ?? process.env.APITAME_CONFIG ?? undefined);
   const name = opts.name ?? loaded.config.name;
-  const extras = loaded.config.source.type === 'duckdb' ? [DUCKDB_PACKAGE] : [];
+  // The DuckDB driver is pinned to the tested release, so every start runs the same DuckDB.
+  const extras = loaded.config.source.type === 'duckdb' ? [DUCKDB_SPEC] : [];
   const launch = (configArg: string) => launcher(opts, configArg, extras);
   const cwd = process.cwd();
   const relConfig = relative(cwd, loaded.path);

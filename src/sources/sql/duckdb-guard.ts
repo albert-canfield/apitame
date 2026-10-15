@@ -1,4 +1,9 @@
-import { DUCKDB_TABLE_FUNCTIONS, looksLikeFilePath } from './duckdb-rules.js';
+import {
+  DUCKDB_CATALOG_REFUSAL,
+  DUCKDB_TABLE_FUNCTIONS,
+  isDuckdbCatalog,
+  looksLikeFilePath,
+} from './duckdb-rules.js';
 import {
   checkTableRefs,
   guardSelect,
@@ -29,6 +34,8 @@ export interface DuckdbFacts {
   tableFunctions: string[];
   /** Table references that are not CTEs in scope where they appear. */
   tables: TableRef[];
+  /** DESCRIBE, SHOW or SUMMARIZE (a SHOW_REF), which the query tool does not accept. */
+  show: boolean;
 }
 
 /** Query node types that json_serialize_sql produces (DuckDB 1.4 and 1.5). */
@@ -64,7 +71,7 @@ class UnknownShape extends Error {}
  * shapes it does not know, so a parse tree from a newer DuckDB cannot hide a table.
  */
 export function duckdbAstFacts(statement: unknown): DuckdbFacts {
-  const facts: DuckdbFacts = { functions: [], tableFunctions: [], tables: [] };
+  const facts: DuckdbFacts = { functions: [], tableFunctions: [], tables: [], show: false };
   const unknown = (what: string) => {
     throw new UnknownShape(what);
   };
@@ -124,6 +131,7 @@ export function duckdbAstFacts(statement: unknown): DuckdbFacts {
       return;
     }
 
+    if (type === 'SHOW_REF') facts.show = true;
     if (type === 'BASE_TABLE') {
       if (typeof obj.table_name !== 'string' || !obj.table_name) unknown('table without a name');
       const table = obj.table_name as string;
@@ -221,14 +229,16 @@ export async function duckdbParserCheck(
   for (const fn of facts.tableFunctions) {
     if (!DUCKDB_TABLE_FUNCTIONS.has(fn)) {
       return fail(
-        `Table function ${fn}() is not allowed. Allowed table functions: range, generate_series, unnest, json_each and the duckdb_* catalog functions.`,
+        `Table function ${fn}() is not allowed. Allowed table functions: ${[...DUCKDB_TABLE_FUNCTIONS].join(', ')}.`,
       );
     }
   }
+  if (facts.show) return fail(DUCKDB_CATALOG_REFUSAL);
   for (const t of facts.tables) {
     if (looksLikeFilePath(t.table)) {
       return fail(`Reading files is not allowed: DuckDB reads "${t.table}" as a file path.`);
     }
+    if (isDuckdbCatalog(t)) return fail(DUCKDB_CATALOG_REFUSAL);
   }
   return checkTableRefs(
     facts.tables.map((t) => ({ schema: t.schema, table: t.table })),

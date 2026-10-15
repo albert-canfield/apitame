@@ -74,7 +74,18 @@ source:
   path: ./data.duckdb      # relative to the config file, opened read-only
 ```
 
-DuckDB needs the optional `@duckdb/node-api` package next to apitame (`npx -p apitame -p @duckdb/node-api apitame <command>`, see [sql.md](sql.md#duckdb)). Named queries on a DuckDB source must be reads: `write: true` is a validation error.
+DuckDB needs the optional `@duckdb/node-api` package next to apitame (`npx -p apitame -p @duckdb/node-api@1.5.6-r.1 apitame <command>`, see [sql.md](sql.md#duckdb)). Named queries on a DuckDB source must be reads: `write: true` is a validation error.
+
+DuckDB runs in a separate process, and each call opens the file with these limits (`init` writes them with the defaults):
+
+```yaml
+sql:
+  duckdb:
+    memoryLimit: 1GB   # DuckDB memory_limit, for example 512MB or 2GB; queries never spill to disk
+    threads: 2         # DuckDB threads, 1 to 64
+```
+
+`sql.duckdb` is a validation error for other sources.
 
 ## `auth`
 

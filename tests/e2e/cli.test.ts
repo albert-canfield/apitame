@@ -505,12 +505,16 @@ describe.skipIf(!duck)('CLI: DuckDB flow', () => {
     const init = run(['init', 'shop.duckdb'], t.dir);
     expect(init.code, init.stderr).toBe(0);
     expect(init.stdout).toMatch(/Connected to DuckDB: 4 tables and views/);
-    expect(init.stdout).toMatch(/npx -p apitame -p @duckdb\/node-api apitame test/);
+    expect(init.stdout).toMatch(/npx -p apitame -p @duckdb\/node-api@1\.5\.6-r\.1 apitame test/);
     const cfg = parseYaml(readFileSync(join(t.dir, 'apitame.config.yaml'), 'utf8')) as Record<
       string,
       unknown
     >;
-    expect(cfg).toMatchObject({ name: 'shop', source: { type: 'duckdb', path: './shop.duckdb' } });
+    expect(cfg).toMatchObject({
+      name: 'shop',
+      source: { type: 'duckdb', path: './shop.duckdb' },
+      sql: { duckdb: { memoryLimit: '1GB', threads: 2 } },
+    });
     const skill = readFileSync(join(t.dir, 'skills/shop-db/SKILL.md'), 'utf8');
     expect(skill).toMatch(/DuckDB database/);
     expect(skill).toMatch(/JOIN customers/);
@@ -542,11 +546,11 @@ describe.skipIf(!duck)('CLI: DuckDB flow', () => {
       '-p',
       expect.stringMatching(/^apitame@\d+\.\d+$/),
       '-p',
-      '@duckdb/node-api',
+      '@duckdb/node-api@1.5.6-r.1',
       'apitame',
     ]);
     expect(addTo.stdout).toMatch(
-      /claude mcp add --transport stdio --scope project shop -- npx -y -p apitame@\d+\.\d+ -p @duckdb\/node-api apitame serve --config/,
+      /claude mcp add --transport stdio --scope project shop -- npx -y -p apitame@\d+\.\d+ -p @duckdb\/node-api@1\.5\.6-r\.1 apitame serve --config/,
     );
   });
 
@@ -613,7 +617,7 @@ describe.skipIf(!duck)('CLI: DuckDB flow', () => {
       expect(res.status, res.stdout + res.stderr).toBe(1);
       expect(res.stderr).toMatch(/needs the "@duckdb\/node-api" package/);
       expect(res.stderr).toMatch(
-        /npx -p apitame -p @duckdb\/node-api apitame init \.\/data\.duckdb/,
+        /npx -p apitame -p @duckdb\/node-api@1\.5\.6-r\.1 apitame init \.\/data\.duckdb/,
       );
       expect(existsSync(join(fresh.dir, 'apitame.config.yaml'))).toBe(false);
     } finally {

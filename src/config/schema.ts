@@ -197,6 +197,21 @@ export const ConfigSchema = z
               deny: z.array(z.string()).default([]),
             })
             .prefault({}),
+          /** Resource limits for DuckDB sources (each call opens the file with these). */
+          duckdb: z
+            .strictObject({
+              /** DuckDB memory_limit, for example 512MB or 2GB. Results never spill to disk. */
+              memoryLimit: z
+                .string()
+                .regex(
+                  /^\d+(\.\d+)?\s*(B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)$/i,
+                  'Use a size such as 512MB or 2GB',
+                )
+                .default('1GB'),
+              /** DuckDB worker threads per call. */
+              threads: z.number().int().min(1).max(64).default(2),
+            })
+            .optional(),
         })
         .prefault({}),
       skills: z.object({ dir: z.string().default('./skills') }).prefault({}),
@@ -271,6 +286,13 @@ export const ConfigSchema = z
         code: 'custom',
         path: ['tools'],
         message: 'Tool groups only apply to OpenAPI sources. Use sql.queries for SQL sources.',
+      });
+    }
+    if (cfg.sql.duckdb && cfg.source.type !== 'duckdb') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['sql', 'duckdb'],
+        message: 'sql.duckdb only applies to DuckDB sources.',
       });
     }
     if (cfg.source.type === 'duckdb') {

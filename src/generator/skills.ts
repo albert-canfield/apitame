@@ -500,7 +500,7 @@ export function generateSqlSkill(input: {
     '- If a valid query is refused because the parser cannot read it, simplify it or ask the user to add it as a named query.',
     ...(input.engine === 'duckdb'
       ? [
-          "- DuckDB SQL works: `FROM <table> LIMIT 5`, `GROUP BY ALL`, `QUALIFY`, `SELECT * EXCLUDE (col)`. Reading files (`read_csv`, `FROM 'data.csv'`) and table functions other than `range`, `generate_series`, `unnest` and the `duckdb_*` catalog are refused.",
+          "- DuckDB SQL works: `FROM <table> LIMIT 5`, `GROUP BY ALL`, `QUALIFY`, `SELECT * EXCLUDE (col)`. Reading files (`read_csv`, `FROM 'data.csv'`), the catalog (`duckdb_*`, `information_schema`, `SHOW`, `DESCRIBE`: use `list_tables` and `describe_table`) and table functions other than `range`, `generate_series` and `unnest` are refused.",
         ]
       : []),
     '',

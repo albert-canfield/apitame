@@ -2,7 +2,12 @@ import { defineConfig } from 'tsup';
 
 export default defineConfig({
   // One build for the CLI and the library, so both share chunks (the SQL code loads on demand).
-  entry: { cli: 'src/cli.ts', index: 'src/index.ts' },
+  // duckdb-worker is the DuckDB child process; the driver forks it from dist/duckdb-worker.js.
+  entry: {
+    cli: 'src/cli.ts',
+    index: 'src/index.ts',
+    'duckdb-worker': 'src/sources/sql/duckdb-worker.ts',
+  },
   format: ['esm'],
   target: 'node22',
   platform: 'node',
