@@ -120,7 +120,7 @@ auth:
 | `maxResponseBytes` | 50000 | all | Size cap for what goes back to the agent. JSON is trimmed to fit. |
 | `rowLimit` | 200 | SQL | Maximum rows per query result. |
 | `maxUploadBytes` | 10000000 | OpenAPI | Total size of file content in one call (multipart and binary bodies). |
-| `maxPages` | 5 | OpenAPI | Pages a list operation may read in one call with `"pages"`, 1 to 20. Every page counts against the per-minute limits, and all pages share `timeoutMs` and `maxResponseBytes`. `1` turns paging off. See [Paging](openapi.md#paging). |
+| `maxPages` | 5 | OpenAPI | Pages a list operation may read in one call with `"pages"`, 1 to 20. Every page counts against the per-minute limits, all pages share `timeoutMs`, and `maxResponseBytes` covers the merged items and `pagination` together. `1` turns paging off: no `pages` argument and no `pagination` in results. See [Paging](openapi.md#paging). |
 | `maxCallsPerMinute` | 120 | all | Tool calls per minute across all tools. `0` means unlimited. |
 | `maxWritesPerMinute` | 20 | all | Writes per minute, counted just before they are sent. `0` means unlimited. |
 | `perTool` | `{}` | all | Calls per minute for individual tools, for example `{ search: 10, call_operation: 30 }`, on top of the server-wide limits. |

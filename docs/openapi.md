@@ -103,11 +103,11 @@ List endpoints usually return one page at a time, and agents get the cursor or t
 | --- | --- | --- |
 | Cursor (Stripe) | a `starting_after` query parameter, and `has_more` next to the list | `starting_after` set to the `id` of the last item, while `has_more` is true |
 | Token in the body | a response field such as `next_page`, `nextPageToken`, `next_cursor` or `next_token` (at the top level or inside `meta`, `pagination`, `paging`, `response_metadata` or `links`), and the query parameter that takes it (`page`, `pageToken`, `cursor`, `next_token`) | the field's value, until it is empty |
-| Next link | a `Link` header declared on the response, or a `next`, `next_url`, `nextLink` or `links.next` field, plus a position parameter (`page`, `cursor`, `after`, `before`, `offset`, `page_token` and similar, or `since` when there is no other) | the position parameters in the query string of the `rel="next"` link |
-| Offset | an integer `offset` (or `skip`, `start`) and a page size (`limit`, `per_page`, `page_size`, `size` and similar) | `offset` plus the number of items read, until a page comes back short |
+| Next link | a `Link` header declared on the response, or a `next`, `next_url`, `nextLink`, `@odata.nextLink` or `links.next` field, plus a position parameter (`page`, `cursor`, `after`, `before`, `offset`, `page_token`, `$skiptoken` and similar, or `since` when there is no other) | the position parameters in the query string of the `rel="next"` link |
+| Offset | an integer `offset` (or `skip`, `start`, `$skip`) and a page size (`limit`, `per_page`, `page_size`, `size`, `$top` and similar) | `offset` plus the number of items read, until a page comes back short |
 | Page number | an integer `page` (or `page_number`) and a page size | `page` plus one, until a page comes back short, or until a `Link` header comes back without `rel="next"` |
 
-The styles are tried in that order. The list is the response itself when it is an array, or the array in the response object (`data`, `items`, `results` and similar names first, otherwise the only array). An operation that matches none of the styles, or whose response has no list, is not paged. On the full public specs this finds 126 cursor and 7 token operations in Stripe's, 194 next-link and 67 page-number operations in GitHub's, and none in the Petstore.
+The styles are tried in that order. The list is the response itself when it is an array, or the array in the response object (`data`, `items`, `results`, `value` and similar names first, otherwise the only array). Parameters with a `date` or `date-time` format are filters, never positions: GitHub's notifications take `before` and `since` as times and page with `page`. An operation that matches none of the styles, or whose response has no list, is not paged. On the full public specs this finds 126 cursor and 7 token operations in Stripe's, 194 next-link and 67 page-number operations in GitHub's, and none in the Petstore.
 
 A tool that includes a paged operation takes `pages`:
 
@@ -126,12 +126,16 @@ apitame reads up to that many pages, one after the other, merges their lists and
 - `next`: the arguments that continue, to pass with the same arguments as before. It is only there when `more` is true and apitame knows where the next page starts.
 - `note`: why paging stopped early, when it did.
 
-`pages` defaults to 1 and is capped at `limits.maxPages` (5 by default, with a note when the agent asked for more). Every result of a paged operation carries `pagination`, so with the default the agent still gets the exact `next` instead of working out a cursor itself. When the response is an object (`{"data": [...], "has_more": true}`), the object of the last page read is kept with its list replaced by the merged one, and Stripe's `has_more` is set to match `more`.
+`pages` defaults to 1 and is capped at `limits.maxPages` (5 by default, with a note when the agent asked for more). With `limits.maxPages: 1`, paging is off: tools have no `pages` argument and results no `pagination`. Every result of a paged operation carries `pagination`, so with the default the agent still gets the exact `next` instead of working out a cursor itself. When the response is an object (`{"data": [...], "has_more": true}`), the object of the last page read is kept with its list replaced by the merged one, and Stripe's `has_more` is set to match `more`.
 
-Paging stops at the number of pages asked for, at the end of the data, at a page that fails (the pages before it are returned, and `next` points at the failed one), at `limits.timeoutMs` (one deadline for the whole call, not one per page), at the per-minute rate limits (every page counts as a call) and at `limits.maxResponseBytes`. The size limit is applied after `fields` and redaction, so selecting fields fits more pages, and it never cuts an item in half:
+Paging stops at the number of pages asked for, at the end of the data, at a page that fails (the pages before it are returned, and `next` points at the failed one), at `limits.timeoutMs` (one deadline for the whole call, not one per page), at the per-minute rate limits (every page counts as a call), at a position the API already sent in this call, and at `limits.maxResponseBytes`. The size limit covers `data` and `pagination` together, is applied after `fields` and redaction, so selecting fields fits more pages, and never cuts an item in half:
 
 - With cursor and offset paging, the last page read is cut between two items, and `next` continues right after the last item returned.
 - With token, next-link and page-number paging, a position can only point at the start of a page. A following page that does not fit is left out whole and `next` points at it. A first page that does not fit is cut as before, and then `next` skips the items that were cut; the note says so, so the agent can ask for fewer items per page or select fewer fields.
+
+A position is a cursor, a token, an item id or a next link parameter, and apitame only passes on one of at most 2048 characters. A longer one stops paging without `next`, and the note says why: an API could otherwise make `next` as large as it likes.
+
+From a next link, apitame takes the position parameters the link sets and keeps every other argument as the agent gave it, filters included. Only the two halves of a cursor pair replace each other: a link that sets `after` drops `before`, and the other way round. Link headers are read as RFC 8288 describes them, so a `rel="next"` inside a quoted value, such as a `title`, does not count.
 
 Stripe's `ending_before` pages backwards. apitame does not follow it: it reads one page and `next` gives the `ending_before` for the page before.
 

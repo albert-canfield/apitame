@@ -14,7 +14,7 @@ export interface PagingParam {
 }
 
 interface Base {
-  /** Dot path of the item list in the response body, `''` when the body is the list. */
+  /** The top-level property that holds the item list, `''` when the body is the list. */
   items: string;
 }
 
@@ -50,7 +50,17 @@ export type Paging =
 export type PagingKind = Paging['kind'];
 
 /** Names of the item list in common response envelopes, best first. */
-const LIST_NAMES = ['data', 'items', 'results', 'records', 'entries', 'values', 'elements', 'list'];
+const LIST_NAMES = [
+  'data',
+  'items',
+  'results',
+  'records',
+  'entries',
+  'values',
+  'value',
+  'elements',
+  'list',
+];
 
 /** Query parameters that say where a page starts, for next links. */
 const POSITION = [
@@ -70,9 +80,11 @@ const POSITION = [
   'marker',
   'continuation_token',
   'continuationToken',
+  '$skip',
+  '$skiptoken',
 ];
 const PAGE = ['page', 'page_number', 'pageNumber'];
-const OFFSET = ['offset', 'skip', 'start'];
+const OFFSET = ['offset', 'skip', 'start', '$skip'];
 const SIZE = [
   'per_page',
   'perPage',
@@ -83,6 +95,7 @@ const SIZE = [
   'max_results',
   'maxResults',
   'count',
+  '$top',
 ];
 /** Response fields that hold the next page's value, with the parameters that take it. */
 const TOKENS: Array<[field: string, params: string[]]> = [
@@ -146,15 +159,17 @@ function propsOf(schema: unknown): Record<string, unknown> {
   return isObject(s.properties) ? s.properties : {};
 }
 
-/** The schema at a dot path of object properties, if every step is declared. */
+/**
+ * The schema at a path of object properties, if every step is declared. A property whose name
+ * contains dots (`@odata.nextLink`) is found as it is before the path is split at a dot.
+ */
 function at(schema: unknown, path: string): unknown {
-  let cur: unknown = schema;
-  for (const part of path.split('.')) {
-    const props = propsOf(cur);
-    if (!(part in props)) return undefined;
-    cur = props[part];
-  }
-  return cur;
+  const props = propsOf(schema);
+  if (path in props) return props[path];
+  const dot = path.indexOf('.');
+  if (dot < 0) return undefined;
+  const head = path.slice(0, dot);
+  return head in props ? at(props[head], path.slice(dot + 1)) : undefined;
 }
 
 /** A string (or untyped) field: tokens and URLs. */
@@ -197,6 +212,9 @@ export function detectPaging(op: PagingInput): Paging | undefined {
   const query = new Map<string, PagingParam>();
   for (const p of op.params) {
     if (p.in !== 'query') continue;
+    // Dates and times are filters (GitHub's `before` and `since` on notifications), never
+    // positions: treating them as positions would drop or replace the agent's filter.
+    if (p.schema.format === 'date' || p.schema.format === 'date-time') continue;
     const t = types(p.schema);
     const type = t.has('integer') ? 'integer' : t.has('number') ? 'number' : 'string';
     // A parameter whose schema allows neither strings nor numbers cannot carry a position.
