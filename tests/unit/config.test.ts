@@ -205,12 +205,25 @@ describe('config schema', () => {
         ...minimal,
         http: { oauth: { ...oauth, introspection: { ...introspection, ...extra } } },
       });
-    expect(bad({ clientSecret: 'inline-secret' })).toThrow(
-      /http\.oauth\.introspection\.clientSecret must come from an environment variable/,
-    );
+    // Only references: the secret itself never sits in the config, in any form.
+    const secret = 'http\\.oauth\\.introspection\\.clientSecret';
+    for (const [value, reason] of [
+      ['inline-secret', 'must be environment variable references only'],
+      ['pre-${INTROSPECTION_CLIENT_SECRET}', 'must be environment variable references only'],
+      ['hunter2${UNSET:-}', 'must be environment variable references only'],
+      ['${UNSET:-hunter2}', 'must not give a default value'],
+      ['${UNSET:-}', 'must come from an environment variable'],
+    ]) {
+      expect(bad({ clientSecret: value })).toThrow(new RegExp(`${secret} ${reason}`));
+    }
+    for (const ok of ['${A}${B}', '${A}${B:-}']) expect(bad({ clientSecret: ok })()).toBeTruthy();
     expect(bad({ cacheSeconds: 301 })).toThrow(/cacheSeconds/);
     expect(bad({ maxCallsPerMinute: 0 })).toThrow(/maxCallsPerMinute/);
     expect(bad({ url: 'introspect' })).toThrow(/introspection\.url/);
+    // The URL is not resolved, so a reference would be sent as it is.
+    expect(bad({ url: 'https://auth.example.com/${REALM}/introspect' })).toThrow(
+      /introspection\.url: environment variables are not read here/,
+    );
     expect(bad({ clientAuthMethod: 'private_key_jwt' })).toThrow(/clientAuthMethod/);
     expect(bad({ authMethod: 'client_secret_post' })).toThrow(
       /Unknown key "authMethod" \(did you mean clientAuthMethod\?\)/,

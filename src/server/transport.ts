@@ -620,8 +620,12 @@ export async function serveHttp(makeServer: ServerFactory, opts: HttpOptions): P
         auth = await verifyBearerToken(req.headers.authorization, oauth);
       } catch (err) {
         const message = (err as Error).message;
-        if (err instanceof OAuthError) opts.logger.debug(`OAuth: refused a request: ${message}`);
-        else opts.logger.error(`OAuth: token check failed: ${message}`);
+        // A verifier may answer with a general description and keep the reason in `cause`
+        // (token introspection does, so callers cannot probe what the server knows).
+        if (err instanceof OAuthError) {
+          const why = err.cause instanceof Error ? ` (${err.cause.message})` : '';
+          opts.logger.debug(`OAuth: refused a request: ${message}${why}`);
+        } else opts.logger.error(`OAuth: token check failed: ${message}`);
         return await sendWeb(res, bearerAuthChallengeResponse(err, oauth));
       }
       // The transport hands it to request handlers as `ctx.http.authInfo`.

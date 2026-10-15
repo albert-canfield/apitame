@@ -274,7 +274,8 @@ export function forceGc(): void {
 
 /**
  * An HTTP server on 127.0.0.1 that answers every request with `status`, sends `head`, then
- * drips a space every 100 ms and never ends the body. `open()` counts its open sockets.
+ * drips a space every 100 ms and never ends the body. `open()` counts the responses it is still
+ * sending: one ends only when the client closes its connection.
  */
 export async function startDripServer(
   head: string,
@@ -283,6 +284,8 @@ export async function startDripServer(
 ): Promise<{ url: string; open: () => number; close: () => Promise<void> }> {
   let open = 0;
   const server = createHttpServer((req, res) => {
+    open++;
+    res.on('close', () => open--);
     req.resume();
     req.on('end', () => {
       res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
@@ -290,10 +293,6 @@ export async function startDripServer(
       const timer = setInterval(() => res.write(' '), 100);
       res.on('close', () => clearInterval(timer));
     });
-  });
-  server.on('connection', (socket) => {
-    open++;
-    socket.on('close', () => open--);
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const { port } = server.address() as { port: number };

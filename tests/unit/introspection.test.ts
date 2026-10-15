@@ -10,8 +10,11 @@ import { Redactor } from '../../src/safety/redact.js';
 import {
   AutoVerifier,
   createOAuthVerifiers,
+  IntrospectionMisconfigured,
   IntrospectionVerifier,
   MAX_CACHED_TOKENS,
+  MAX_WARNED_CLIENTS,
+  REFUSED,
   type IntrospectionDeps,
   type IntrospectionSettings,
 } from '../../src/server/introspection.js';
@@ -26,6 +29,7 @@ import {
   signJwt,
   type TestKey,
 } from '../oauth-fixtures.js';
+import { startDripServer } from '../helpers.js';
 
 const RESOURCE = 'https://mcp.example.com/mcp';
 const INTROSPECT = '/introspect';
@@ -69,19 +73,25 @@ function verifier(
 const opaque = (extra: Record<string, unknown> = {}) => as.issue(RESOURCE, extra);
 const calls = () => as.count(INTROSPECT);
 
-/** The verifier refuses the token as invalid_token, with a message matching `reason`. */
+/**
+ * The verifier refuses the token as invalid_token for a reason matching `reason`. A token
+ * refused on what the authorization server answered carries the reason as `cause` (the client
+ * only gets a general description, checked on its own below); other refusals say it directly.
+ */
 async function refused(
   v: { verifyAccessToken(t: string): Promise<unknown> },
   token: string,
   reason: RegExp,
-): Promise<void> {
+): Promise<OAuthError> {
   const err = await v.verifyAccessToken(token).then(
     () => undefined,
     (e: unknown) => e,
   );
   expect(err, 'token was accepted').toBeInstanceOf(OAuthError);
   expect((err as OAuthError).code).toBe('invalid_token');
-  expect((err as Error).message).toMatch(reason);
+  const cause = (err as Error).cause;
+  expect(cause instanceof Error ? cause.message : (err as Error).message).toMatch(reason);
+  return err as OAuthError;
 }
 
 /**
@@ -227,6 +237,101 @@ describe('IntrospectionVerifier: requests and answers', () => {
       await refused(v, token, /not a valid bearer token|too large/);
     }
     expect(calls()).toBe(0);
+  });
+});
+
+describe('IntrospectionVerifier: what callers and operators learn', () => {
+  it('answers every refusal of an answer with one description, and keeps the reason as cause', async () => {
+    const v = verifier({}, {}, { clients: ['client-1'] });
+    const now = Math.floor(Date.now() / 1000);
+    const revoked = opaque();
+    as.answers.set(revoked, { active: false });
+    const cases: Array<[string, RegExp]> = [
+      [revoked, /not active/],
+      ['never-issued', /not active/],
+      [opaque({ aud: 'https://other.example.com/mcp' }), /audience/],
+      [opaque({ iss: 'https://evil.example.com' }), /another server/],
+      [opaque({ exp: now - 1 }), /expired/],
+      [opaque({ client_id: 'billing-spa' }), /http\.oauth\.clients/],
+      [opaque({ token_type: 'refresh_token' }), /not an access token/],
+      [opaque({ cnf: { jkt: 'x' } }), /bound to a key/],
+    ];
+    for (const [token, reason] of cases) {
+      const err = await refused(v, token, reason);
+      // RFC 7662 section 4: the caller must not learn why, or it could probe the server.
+      expect(err.message).toBe(REFUSED);
+      expect((err.cause as Error).message).toMatch(reason);
+    }
+    // A malformed token says what is wrong: nothing about it came from the server.
+    expect((await refused(v, 'tok"en', /not a valid bearer token/)).message).not.toBe(REFUSED);
+  });
+
+  it('refuses refresh, offline and ID tokens however their type is spelled', async () => {
+    const v = verifier();
+    const spellings = [
+      'refresh_token',
+      'refresh',
+      'Refresh Token',
+      ' refresh_token',
+      'refresh-token',
+      'RefreshToken',
+      'urn:ietf:params:oauth:token-type:refresh_token',
+      'id_token',
+      'id',
+      'ID',
+      'id-token',
+      'Id Token',
+      'urn:ietf:params:oauth:token-type:id_token',
+      'offline',
+      'Offline',
+      'offline_token',
+      'Offline Token',
+    ];
+    for (const value of spellings) {
+      for (const field of ['token_type', 'token_use']) {
+        await refused(v, opaque({ [field]: value }), /not an access token/);
+      }
+      await refused(v, opaque({ typ: value }), /ID or refresh token/);
+    }
+    for (const ok of ['Bearer', 'access_token', 'Access Token', 'N_A', 'identity']) {
+      await v.verifyAccessToken(opaque({ token_type: ok, typ: ok }));
+    }
+  });
+
+  it('warns once per client when answers name no user, and never takes username instead', async () => {
+    const warnings: string[] = [];
+    const v = verifier({}, { warn: (m) => warnings.push(m) });
+    const info = await v.verifyAccessToken(opaque({ sub: undefined, username: 'alice' }));
+    expect(info.extra).toEqual({ client: 'client-1' });
+    await v.verifyAccessToken(opaque({ sub: undefined }));
+    await v.verifyAccessToken(opaque({ sub: '', client_id: 'other-app' }));
+    await v.verifyAccessToken(opaque({ sub: undefined, client_id: undefined }));
+    await v.verifyAccessToken(opaque());
+    expect(warnings).toHaveLength(3);
+    expect(warnings[0]).toMatch(
+      /client "client-1" name no user \(sub\), so all its users count as one caller/,
+    );
+    expect(warnings[1]).toMatch(/client "other-app"/);
+    expect(warnings[2]).toMatch(/neither a client nor a user/);
+  });
+
+  it(`warns about at most ${MAX_WARNED_CLIENTS} clients`, async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const fakeFetch: typeof fetch = async (_url, init) => {
+      const token = new URLSearchParams(String(init?.body)).get('token');
+      return new Response(
+        JSON.stringify(
+          activeAnswer(as.issuer, RESOURCE, { sub: undefined, client_id: token, exp: now + 300 }),
+        ),
+      );
+    };
+    const warnings: string[] = [];
+    const v = verifier(
+      { maxCallsPerMinute: 100_000 },
+      { fetch: fakeFetch, warn: (m) => warnings.push(m) },
+    );
+    for (let i = 0; i <= MAX_WARNED_CLIENTS; i++) await v.verifyAccessToken(`client-${i}`);
+    expect(warnings).toHaveLength(MAX_WARNED_CLIENTS);
   });
 });
 
@@ -455,6 +560,149 @@ describe('IntrospectionVerifier: limits and failures', () => {
   });
 });
 
+describe('IntrospectionVerifier: signed-in users during a flood', () => {
+  it('keeps signed-in users working through a flood longer than cacheSeconds', async () => {
+    let clock = Date.now();
+    const warnings: string[] = [];
+    const v = verifier(
+      { maxCallsPerMinute: 20, cacheSeconds: 10 },
+      { now: () => clock, warn: (m) => warnings.push(m) },
+    );
+    const users = ['ann', 'bob', 'cat'].map((sub) => opaque({ sub }));
+    for (const u of users) await v.verifyAccessToken(u);
+    const outcome = { users: { ok: 0, refused: 0 }, junk: { invalid: 0, limited: 0 } };
+    let junk = 0;
+    // Three minutes: every second, five made-up tokens and a request from each user. Their
+    // cached answers go stale every 10 seconds, so each user is checked again 18 times.
+    for (let second = 0; second < 180; second++) {
+      clock += 1_000;
+      for (let j = 0; j < 5; j++) {
+        const code = await v.verifyAccessToken(`junk-${junk++}`).then(
+          () => 'accepted',
+          (e: unknown) => (e as OAuthError).code,
+        );
+        if (code === 'invalid_token') outcome.junk.invalid++;
+        else if (code === 'server_error') outcome.junk.limited++;
+        else throw new Error(`made-up token: ${code}`);
+      }
+      for (const u of users) {
+        await v.verifyAccessToken(u).then(
+          () => outcome.users.ok++,
+          () => outcome.users.refused++,
+        );
+      }
+    }
+    expect(outcome.users).toEqual({ ok: 540, refused: 0 });
+    // Made-up tokens got at most 20 introspections a minute; the rest never left apitame.
+    expect(outcome.junk.invalid).toBeLessThanOrEqual(60);
+    expect(outcome.junk.limited).toBe(900 - outcome.junk.invalid);
+    // Re-checks are bounded by the real users: three of them, every 10 seconds.
+    const rechecks = calls() - users.length - outcome.junk.invalid;
+    expect(rechecks).toBeGreaterThan(0);
+    expect(rechecks).toBeLessThanOrEqual(3 * 18);
+    expect(warnings.length).toBeGreaterThan(0);
+    for (const w of warnings) expect(w).toMatch(/new tokens were introspected/);
+  });
+
+  it('never answers from a stale entry: a user revoked during a flood is refused, then forgotten', async () => {
+    let clock = Date.now();
+    const v = verifier({ maxCallsPerMinute: 2, cacheSeconds: 10 }, { now: () => clock });
+    const user = opaque();
+    await v.verifyAccessToken(user);
+    await refused(v, 'junk-1', /not active/);
+    const full = (await v.verifyAccessToken('junk-2').catch((e: unknown) => e)) as OAuthError;
+    expect(full.code).toBe('server_error');
+    as.answers.set(user, { active: false });
+    clock += 11_000;
+    // Checked again from the re-check budget, although new tokens have none left.
+    await refused(v, user, /not active/);
+    expect(calls()).toBe(3);
+    // Refused, so forgotten: the token now counts as new, and that budget is spent.
+    const again = (await v.verifyAccessToken(user).catch((e: unknown) => e)) as OAuthError;
+    expect(again.code).toBe('server_error');
+    expect(again.message).toMatch(/new tokens/);
+    expect(calls()).toBe(3);
+  });
+
+  it('counts a token as new again once it has expired', async () => {
+    let clock = Date.now();
+    const v = verifier({ maxCallsPerMinute: 2, cacheSeconds: 10 }, { now: () => clock });
+    const shortLived = opaque({ exp: Math.floor(clock / 1000) + 5 });
+    await v.verifyAccessToken(shortLived);
+    await refused(v, 'junk-1', /not active/);
+    clock += 6_000;
+    // Past its expiry, it has no claim on the re-check budget: the budget for new tokens is spent.
+    const err = (await v.verifyAccessToken(shortLived).catch((e: unknown) => e)) as OAuthError;
+    expect(err.code).toBe('server_error');
+    expect(err.message).toMatch(/new tokens/);
+  });
+
+  it('caps re-checks too', async () => {
+    let clock = Date.now();
+    const warnings: string[] = [];
+    const v = verifier(
+      { maxCallsPerMinute: 2, cacheSeconds: 0 },
+      { now: () => clock, warn: (m) => warnings.push(m) },
+    );
+    const [a, b] = [opaque(), opaque()];
+    await v.verifyAccessToken(a);
+    await v.verifyAccessToken(b);
+    // With cacheSeconds 0, every request asks again, from the re-check budget.
+    clock += 1_000;
+    await v.verifyAccessToken(a);
+    await v.verifyAccessToken(b);
+    const err = (await v.verifyAccessToken(a).catch((e: unknown) => e)) as OAuthError;
+    expect(err.code).toBe('server_error');
+    expect(err.message).toMatch(/check again/);
+    expect(calls()).toBe(4);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/already seen active were introspected again/);
+    clock += 60_000;
+    await v.verifyAccessToken(a);
+  });
+});
+
+describe('IntrospectionVerifier: startup check and connections', () => {
+  it('warmUp refuses an endpoint that calls a token nobody issued active', async () => {
+    as.overrides.set(INTROSPECT, (res) =>
+      res
+        .writeHead(200, { 'Content-Type': 'application/json' })
+        .end(JSON.stringify(activeAnswer(as.issuer, RESOURCE))),
+    );
+    const err = await verifier()
+      .warmUp()
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(IntrospectionMisconfigured);
+    expect((err as Error).message).toMatch(/random token nobody issued is active/);
+  });
+
+  it('warmUp counts against the budget for new tokens', async () => {
+    const v = verifier({ maxCallsPerMinute: 1 });
+    await v.warmUp();
+    const err = (await v.verifyAccessToken(opaque()).catch((e: unknown) => e)) as OAuthError;
+    expect(err.code).toBe('server_error');
+    expect(calls()).toBe(1);
+  });
+
+  it('closes the connection of an answer it does not read', async () => {
+    const answers: Array<[number, Record<string, string>, RegExp]> = [
+      [500, {}, /HTTP 500/],
+      [401, {}, /HTTP 401/],
+      [200, { 'Content-Length': '2000000' }, /more than 1 MB/],
+    ];
+    for (const [status, headers, reason] of answers) {
+      const drip = await startDripServer('{"active":', status, headers);
+      try {
+        // The default timeout (5 s) would close it too, but much later.
+        await failed(verifier({ url: drip.url }), opaque(), reason);
+        await vi.waitFor(() => expect(drip.open()).toBe(0), { timeout: 1_000 });
+      } finally {
+        await drip.close();
+      }
+    }
+  });
+});
+
 describe('Token verifiers from http.oauth', () => {
   const base = { name: 'x', source: { type: 'openapi', spec: 'x.yaml' } };
   const oauthConfig = (oauth: Record<string, unknown>): OAuthConfig =>
@@ -462,9 +710,12 @@ describe('Token verifiers from http.oauth', () => {
   const introspection = {
     url: '',
     clientId: '${INTROSPECTION_ID}',
-    clientSecret: 'pre-${INTROSPECTION_SECRET}',
+    clientSecret: '${INTROSPECTION_SECRET}',
   };
-  const env = { INTROSPECTION_ID: 'apitame-rs', INTROSPECTION_SECRET: 'introspection-s3cret!' };
+  const env = {
+    INTROSPECTION_ID: INTROSPECTION_CLIENT.id,
+    INTROSPECTION_SECRET: INTROSPECTION_CLIENT.secret,
+  };
   const jwt = (extra: Record<string, unknown> = {}) =>
     signJwt(
       { alg: 'ES256', kid: 'ec-1' },
@@ -499,7 +750,6 @@ describe('Token verifiers from http.oauth', () => {
   });
 
   it('resolves the credentials from the environment and registers the secret with the redactor', async () => {
-    as.introspectionClient = { id: 'apitame-rs', secret: 'pre-introspection-s3cret!' };
     const redactor = new Redactor();
     const built = createOAuthVerifiers(
       oauthConfig({
@@ -513,12 +763,12 @@ describe('Token verifiers from http.oauth', () => {
     expect(built.jwt).toBeUndefined();
     expect((await built.verifier.verifyAccessToken(opaque())).extra?.subject).toBe('user-1');
 
-    const secret = 'pre-introspection-s3cret!';
+    const secret = INTROSPECTION_CLIENT.secret;
     const basic = as.introspections[0]!.authorization!.replace(/^Basic /, '');
     const line = redactor.text(
-      `secret=${secret} part=${env.INTROSPECTION_SECRET} form=${encodeURIComponent(secret)} basic=${basic}`,
+      `secret=${secret} form=${encodeURIComponent(secret)} basic=${basic}`,
     );
-    for (const value of [secret, env.INTROSPECTION_SECRET, encodeURIComponent(secret), basic]) {
+    for (const value of [secret, encodeURIComponent(secret), basic]) {
       expect(line).not.toContain(value);
     }
     // The client id is an identifier, not a secret.
@@ -536,7 +786,6 @@ describe('Token verifiers from http.oauth', () => {
   });
 
   it('verify: auto checks JWTs locally and introspects every other token', async () => {
-    as.introspectionClient = { id: 'apitame-rs', secret: 'pre-introspection-s3cret!' };
     const built = createOAuthVerifiers(
       oauthConfig({
         issuer: as.issuer,
@@ -573,7 +822,6 @@ describe('Token verifiers from http.oauth', () => {
     await refused(jwtOnly.verifier, opaque(), /not a signed JWT/);
     expect(calls()).toBe(0);
 
-    as.introspectionClient = { id: 'apitame-rs', secret: 'pre-introspection-s3cret!' };
     const all = createOAuthVerifiers(
       oauthConfig({
         issuer: as.issuer,

@@ -19,6 +19,7 @@ export { JwtVerifier, type OAuthOptions } from './server/oauth.js';
 export {
   AutoVerifier,
   createOAuthVerifiers,
+  IntrospectionMisconfigured,
   IntrospectionVerifier,
   type IntrospectionSettings,
 } from './server/introspection.js';
