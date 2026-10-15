@@ -13,6 +13,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Request timeouts now survive garbage collection. The OAuth2 client credentials token request, the authorization server's metadata and key set (`http.oauth`) and specs loaded from a URL used a timeout signal that, once the response headers had arrived, a garbage collection could drop; a server that sent its headers and then stalled the body could then hold the request forever. For the key set that meant a refresh that never finished, and with it no key rotation until a restart. Each request now has a deadline held by a timer, which also covers reading the body.
 
+### Security
+
+- Secret fields refuse literal secrets written as references. `auth.token`, `auth.value`, `auth.password` and `auth.clientSecret` only checked that the value contained a `${VAR}` reference somewhere, so `${UNSET:-hunter2}` and `hunter2${UNSET:-}` passed and sent the literal `hunter2`, a secret stored in the config file. A default value in a secret field is now a validation error, and text next to references needs at least one reference without a default (`SSWS ${OKTA_TOKEN}` still works, and `${NAME:-}` alone still means an empty value).
+
 ## [0.3.0] - 2026-10-15
 
 ### Changed

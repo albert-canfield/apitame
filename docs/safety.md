@@ -327,7 +327,7 @@ With a file set, apitame appends one JSON object per line:
 
 ## Secrets
 
-- Auth secrets, and the token introspection secret under `http.oauth`, must be `${ENV_VAR}` references. A literal secret in the config is a validation error.
+- Auth secrets, and the token introspection secret under `http.oauth`, must be `${ENV_VAR}` references. A literal secret in the config is a validation error, and so are the ways to write one that look like references: a default (`${TOKEN:-hunter2}`), or text next to references that may all be empty (`hunter2${UNSET:-}`).
 - Values are read from the process environment, or from a `.env` file next to the config (existing variables are never overwritten).
 - Every secret value, its URL-encoded and query-string forms, and derived values (Basic auth headers, OAuth tokens as they are issued) is registered with a redactor. The redactor runs over every tool result, error message, log line and dry-run preview. The token introspection secret (`http.oauth.introspection.clientSecret`) is one of them, with the Basic credentials made from it.
 - Anything read from an environment variable for `auth`, `source.baseUrl` or `source.headers` counts as a secret, and so does each variable inside a longer value: with `value: "SSWS ${OKTA_TOKEN}"` or `baseUrl: https://api.telegram.org/bot${BOT_TOKEN}`, the bare token is hidden too, wherever it shows up. Keep values you want visible (such as a plain base URL) literal in the config.

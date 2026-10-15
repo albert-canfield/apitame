@@ -2,7 +2,7 @@
 
 apitame reads `apitame.config.yaml` from the current folder (or `--config <path>`, or the `APITAME_CONFIG` environment variable). `init` writes a commented version you can edit. Relative paths in the file resolve from the folder that holds it, and a `.env` file in that folder is loaded at startup without overriding variables that are already set.
 
-Values may reference environment variables as `${NAME}` or `${NAME:-default}`. Secret fields must use a reference; a literal secret is a validation error.
+Values may reference environment variables as `${NAME}` or `${NAME:-default}`. Secret fields must use a reference, and a literal secret is a validation error: so is a default in a secret field (`${TOKEN:-hunter2}` is still a secret written in the config), and text next to references that all have an empty default (`hunter2${UNSET:-}`). Text around a real reference (`SSWS ${OKTA_TOKEN}`) is fine, and `${NAME:-}` alone stands for an empty value.
 
 Unknown keys at the top level and under `http` and `writes` (including inside each argument rule) are an error that names the key, so a typo (`scope:` for `scopes:`, `rule:` for `rules:`) or a block at the wrong level cannot silently turn a setting off.
 

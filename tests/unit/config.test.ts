@@ -36,6 +36,37 @@ describe('config schema', () => {
     expect(cfg.auth).toEqual({ type: 'bearer', token: '${MY_TOKEN}' });
   });
 
+  it.each([
+    ['bearer', 'token'],
+    ['apiKey', 'value'],
+    ['basic', 'password'],
+    ['oauth2', 'clientSecret'],
+  ])('refuses %s secrets that are literals dressed as references', (type, field) => {
+    const auth = (value: string) => ({
+      type,
+      ...{
+        bearer: {},
+        apiKey: { name: 'X-Key' },
+        basic: { username: 'u' },
+        oauth2: { tokenUrl: 'https://x/token', clientId: 'id' },
+      }[type],
+      [field]: value,
+    });
+    const parse = (value: string) => () => parseConfig({ ...minimal, auth: auth(value) });
+    // A default is the secret itself, written in the config.
+    expect(parse('${UNSET_SECRET:-hunter2}')).toThrow(
+      new RegExp(`auth\\.${field} must not give a default value`),
+    );
+    expect(parse('SSWS ${TOKEN:-hunter2}')).toThrow(/must not give a default value/);
+    // Literal text next to references that may all be empty is a literal secret.
+    expect(parse('hunter2${UNSET_SECRET:-}')).toThrow(/must come from an environment variable/);
+    expect(parse('hunter2${A:-}${B:-}')).toThrow(/must come from an environment variable/);
+    // Still fine: a prefix next to a real reference, several references, an empty value.
+    for (const ok of ['${TOKEN}', 'SSWS ${TOKEN}', '${A}${B:-}', '${EMPTY:-}', '${A}-${B}']) {
+      expect(parse(ok)()).toBeTruthy();
+    }
+  });
+
   it('validates names and duplicate tools', () => {
     expect(() => parseConfig({ ...minimal, name: 'Bad Name' })).toThrow(ConfigError);
     expect(() =>
