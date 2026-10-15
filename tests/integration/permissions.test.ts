@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
@@ -7,7 +7,9 @@ import {
   InMemoryTransport,
   StreamableHTTPClientTransport,
 } from '@modelcontextprotocol/client';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { stringify } from 'yaml';
+import { inspectCommand } from '../../src/cli/commands/inspect.js';
 import { parseConfig } from '../../src/config/load.js';
 import type { ConfigInput } from '../../src/config/schema.js';
 import { Logger } from '../../src/log.js';
@@ -28,6 +30,7 @@ import {
   duckdbForTests,
   fakeApi,
   jsonOf,
+  PETSTORE,
   petstore,
   petstoreConfig,
   tempDir,
@@ -760,14 +763,23 @@ describe('config validation', () => {
     ).toEqual({ byScope: {}, byClient: { app: {} } });
   });
 
-  it('refuses tools and operations that do not exist, for OpenAPI', () => {
-    expect(() => api({ byScope: { 'mcp:read': { tools: ['pets'] } } })).toThrow(
-      /http\.oauth\.permissions\.byScope\.mcp:read\.tools: no tool matches "pets" \(tools: search_operations, call_operation\)/,
+  it('warns about tools and operations that do not exist, and keeps serving, for OpenAPI', async () => {
+    const { rt, sent } = api({
+      byScope: { 'mcp:read': { tools: ['pets'] } },
+      byClient: { app: { writes: ['createPett'] } },
+      default: { tools: ['call_*'], writes: ['*Pet'] },
+    });
+    expect(rt.warnings).toEqual([
+      'http.oauth.permissions.byScope.mcp:read.tools: no tool matches "pets" (typo?), so it shows nothing. Tools: search_operations, call_operation.',
+      'http.oauth.permissions.byClient.app.writes: no operation matches "createPett" (typo?), so it grants nothing.',
+    ]);
+    // A name that matches nothing only fails to grant: these callers get less, never more.
+    expect(rt.listTools(withScopes(['mcp:read']))).toEqual([]);
+    const app = withScopes([], { client: 'app', subject: 'u' });
+    expect(textOf(await call(rt, 'createPet', app))).toContain(
+      'that your access token does not allow',
     );
-    expect(() => api({ byClient: { app: { writes: ['createPett'] } } })).toThrow(
-      /http\.oauth\.permissions\.byClient\.app\.writes: no operation matches "createPett"/,
-    );
-    expect(() => api({ default: { tools: ['call_*'], writes: ['*Pet'] } })).not.toThrow();
+    expect(sent).toHaveLength(0);
   });
 
   it('warns about writes that the server never allows, since permissions cannot widen', () => {
@@ -782,7 +794,7 @@ describe('config validation', () => {
     ).toEqual([]);
   });
 
-  it('refuses tools and named queries that do not exist, for SQL', () => {
+  it('warns about tools and named queries that do not exist, for SQL', () => {
     const t = tempDir('apitame-permissions-check-');
     const db = join(t.dir, 'shop.db');
     try {
@@ -798,13 +810,47 @@ describe('config validation', () => {
           new SqliteDriver(db),
           new Redactor(),
         );
-      expect(() => build({ byScope: { a: { tools: ['run_sql'] } } })).toThrow(
-        /byScope\.a\.tools: no tool matches "run_sql" \(tools: list_tables, describe_table, query, order_count\)/,
+      const rt = build({ byScope: { a: { tools: ['run_sql'], writes: ['archive'] } } });
+      expect(rt.warnings).toEqual([
+        'http.oauth.permissions.byScope.a.tools: no tool matches "run_sql" (typo?), so it shows nothing. Tools: list_tables, describe_table, query, order_count.',
+        'http.oauth.permissions.byScope.a.writes: no named query matches "archive" (typo?), so it grants nothing.',
+      ]);
+      expect(rt.listTools({ caller: { subject: 'u' }, scopes: ['a'] })).toEqual([]);
+      expect(build({ byScope: { a: { tools: ['query', 'order_count'] } } }).warnings).toEqual([]);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('reports them in inspect, as writes.rules does', async () => {
+    const t = tempDir('apitame-permissions-inspect-');
+    try {
+      copyFileSync(PETSTORE, join(t.dir, 'openapi.yaml'));
+      const config = join(t.dir, 'apitame.config.yaml');
+      writeFileSync(
+        config,
+        stringify({
+          name: 'petstore',
+          source: { type: 'openapi', spec: './openapi.yaml' },
+          ...oauth({ byScope: { 'mcp:read': { tools: ['pets'] } } }),
+        }),
       );
-      expect(() => build({ byScope: { a: { writes: ['archive'] } } })).toThrow(
-        /byScope\.a\.writes: no named query matches "archive"/,
-      );
-      expect(() => build({ byScope: { a: { tools: ['query', 'order_count'] } } })).not.toThrow();
+      const lines: string[] = [];
+      const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+        lines.push(a.map(String).join(' '));
+      });
+      try {
+        await inspectCommand({ config, json: true });
+        const json = JSON.parse(lines.join('\n')) as { warnings: string[] };
+        expect(json.warnings).toContain(
+          'http.oauth.permissions.byScope.mcp:read.tools: no tool matches "pets" (typo?), so it shows nothing. Tools: search_operations, call_operation.',
+        );
+        lines.length = 0;
+        await inspectCommand({ config });
+        expect(lines.join('\n')).toContain('byScope.mcp:read.tools: no tool matches "pets"');
+      } finally {
+        spy.mockRestore();
+      }
     } finally {
       t.cleanup();
     }

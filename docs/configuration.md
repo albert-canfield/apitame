@@ -126,6 +126,17 @@ auth:
 | `perCaller.maxCallsPerMinute` | 0 | all | Tool calls per minute for each OAuth user (client and subject), on top of the server-wide limits. `0` means no per-user limit. Only applies over HTTP with `http.oauth`. |
 | `perCaller.maxWritesPerMinute` | 0 | all | Writes per minute for each OAuth user. `0` means no per-user limit. |
 
+Per-user limits are off by default because good numbers depend on the team and on the server-wide budget. A starting point for a shared server: give each user a fifth to a quarter of the server-wide limits, so that one looping agent leaves room for everyone else:
+
+```yaml
+limits:
+  maxCallsPerMinute: 300     # the whole team
+  maxWritesPerMinute: 40
+  perCaller:
+    maxCallsPerMinute: 60    # one user: enough for an agent at work, too little for a loop to starve the others
+    maxWritesPerMinute: 10
+```
+
 ## `tools`
 
 OpenAPI only. Each entry becomes one MCP tool.
@@ -324,7 +335,7 @@ Each entry narrows what a caller may do. A field that is not set narrows nothing
 | `writes` | list | Writes this caller may run (operation ids or named queries, `*` wildcards). A write must also be in `writes.allow`. Unset: every write in `writes.allow`. Cannot be combined with `mode: read-only`. |
 | `tools` | list | Tools this caller sees (`*` wildcards). Unset: every tool. |
 
-A caller gets the union of every entry that matches its token's scopes or client, then the server config narrows it. A name that matches no tool or operation is an error. Permissions only apply over HTTP with `http.oauth`; over stdio and other transports the server config applies. See [safety.md](safety.md#per-user-permissions) for the rules.
+A caller gets the union of every entry that matches its token's scopes or client, then the server config narrows it. A name that matches no tool or operation grants nothing: `serve`, `doctor` and `inspect` warn about it. Mistakes in the shape (a wrong type, `mode: read-only` with `writes`, a scope directly under `permissions`) are errors. Permissions only apply over HTTP with `http.oauth`; over stdio and other transports the server config applies. See [safety.md](safety.md#per-user-permissions) for the rules.
 
 ## Environment variables
 

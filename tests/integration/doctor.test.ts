@@ -66,8 +66,8 @@ describe('apitame doctor', () => {
     }
   });
 
-  it('fails on per-caller permissions that name a tool that does not exist', async () => {
-    const oauth = (permissions: unknown) => ({
+  it('warns under Config about per-caller permissions that grant nothing', async () => {
+    const t = petstoreProject({
       mode: 'read-write',
       writes: { allow: ['addPet'] },
       http: {
@@ -75,25 +75,21 @@ describe('apitame doctor', () => {
           issuer: 'https://login.example.com',
           resource: 'https://mcp.example.com/mcp',
           scopes: ['mcp:tools'],
-          permissions,
+          permissions: {
+            byScope: { 'mcp:read': { tools: ['stores'] }, 'mcp:write': { writes: ['deletePet'] } },
+          },
         },
       },
     });
-    let t = petstoreProject(oauth({ byScope: { 'mcp:read': { tools: ['stores'] } } }));
     try {
       const f = await runDoctor({ offline: true });
-      expect(statusOf(f, 'Config')).toEqual(['ok', 'fail']);
+      expect(find(f, 'Config').map((x) => x.status)).toEqual(['ok', 'warn', 'warn']);
       expect(find(f, 'Config')[1]!.detail).toMatch(
-        /byScope\.mcp:read\.tools: no tool matches "stores"/,
+        /byScope\.mcp:read\.tools: no tool matches "stores" \(typo\?\)/,
       );
-    } finally {
-      t.cleanup();
-    }
-    t = petstoreProject(oauth({ byScope: { 'mcp:write': { writes: ['deletePet'] } } }));
-    try {
-      const f = await runDoctor({ offline: true });
-      expect(find(f, 'Config').map((x) => x.status)).toEqual(['ok', 'warn']);
-      expect(find(f, 'Config')[1]!.detail).toMatch(/"deletePet" grants nothing/);
+      expect(find(f, 'Config')[2]!.detail).toMatch(/"deletePet" grants nothing/);
+      // Nothing else is held back: the rest of the checks still run.
+      expect(statusOf(f, 'Skills')).toHaveLength(1);
     } finally {
       t.cleanup();
     }
