@@ -147,7 +147,7 @@ To listen on other interfaces (for example inside a container), set a token. api
 APITAME_HTTP_TOKEN=$(openssl rand -hex 24) npx apitame serve --transport http --host 0.0.0.0
 ```
 
-Clients then send `Authorization: Bearer <token>`. Put TLS in front of it (a reverse proxy) before exposing it beyond a private network.
+Clients then send `Authorization: Bearer <token>`. Put TLS in front of it (a reverse proxy) before exposing it beyond a private network. [deploy.md](deploy.md) shows the container image, Docker Compose with Caddy, and how `http.oauth.resource` must match the public URL behind the proxy. `GET /health` answers `{"ok":true}` without authentication, for health checks.
 
 The HTTP transport serves both MCP protocol eras on the same URL (see [safety.md](safety.md#protocol-eras)). How a destructive operation is approved depends on the one the client speaks:
 

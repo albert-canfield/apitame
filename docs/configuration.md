@@ -317,7 +317,7 @@ http:
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `oauth.issuer` | URL | required | The authorization server, exactly as it appears in the tokens' `iss` claim (mind a trailing slash). Its metadata must name the same issuer. |
-| `oauth.resource` | URL | required | The public URL of this MCP endpoint, as clients connect to it. Advertised in the protected resource metadata, and accepted in `aud`. |
+| `oauth.resource` | URL | required | The public URL of this MCP endpoint, as clients connect to it. Advertised in the protected resource metadata, and accepted in `aud`. Behind a reverse proxy, the proxy's URL (see [deploy.md](deploy.md#oauth-behind-the-proxy)). |
 | `oauth.scopes` | list | `[]` | Scopes every token must carry. A token without one gets 403 `insufficient_scope`. Also advertised as `scopes_supported`. Leaving it empty logs a warning. |
 | `oauth.audiences` | list | `[]` | Other accepted `aud` values, for authorization servers that do not put the resource URL there (for example an Entra ID Application ID URI). Such audiences are often shared by other apps, so `scopes` or `clients` must be set too. |
 | `oauth.clients` | list | `[]` | When set, only tokens issued to these clients are accepted (the `client_id`, `azp`, `cid` or `appid` claim). |
@@ -354,8 +354,8 @@ Names that match no tool or operation, write patterns that grant nothing and ent
 
 | Variable | Used by | Description |
 | --- | --- | --- |
-| `APITAME_CONFIG` | `serve`, `inspect`, `test`, `add-to` | Config path when `--config` is not given. |
+| `APITAME_CONFIG` | `serve`, `inspect`, `test`, `doctor`, `add-to` | Config path when `--config` is not given. The container image sets it to `/config/apitame.config.yaml`. |
 | `APITAME_LOG_LEVEL` | `serve` | `debug`, `info` (default), `warn`, `error` or `silent`. Logs go to stderr. |
-| `APITAME_HTTP_TOKEN` | `serve --transport http` | Static bearer token, required when listening beyond loopback unless `http.oauth` is set. Cannot be combined with `http.oauth`. |
+| `APITAME_HTTP_TOKEN` | `serve --transport http`, `doctor` | Static bearer token, required when listening beyond loopback unless `http.oauth` is set. Cannot be combined with `http.oauth`. `doctor` checks the HTTP setup when it is set. |
 | `APITAME_DEBUG` | all | Print stack traces for errors. |
 | `NO_COLOR` | all | Disable colors. |

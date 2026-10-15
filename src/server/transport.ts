@@ -227,6 +227,19 @@ async function sendWeb(res: ServerResponse, response: Response): Promise<void> {
   res.writeHead(response.status, headers).end(await response.text());
 }
 
+/**
+ * `GET /health`: liveness for container health checks, load balancers and probes. It needs no
+ * authentication and says nothing about the server (no version, no config, no tools).
+ */
+function sendHealth(req: IncomingMessage, res: ServerResponse): void {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405, { Allow: 'GET, HEAD' }).end();
+    return;
+  }
+  res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ ok: true }));
+}
+
 /** The RFC 9728 document is public, and browser-based clients read it cross-origin. */
 function sendMetadata(req: IncomingMessage, res: ServerResponse, body: string): void {
   const cors = { 'Access-Control-Allow-Origin': '*' };
@@ -604,7 +617,13 @@ export async function serveHttp(makeServer: ServerFactory, opts: HttpOptions): P
 
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.pathname === '/health') return send(res, 200, { ok: true });
+    // On loopback the Host check covers /health too, so a web page cannot use DNS rebinding to
+    // learn that apitame runs on this machine. Beyond loopback (a container) nothing is checked
+    // before authentication, and probes send whatever Host they like.
+    if (url.pathname === '/health') {
+      if (validateHost && !validateHost(req, res)) return;
+      return sendHealth(req, res);
+    }
     if (oauth?.metadataPaths.has(url.pathname)) return sendMetadata(req, res, oauth.metadata);
     if (url.pathname !== '/mcp')
       return send(res, 404, { error: 'Not found. The MCP endpoint is /mcp.' });

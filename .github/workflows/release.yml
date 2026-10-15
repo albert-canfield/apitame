@@ -5,10 +5,13 @@ name: Release
 # Both steps are skipped when already done (for example after a manual `npm publish`).
 # npm auth: configure a trusted publisher on npmjs.com (package settings, GitHub Actions,
 # repository albert-canfield/apitame, workflow release.yml, environment npm). No token needed.
+# Then the container image is built, tested, scanned and pushed to ghcr.io/albert-canfield/apitame
+# (job `image`, docs/deploy.md).
 on:
   push:
     tags: ['v*.*.*']
-  # Manual run from the Actions tab: a dry run that checks npm auth and packaging, publishes nothing.
+  # Manual run from the Actions tab: a dry run that checks npm auth and packaging and builds and
+  # scans the image. It publishes and pushes nothing.
   workflow_dispatch:
 
 permissions:
@@ -70,3 +73,86 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # The container image, from the same commit as the npm package. It is tested and scanned before
+  # anything is pushed, and pushed only on version tags: <version>, <major>.<minor> and latest
+  # (not for pre-releases), for linux/amd64 and linux/arm64, with provenance, an SBOM and a signed
+  # build attestation. Re-run this job alone if it fails after npm published.
+  image:
+    needs: publish
+    runs-on: ubuntu-latest
+    # Only what this job needs: read the code, push to GHCR, and sign (OIDC) and store attestations.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/albert-canfield/apitame
+    steps:
+      - uses: actions/checkout@v7
+      # Third-party actions are pinned by commit SHA.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build for testing and scanning (linux/amd64, not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: apitame:scan
+          # Release builds use no cache from earlier runs. This job-local cache only lets the
+          # pushed linux/amd64 image reuse the layers that were just tested and scanned.
+          cache-to: type=local,dest=${{ runner.temp }}/buildx-cache,mode=max
+      - name: Smoke test
+        run: scripts/docker-smoke.sh
+        env:
+          IMAGE: apitame:scan
+      - name: Scan (fails on critical vulnerabilities that have a fix)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: apitame:scan
+          version: v0.75.0
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Log in to the GitHub Container Registry
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build linux/amd64 and linux/arm64 (pushed on version tags only)
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ startsWith(github.ref, 'refs/tags/') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=local,src=${{ runner.temp }}/buildx-cache
+      - name: Attest the build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          # An artifact metadata storage record would need artifact-metadata: write; not needed.
+          create-storage-record: false

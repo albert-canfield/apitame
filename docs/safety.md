@@ -358,6 +358,8 @@ The test suite checks that a bearer token echoed back by an API, OAuth client se
 - Request bodies are read once, up to 4 MB. With `--sessions`, a request without a session id (one that starts a session, and every 2026-07-28 request) may carry at most 1 MB, refused from its `Content-Length` before anything is read.
 - `subscriptions/listen` streams, which 2026-07-28 clients keep open to hear about list changes, are limited like sessions: at most 100 open at once, and with OAuth at most 10 per user, so one user cannot lock everyone else out.
 - Without authentication (possible on loopback only), any local process that can reach the port can call the tools and answer approval prompts itself. See [What an approval proves](#what-an-approval-proves).
+- `GET /health` needs no authentication and answers `{"ok":true}` only: no version, config or tool names. On loopback the Host check applies to it as to `/mcp`, so a web page cannot use DNS rebinding to find out that apitame runs on the machine. Any other method gets a 405.
+- The container image ([deploy.md](deploy.md)) listens on `0.0.0.0` inside the container, so it refuses to start without `APITAME_HTTP_TOKEN` or `http.oauth`, even when the port is only published on the host's loopback. It runs as a non-root user (UID 10001), works with a read-only root filesystem, and leaves out npm, npx, yarn and corepack. Beyond loopback the Host and Origin headers are not checked: authentication protects the server there, and a web page cannot attach a bearer token to its requests.
 
 ## What apitame does not protect against
 

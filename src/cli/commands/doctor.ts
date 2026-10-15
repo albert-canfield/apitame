@@ -13,6 +13,7 @@ import type { GeneratedFile } from '../../generator/skills.js';
 import { apitameCommand, DUCKDB_PACKAGE, DUCKDB_SPEC } from '../../sources/sql/duckdb-package.js';
 import { c } from '../ui.js';
 import { claudeDesktopConfigPath } from './add-to.js';
+import { checkHttp, wantsHttpChecks } from './doctor-http.js';
 import { skillsFor } from './init.js';
 import { toolCallFor } from './test.js';
 
@@ -20,6 +21,10 @@ export interface DoctorOptions {
   config?: string;
   json?: boolean;
   offline?: boolean;
+  /** Check an HTTP deployment even without HTTP settings in the config or environment. */
+  http?: boolean;
+  /** The host `serve --transport http` listens on, for the HTTP checks. Implies `http`. */
+  host?: string;
 }
 
 type Status = 'ok' | 'warn' | 'fail' | 'info';
@@ -327,6 +332,12 @@ export async function runDoctor(opts: DoctorOptions): Promise<Finding[]> {
   checkDotEnv(loaded, add);
   loadDotEnv(loaded.dir);
   checkEnv(loaded, add);
+  // Before the source: an HTTP deployment can be checked even when the API or database is down.
+  const httpToken = process.env.APITAME_HTTP_TOKEN;
+  if (wantsHttpChecks(loaded.config.http, opts, httpToken)) {
+    const host = opts.host ?? '127.0.0.1';
+    await checkHttp(loaded.config.http, { host, token: httpToken, offline: opts.offline }, add);
+  }
 
   if (loaded.config.source.type === 'duckdb') {
     try {
