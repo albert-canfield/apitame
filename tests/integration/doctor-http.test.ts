@@ -2,7 +2,7 @@ import { copyFileSync, writeFileSync } from 'node:fs';
 import { createServer, type Server as HttpServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
 import type { Finding } from '../../src/cli/commands/doctor.js';
 import { runDoctor } from '../../src/cli/commands/doctor.js';
@@ -15,8 +15,17 @@ import { createMcpServer } from '../../src/server/mcp.js';
 import { JwtVerifier } from '../../src/server/oauth.js';
 import { createOpenApiRuntime, type OpenApiRuntime } from '../../src/server/openapi-runtime.js';
 import { serveHttp } from '../../src/server/transport.js';
-import { freePort, PETSTORE, petstore, petstoreConfig, tempDir } from '../helpers.js';
-import { FakeAuthServer, makeKey, type TestKey } from '../oauth-fixtures.js';
+import {
+  forceGc,
+  freePort,
+  outcomeWithin,
+  PETSTORE,
+  petstore,
+  petstoreConfig,
+  startDripServer,
+  tempDir,
+} from '../helpers.js';
+import { FakeAuthServer, INTROSPECTION_CLIENT, makeKey, type TestKey } from '../oauth-fixtures.js';
 
 type OAuthInput = Record<string, unknown>;
 
@@ -44,6 +53,8 @@ beforeEach(() => {
   as.jwksStatus = 200;
   as.metadataIssuer = undefined;
   as.overrides.clear();
+  as.introspectionClient = { ...INTROSPECTION_CLIENT };
+  as.introspections.length = 0;
 });
 
 /** The `http` block of a config, with schema defaults. */
@@ -426,6 +437,222 @@ describe('doctor: HTTP deployments', () => {
     } finally {
       if (saved === undefined) delete process.env.APITAME_HTTP_TOKEN;
       else process.env.APITAME_HTTP_TOKEN = saved;
+      t.cleanup();
+    }
+  });
+});
+
+describe('doctor: token introspection', () => {
+  const SECRET_VAR = 'DOCTOR_TEST_INTROSPECTION_SECRET';
+  const env = { [SECRET_VAR]: INTROSPECTION_CLIENT.secret };
+  const basic = Buffer.from(
+    `${INTROSPECTION_CLIENT.id}:${encodeURIComponent(INTROSPECTION_CLIENT.secret)}`,
+  ).toString('base64');
+
+  /** http.oauth with introspection at the fake server (or `url`), as `verify` says. */
+  const introspecting = async (extra: OAuthInput = {}, url = as.introspectionUrl) =>
+    httpConfig(
+      oauthFor(await closedResource(), {
+        introspection: {
+          url,
+          clientId: INTROSPECTION_CLIENT.id,
+          clientSecret: `\${${SECRET_VAR}}`,
+        },
+        ...extra,
+      }),
+    );
+
+  /** The secret, or the Basic credentials made from it, must never be printed. */
+  const noSecret = (f: Finding[]) => {
+    const all = f.map((x) => x.detail).join('\n');
+    expect(all).not.toContain(INTROSPECTION_CLIENT.secret);
+    expect(all).not.toContain(basic);
+  };
+
+  it('checks the endpoint and the credentials as serve does at startup', async () => {
+    as.overrides.set(RFC8414, fullMetadata);
+    const f = await check(await introspecting(), { env });
+    expect(statuses(f, 'OAuth introspection')).toEqual(['ok']);
+    expect(details(f, 'OAuth introspection')).toMatch(
+      /accepts apitame's credentials and calls a token nobody issued inactive/,
+    );
+    expect(details(f, 'HTTP auth')).toMatch(/\(verify: introspection\)/);
+    // One question, about a random token, with the configured client.
+    expect(as.introspections).toHaveLength(1);
+    expect(as.introspections[0]!.form.get('token')).toMatch(/^apitame-check-[0-9a-f]{32}$/);
+    expect(as.introspections[0]!.authorization).toBe(`Basic ${basic}`);
+    noSecret(f);
+  });
+
+  it('skips the signing keys under verify: introspection, and checks both under auto', async () => {
+    as.overrides.set(RFC8414, fullMetadata);
+    const jwksBefore = as.count('/jwks');
+    let f = await check(await introspecting(), { env });
+    expect(statuses(f, 'OAuth keys')).toEqual(['info']);
+    expect(details(f, 'OAuth keys')).toMatch(/not used/);
+    expect(as.count('/jwks')).toBe(jwksBefore);
+
+    f = await check(await introspecting({ verify: 'auto' }), { env });
+    expect(statuses(f, 'OAuth keys')).toEqual(['ok']);
+    expect(statuses(f, 'OAuth introspection')).toEqual(['ok']);
+    expect(details(f, 'HTTP auth')).toMatch(/\(verify: auto\)/);
+  });
+
+  it('needs no jwks_uri in the metadata under verify: introspection, nor metadata at all', async () => {
+    as.overrides.set(RFC8414, (res) =>
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+        JSON.stringify({
+          issuer: as.issuer,
+          authorization_endpoint: `${as.issuer}/authorize`,
+          token_endpoint: `${as.issuer}/token`,
+          code_challenge_methods_supported: ['S256'],
+        }),
+      ),
+    );
+    let f = await check(await introspecting(), { env });
+    expect(statuses(f, 'OAuth issuer')).toEqual(['ok']);
+
+    as.overrides.set(RFC8414, (res) => res.writeHead(404).end());
+    f = await check(await introspecting(), { env });
+    expect(statuses(f, 'OAuth issuer')).toEqual(['warn']);
+    expect(details(f, 'OAuth issuer')).toMatch(/does not need it under verify: introspection/);
+    expect(statuses(f, 'OAuth introspection')).toEqual(['ok']);
+  });
+
+  it('fails when the credentials are rejected, without printing them', async () => {
+    as.introspectionClient = { id: INTROSPECTION_CLIENT.id, secret: 'another-secret' };
+    const f = await check(await introspecting(), { env });
+    expect(statuses(f, 'OAuth introspection')).toEqual(['fail']);
+    expect(details(f, 'OAuth introspection')).toMatch(
+      /HTTP 401\. Check http\.oauth\.introspection\.clientId and clientSecret\./,
+    );
+    noSecret(f);
+  });
+
+  it('fails when the endpoint calls a random token active, or does not answer as RFC 7662 says', async () => {
+    const answer = (body: unknown) => (res: ServerResponse) =>
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
+
+    as.overrides.set('/introspect', answer({ active: true }));
+    let f = await check(await introspecting(), { env });
+    expect(statuses(f, 'OAuth introspection')).toEqual(['fail']);
+    expect(details(f, 'OAuth introspection')).toMatch(
+      /random token nobody issued is active.*serve refuses to start with it/,
+    );
+
+    as.overrides.set('/introspect', answer({ ok: true }));
+    f = await check(await introspecting(), { env });
+    expect(statuses(f, 'OAuth introspection')).toEqual(['fail']);
+    expect(details(f, 'OAuth introspection')).toMatch(/did not answer as RFC 7662 says/);
+    noSecret(f);
+  });
+
+  it('fails without https or without the secret, before sending anything', async () => {
+    let f = await check(await introspecting({}, 'http://introspect.example.com/introspect'), {
+      env,
+    });
+    expect(statuses(f, 'OAuth introspection')).toEqual(['fail']);
+    expect(details(f, 'OAuth introspection')).toMatch(
+      /introspection\.url must use https.*serve refuses to start/,
+    );
+
+    f = await check(await introspecting(), { env: {} });
+    expect(statuses(f, 'OAuth introspection')).toEqual(['fail']);
+    expect(details(f, 'OAuth introspection')).toContain(SECRET_VAR);
+    expect(as.introspections).toHaveLength(0);
+  });
+
+  it('warns when the issuer publishes another introspection endpoint', async () => {
+    const withEndpoint = (endpoint: string) => (res: ServerResponse) =>
+      res.writeHead(200, { 'Content-Type': 'application/json' }).end(
+        JSON.stringify({
+          issuer: as.issuer,
+          jwks_uri: as.jwksUri,
+          authorization_endpoint: `${as.issuer}/authorize`,
+          token_endpoint: `${as.issuer}/token`,
+          code_challenge_methods_supported: ['S256'],
+          introspection_endpoint: endpoint,
+        }),
+      );
+    as.overrides.set(RFC8414, withEndpoint(`${as.issuer}/oauth2/introspect`));
+    let f = await check(await introspecting(), { env });
+    expect(statuses(f, 'OAuth introspection')).toEqual(['warn', 'ok']);
+    expect(details(f, 'OAuth introspection')).toMatch(
+      /names the introspection endpoint http:\/\/127\.0\.0\.1:\d+\/oauth2\/introspect, but http\.oauth\.introspection\.url is/,
+    );
+
+    as.overrides.set(RFC8414, withEndpoint(as.introspectionUrl));
+    f = await check(await introspecting(), { env });
+    expect(statuses(f, 'OAuth introspection')).toEqual(['ok']);
+  });
+
+  it('contacts nothing with --offline', async () => {
+    const f = await check(await introspecting(), { env, offline: true });
+    expect(statuses(f, 'OAuth introspection')).toEqual(['info']);
+    expect(details(f, 'OAuth introspection')).toMatch(/not contacted \(--offline\)/);
+    expect(as.introspections).toHaveLength(0);
+  });
+});
+
+describe('doctor: request deadlines', () => {
+  let drip: Awaited<ReturnType<typeof startDripServer>> | undefined;
+  afterEach(async () => {
+    await drip?.close();
+    drip = undefined;
+  });
+
+  it('ends a metadata request whose body drips forever, garbage collections included', async () => {
+    drip = await startDripServer('{"issuer":"');
+    const issuer = drip.url.replace(/\/$/, '');
+    const started = Date.now();
+    const collector = setInterval(forceGc, 50);
+    const outcome = await outcomeWithin(
+      check(httpConfig(oauthFor(await closedResource(), { issuer })), { timeoutMs: 300 }),
+      5_000,
+    ).finally(() => clearInterval(collector));
+    expect(outcome.state, 'doctor still waits for the body').toBe('fulfilled');
+    expect(Date.now() - started).toBeLessThan(4_000);
+    const f = await check(httpConfig(oauthFor(await closedResource(), { issuer })), {
+      timeoutMs: 300,
+    });
+    expect(statuses(f, 'OAuth issuer')).toEqual(['fail']);
+    expect(details(f, 'OAuth issuer')).toMatch(/did not answer within 0\.3 seconds/);
+  });
+
+  it('checks a base URL with no parameterless read, even when its body never ends', async () => {
+    drip = await startDripServer('<html>');
+    const t = tempDir('apitame-doctor-api-');
+    try {
+      writeFileSync(
+        join(t.dir, 'openapi.yaml'),
+        stringify({
+          openapi: '3.0.3',
+          info: { title: 'one', version: '1' },
+          paths: {
+            '/items/{id}': {
+              get: {
+                operationId: 'getItem',
+                parameters: [
+                  { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+                ],
+                responses: { '200': { description: 'ok' } },
+              },
+            },
+          },
+        }),
+      );
+      const config = join(t.dir, 'apitame.config.yaml');
+      writeFileSync(
+        config,
+        stringify({
+          name: 'one',
+          source: { type: 'openapi', spec: './openapi.yaml', baseUrl: drip.url },
+        }),
+      );
+      const f = await runDoctor({ config });
+      expect(statuses(f, 'API')).toEqual(['ok']);
+      expect(details(f, 'API')).toMatch(/is reachable \(HTTP 200\); no parameterless read/);
+    } finally {
       t.cleanup();
     }
   });
