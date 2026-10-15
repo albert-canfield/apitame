@@ -45,7 +45,7 @@ export function unauthenticatedHttpWarning(
     `HTTP without authentication: any local process that can reach ${url} can call the tools and approve destructive operations itself, so an approval does not prove that a human agreed.`,
     'Set APITAME_HTTP_TOKEN or http.oauth and give the credentials only to the MCP client, or serve over stdio.',
     method === 'elicitation'
-      ? 'Under confirmation.method: elicitation, approvals from clients on protocol 2026-07-28 are refused until then.'
+      ? 'Under confirmation.method: elicitation, approvals are refused until then.'
       : '',
   ]
     .filter(Boolean)

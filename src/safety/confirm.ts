@@ -185,11 +185,6 @@ function approvalRound(
   round: ApprovalRound,
   message: string,
 ): ConfirmOutcome | undefined {
-  // Under `elicitation` the answer must come from the client the human uses. Without
-  // authentication on HTTP, nothing tells that client apart from any other local process.
-  if (round.anyoneCanAnswer && req.method === 'elicitation') {
-    return cannotElicit(req.id, true);
-  }
   const binding = { args: req.args, caller: req.ctx?.caller ?? null };
   if (round.state !== undefined) {
     const check = req.store.approvals.consume(round.state, req.id, binding);
@@ -226,6 +221,10 @@ function approvalRound(
  * the call returns it, and the client calls again with the answer (see `approvalRound`).
  */
 export async function confirmOrChallenge(req: ConfirmRequest): Promise<ConfirmOutcome> {
+  // Under `elicitation` the answer must come from the client the human uses. Over HTTP without
+  // authentication nothing tells that client apart from any other local process, in either
+  // protocol era, so nobody is asked.
+  if (req.method === 'elicitation' && req.ctx?.anyoneCanAnswer) return cannotElicit(req.id, true);
   if (req.method !== 'token') {
     const message = `Confirm a destructive action requested by the agent:\n\n${req.preview}\n\nApprove only if you expect this.`;
     const round = req.ctx?.approval;
