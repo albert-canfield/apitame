@@ -163,6 +163,7 @@ export const ArgumentRuleSchema = z
       maxLength: ruleLength('maxLength'),
       required: ruleFlag('required'),
       forbidden: ruleFlag('forbidden'),
+      optional: ruleFlag('optional'),
     },
     {
       error: unknownKeys({
@@ -177,6 +178,7 @@ export const ArgumentRuleSchema = z
         maximum: 'did you mean max?',
         minlength: 'did you mean minLength?',
         maxlength: 'did you mean maxLength?',
+        nullable: 'did you mean optional?',
       }),
     },
   )

@@ -102,14 +102,14 @@ const paths = {
 
 const rules = {
   createRefund: {
-    'body.amount': { required: true, max: 5000 },
-    'body.items[].price': { max: 100 },
+    'body.amount': { max: 5000 },
+    'body.items[].price': { optional: true, max: 100 },
   },
   updateIssue: {
     owner: { in: ['acme'] },
     repo: { pattern: '^(web|api)$' },
     number: { max: 1000 },
-    'body.state': { in: ['open', 'closed'] },
+    'body.state': { optional: true, in: ['open', 'closed'] },
   },
   deleteIssue: { owner: { in: ['acme'] } },
   getRepo: { owner: { in: ['acme'] } },
@@ -157,10 +157,28 @@ describe('writes.rules in the OpenAPI runtime', () => {
     ]);
   });
 
-  it('refuses a missing required value and checks every item of a list', async () => {
-    const { rt, sent } = api();
+  it('refuses a call that leaves out a value a rule checks, unless the rule is optional', async () => {
+    const { rt, sent, audit } = api();
+    // A refund without an amount would refund the whole charge.
     const missing = await rt.callTool('refunds', { body: { charge: 'ch_1' } });
-    expect(textOf(missing)).toContain('- body.amount: is required');
+    expect(missing.isError).toBe(true);
+    expect(textOf(missing)).toContain(
+      '- body.amount: is missing; the rule requires it, mark it optional: true if leaving it out is safe [rule body.amount max: 5000]',
+    );
+    expect(sent).toHaveLength(0);
+    expect(audit()[0]).toMatchObject({
+      outcome: 'blocked',
+      reason:
+        'writes.rules.createRefund.body.amount (max: 5000): body.amount is missing; the rule requires it, mark it optional: true if leaving it out is safe',
+    });
+    // body.items[].price and body.state are optional: leaving them out is fine.
+    await rt.callTool('refunds', { body: { charge: 'ch_1', amount: 10 } });
+    await callOperation(rt, 'updateIssue', { ...goodIssue, body: { title: 'renamed' } });
+    expect(sent).toHaveLength(2);
+  });
+
+  it('checks every item of a list', async () => {
+    const { rt, sent } = api();
     const items = await rt.callTool('refunds', {
       body: { charge: 'ch_1', amount: 10, items: [{ price: 5 }, { price: 500 }] },
     });
@@ -248,7 +266,7 @@ describe('writes.rules in the OpenAPI runtime', () => {
     );
     expect(dry.dryRun).toBe(true);
     expect(dry.rulesPassed).toBe(
-      'owner: must be "acme"; repo: must match ^(web|api)$; number: at most 1000; body.state: one of "open", "closed"',
+      'owner: required, must be "acme"; repo: required, must match ^(web|api)$; number: required, at most 1000; body.state: if set, one of "open", "closed"',
     );
 
     await callOperation(rt, 'updateIssue', goodIssue);
@@ -258,14 +276,14 @@ describe('writes.rules in the OpenAPI runtime', () => {
     const args = { owner: 'acme', repo: 'web', number: 3 };
     const challenge = textOf(await callOperation(rt, 'deleteIssue', args));
     expect(challenge).toContain('CONFIRMATION REQUIRED');
-    expect(challenge).toContain('Rules passed: owner: must be "acme".');
+    expect(challenge).toContain('Rules passed: owner: required, must be "acme".');
     await callOperation(rt, 'deleteIssue', args, { confirm: tokenIn(challenge) });
     expect(sent).toHaveLength(2);
 
     const elicit = vi.fn<NonNullable<CallContext['elicit']>>(async () => 'accept');
     const { rt: auto, sent: autoSent } = api({ confirmation: { method: 'auto' } });
     await auto.callTool('issues', { operation: 'deleteIssue', params: args }, { elicit });
-    expect(elicit.mock.calls[0]?.[0]).toContain('Rules passed: owner: must be "acme".');
+    expect(elicit.mock.calls[0]?.[0]).toContain('Rules passed: owner: required, must be "acme".');
     expect(autoSent).toHaveLength(1);
   });
 
@@ -315,17 +333,17 @@ describe('writes.rules in the OpenAPI runtime', () => {
     const { rt } = api();
     const tools = rt.listTools();
     expect(tools.find((x) => x.name === 'refunds')?.description).toContain(
-      'Rules: body.amount: required, at most 5000; body.items[].price: at most 100.',
+      'Rules: body.amount: required, at most 5000; body.items[].price: if set, at most 100.',
     );
     const issues = tools.find((x) => x.name === 'issues')!.description;
     expect(issues).toMatch(
-      /- updateIssue\(.*\n {2}Rules: owner: must be "acme"; repo: must match \^\(web\|api\)\$; number: at most 1000; body.state: one of "open", "closed"\.\n- deleteIssue\(.*\n {2}Rules: owner: must be "acme"\.\n- getRepo\([^\n]*$/,
+      /- updateIssue\(.*\n {2}Rules: owner: required, must be "acme"; repo: required, must match \^\(web\|api\)\$; number: required, at most 1000; body.state: if set, one of "open", "closed"\.\n- deleteIssue\(.*\n {2}Rules: owner: required, must be "acme"\.\n- getRepo\([^\n]*$/,
     );
     const found = jsonOf<{ results: Array<{ operationId: string; rules?: string }> }>(
       await rt.callTool('search_operations', { query: 'refund' }),
     );
     expect(found.results.find((r) => r.operationId === 'createRefund')?.rules).toBe(
-      'body.amount: required, at most 5000; body.items[].price: at most 100',
+      'body.amount: required, at most 5000; body.items[].price: if set, at most 100',
     );
     const repo = jsonOf<{ results: Array<{ operationId: string; rules?: string }> }>(
       await rt.callTool('search_operations', { query: 'get repo' }),
@@ -340,10 +358,10 @@ describe('writes.rules in the OpenAPI runtime', () => {
     const reference = files.find((f) => f.path.endsWith('operations.md'))!.content;
     expect(skill).toContain('- Some writes have argument rules.');
     expect(skill).toContain(
-      '  - `createRefund`: `body.amount`: required, at most 5000; `body.items[].price`: at most 100',
+      '  - `createRefund`: `body.amount`: required, at most 5000; `body.items[].price`: if set, at most 100',
     );
     expect(skill).toContain(
-      '  - `updateIssue`: `owner`: must be "acme"; `repo`: must match `^(web|api)$`;',
+      '  - `updateIssue`: `owner`: required, must be "acme"; `repo`: required, must match `^(web|api)$`;',
     );
     expect(skill).not.toContain('`getRepo`:');
     // The sample owner would be "octocat"; the rule only allows "acme".
@@ -356,7 +374,7 @@ describe('writes.rules in the OpenAPI runtime', () => {
       return reference.slice(from, to < 0 ? undefined : from + 4 + to);
     };
     expect(section('updateIssue')).toContain(
-      'Rules, checked by the server before anything is sent:\n\n- `owner`: must be "acme"\n- `repo`: must match `^(web|api)$`\n- `number`: at most 1000\n',
+      'Rules, checked by the server before anything is sent:\n\n- `owner`: required, must be "acme"\n- `repo`: required, must match `^(web|api)$`\n- `number`: required, at most 1000\n- `body.state`: if set, one of "open", "closed"\n',
     );
     expect(section('createRefund')).toContain('- `body.amount`: required, at most 5000');
     expect(section('getRepo')).toContain('Signature: `getRepo(');
@@ -460,6 +478,57 @@ describe('writes.rules for SQL named queries', () => {
     }
   });
 
+  it('refuses a named write without a parameter a rule checks, unless the rule is optional', async () => {
+    const totalOf = (id: number) => {
+      const conn = new Database(db, { readonly: true });
+      try {
+        return (conn.prepare('SELECT total FROM orders WHERE id = ?').get(id) as { total: number })
+          .total;
+      } finally {
+        conn.close();
+      }
+    };
+    const query = {
+      name: 'raise_total',
+      description: 'Raise the total of one order',
+      write: true,
+      sql: 'UPDATE orders SET total = total + coalesce(:amount, 0) WHERE id = :id',
+      params: { id: { type: 'integer' }, amount: { type: 'number', required: false } },
+    };
+    const make = (amount: Record<string, unknown>) =>
+      runtime({
+        writes: { allow: ['raise_total'], rules: { raise_total: { amount } } },
+        sql: { queries: [query] },
+      });
+    const before = totalOf(4);
+
+    const strict = make({ max: 10 });
+    try {
+      const res = await strict.rt.callTool('raise_total', { id: 4 });
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toContain(
+        '- amount: is missing; the rule requires it, mark it optional: true if leaving it out is safe [rule amount max: 10]',
+      );
+      expect(totalOf(4)).toBe(before);
+    } finally {
+      await strict.rt.close();
+    }
+
+    const relaxed = make({ optional: true, max: 10 });
+    try {
+      const done = jsonOf<{ affectedRows: number }>(
+        await relaxed.rt.callTool('raise_total', { id: 4 }),
+      );
+      expect(done.affectedRows).toBe(1);
+      expect(totalOf(4)).toBe(before);
+      const big = await relaxed.rt.callTool('raise_total', { id: 4, amount: 50 });
+      expect(textOf(big)).toContain('- amount: must be at most 10, got 50');
+      expect(totalOf(4)).toBe(before);
+    } finally {
+      await relaxed.rt.close();
+    }
+  });
+
   it('refuses before a dry run and before asking for confirmation', async () => {
     const { rt } = runtime();
     try {
@@ -482,7 +551,7 @@ describe('writes.rules for SQL named queries', () => {
       );
       expect(dry).toMatchObject({
         wouldAffectRows: 1,
-        rulesPassed: 'status: one of "paid", "shipped"; id: at most 3',
+        rulesPassed: 'status: required, one of "paid", "shipped"; id: required, at most 3',
       });
       const done = jsonOf<{ affectedRows: number }>(
         await rt.callTool('set_status', { id: 2, status: 'shipped' }),
@@ -491,7 +560,7 @@ describe('writes.rules for SQL named queries', () => {
       expect(statusOf(2)).toBe('shipped');
       const challenge = textOf(await rt.callTool('delete_order', { id: 3 }));
       expect(challenge).toContain('CONFIRMATION REQUIRED');
-      expect(challenge).toContain('Rules passed: id: at most 3.');
+      expect(challenge).toContain('Rules passed: id: required, at most 3.');
       expect(audit().map((e) => e.outcome)).toEqual(['dry-run', 'sent', 'confirmation-requested']);
     } finally {
       await rt.close();
@@ -503,7 +572,7 @@ describe('writes.rules for SQL named queries', () => {
     try {
       const tool = rt.listTools().find((x) => x.name === 'set_status');
       expect(tool?.description).toBe(
-        'Set the status of one order [write] Rules: status: one of "paid", "shipped"; id: at most 3.',
+        'Set the status of one order [write] Rules: status: required, one of "paid", "shipped"; id: required, at most 3.',
       );
       expect(rt.warnings).toContain(
         'writes.rules.orders_of: "orders_of" is a read named query; rules only apply to writes, so these are ignored.',
@@ -511,7 +580,9 @@ describe('writes.rules for SQL named queries', () => {
       const read = jsonOf<{ rows: unknown[] }>(await rt.callTool('orders_of', { customer_id: 17 }));
       expect(read.rows.length).toBeGreaterThan(0);
       const skill = (await skillsFor(rt)).find((f) => f.path.endsWith('SKILL.md'))!.content;
-      expect(skill).toContain('Rules: status: one of "paid", "shipped"; id: at most 3.');
+      expect(skill).toContain(
+        'Rules: status: required, one of "paid", "shipped"; id: required, at most 3.',
+      );
     } finally {
       await rt.close();
     }
@@ -623,9 +694,13 @@ describe('writes.rules in inspect and doctor', () => {
         {
           path: 'body.status',
           rule: { in: ['available', 'pending'] },
-          text: 'one of "available", "pending"',
+          text: 'required, one of "available", "pending"',
         },
-        { path: 'body.nmae', rule: { maxLength: 9 }, text: 'at most 9 characters or items' },
+        {
+          path: 'body.nmae',
+          rule: { maxLength: 9 },
+          text: 'required, at most 9 characters or items',
+        },
       ],
       placeOrder: [
         {

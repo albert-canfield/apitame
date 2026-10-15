@@ -44,6 +44,9 @@ function rules(config: RulesConfig, redactor = new Redactor()) {
   return new WriteRules(config, targets, redactor);
 }
 
+const MISSING =
+  'is missing; the rule requires it, mark it optional: true if leaving it out is safe';
+
 /** The concrete paths of the broken rules for one call of `op`. */
 function broken(config: RulesConfig['op'], args: Record<string, unknown>): string[] {
   return rules({ op: config })
@@ -60,8 +63,14 @@ describe('writes.rules operators', () => {
     expect(broken(rule, { owner: null })).toHaveLength(1);
     expect(broken(rule, { owner: ['acme'] })).toHaveLength(1);
     expect(broken(rule, { owner: { name: 'acme' } })).toHaveLength(1);
-    // A missing value is not checked: that is what required is for.
-    expect(broken(rule, {})).toEqual([]);
+    // A missing value is refused: for a write, leaving a value out often means "everything".
+    expect(broken(rule, {})).toEqual([`owner: ${MISSING}`]);
+    // Unless the rule says it may be left out; then only a value that is there is checked.
+    const optional = { owner: { optional: true as const, in: ['acme'] } };
+    expect(broken(optional, {})).toEqual([]);
+    expect(broken(optional, { owner: 'acme' })).toEqual([]);
+    expect(broken(optional, { owner: 'initech' })).toEqual(['owner: must be "acme"']);
+    expect(broken(optional, { owner: null })).toEqual(['owner: must be "acme"']);
   });
 
   it('in and equals accept a number or boolean in its usual text form, and nothing looser', () => {
@@ -83,9 +92,12 @@ describe('writes.rules operators', () => {
     expect(broken({ amount: { notIn: [42] } }, { amount: '4.2e1' })).toHaveLength(1);
     expect(broken({ amount: { notIn: [42] } }, { amount: 43 })).toEqual([]);
     expect(broken({ confirmed: { notIn: [true] } }, { confirmed: 'TRUE' })).toHaveLength(1);
-    // Lists and objects are refused: they could hide a listed value.
-    expect(broken(rule, { owner: ['main'] })).toEqual(['owner: must be a single value']);
-    expect(broken(rule, {})).toEqual([]);
+    // Lists, objects and null are refused: they could hide a listed value or mean the default.
+    expect(broken(rule, { owner: ['main'] })).toEqual(['owner: must be a single value, not null']);
+    expect(broken(rule, { owner: null })).toEqual(['owner: must be a single value, not null']);
+    expect(broken({ owner: { optional: true, notIn: ['main'] } }, { owner: null })).toHaveLength(1);
+    expect(broken(rule, {})).toEqual([`owner: ${MISSING}`]);
+    expect(broken({ owner: { optional: true, notIn: ['main'] } }, {})).toEqual([]);
   });
 
   it('equals: the value must be exactly this one, null included', () => {
@@ -95,6 +107,8 @@ describe('writes.rules operators', () => {
     ]);
     expect(broken({ body: { equals: null } }, { body: null })).toEqual([]);
     expect(broken({ body: { equals: null } }, { body: {} })).toHaveLength(1);
+    expect(broken({ owner: { equals: 'acme' } }, {})).toEqual([`owner: ${MISSING}`]);
+    expect(broken({ owner: { optional: true, equals: 'acme' } }, {})).toEqual([]);
   });
 
   it('pattern: the whole value must match; numbers are checked as text', () => {
@@ -105,7 +119,8 @@ describe('writes.rules operators', () => {
     expect(broken({ amount: { pattern: '\\d{1,4}' } }, { amount: 12345 })).toHaveLength(1);
     expect(broken(rule, { owner: true })).toEqual(['owner: must be text that matches ^(web|api)$']);
     expect(broken(rule, { owner: null })).toHaveLength(1);
-    expect(broken(rule, {})).toEqual([]);
+    expect(broken(rule, {})).toEqual([`owner: ${MISSING}`]);
+    expect(broken({ owner: { optional: true, pattern: 'web' } }, {})).toEqual([]);
   });
 
   it('min and max: numbers, and strings that are plainly numbers', () => {
@@ -124,7 +139,10 @@ describe('writes.rules operators', () => {
       ]);
     expect(broken({ amount: { max: 5 } }, { amount: 6 })).toEqual(['amount: must be at most 5']);
     expect(broken({ amount: { min: 5 } }, { amount: 4 })).toEqual(['amount: must be at least 5']);
-    expect(broken(rule, {})).toEqual([]);
+    // A refund without an amount usually refunds everything: refused.
+    expect(broken(rule, {})).toEqual([`amount: ${MISSING}`]);
+    expect(broken({ amount: { optional: true, max: 5 } }, {})).toEqual([]);
+    expect(broken({ amount: { optional: true, max: 5 } }, { amount: 6 })).toHaveLength(1);
   });
 
   it('minLength and maxLength: characters of text, items of a list', () => {
@@ -143,7 +161,12 @@ describe('writes.rules operators', () => {
     expect(broken(title, { body: { title: 12 } })).toEqual([
       'body.title: must be text or a list with 2 to 5 characters',
     ]);
-    expect(broken(title, { body: {} })).toEqual([]);
+    expect(broken(title, { body: {} })).toEqual([`body.title: ${MISSING}`]);
+    // Below a missing object, the value is missing too.
+    expect(broken(title, {})).toEqual([`body.title: ${MISSING}`]);
+    const optionalTitle = { 'body.title': { optional: true as const, maxLength: 5 } };
+    expect(broken(optionalTitle, {})).toEqual([]);
+    expect(broken(optionalTitle, { body: { title: 'abcdef' } })).toHaveLength(1);
   });
 
   it('required: present and not null, along the whole path', () => {
@@ -154,10 +177,11 @@ describe('writes.rules operators', () => {
     expect(broken(rule, { body: { title: null } })).toEqual(['body.title: is required']);
     expect(broken(rule, {})).toEqual(['body.title: is required']);
     expect(broken(rule, { body: null })).toEqual(['body.title: is required']);
-    // With other operators, required turns "not checked when missing" into a refusal.
+    // Next to value operators it changes nothing but the wording: they need the value anyway.
     const amount = { amount: { required: true as const, max: 5000 } };
     expect(broken(amount, {})).toEqual(['amount: is required']);
     expect(broken(amount, { amount: 6000 })).toEqual(['amount: must be at most 5000']);
+    expect(broken(amount, { amount: null })).toEqual(['amount: is required']);
   });
 
   it('forbidden: the argument must be left out; null counts as set', () => {
@@ -178,8 +202,18 @@ describe('writes.rules operators', () => {
       'body.items[1].price: must be at most 100',
       'body.items[2].price: must be at most 100',
     ]);
+    // An empty list passes: there is no item to break the rule.
     expect(broken(price, { body: { items: [] } })).toEqual([]);
-    expect(broken(price, { body: {} })).toEqual([]);
+    // A missing list, or an item without the value, is missing for the rule.
+    expect(broken(price, { body: {} })).toEqual([`body.items[].price: ${MISSING}`]);
+    expect(broken(price, { body: { items: null } })).toEqual([`body.items[].price: ${MISSING}`]);
+    expect(broken(price, { body: { items: [{ price: 1 }, { sku: 'x' }] } })).toEqual([
+      `body.items[1].price: ${MISSING}`,
+    ]);
+    const optionalPrice = { 'body.items[].price': { optional: true as const, max: 100 } };
+    expect(broken(optionalPrice, { body: {} })).toEqual([]);
+    expect(broken(optionalPrice, { body: { items: [{ sku: 'x' }] } })).toEqual([]);
+    expect(broken(optionalPrice, { body: { items: [{ price: 500 }] } })).toHaveLength(1);
     const labels = { 'body.labels[]': { in: ['bug', 'docs'] } };
     expect(broken(labels, { body: { labels: ['bug', 'docs'] } })).toEqual([]);
     expect(broken(labels, { body: { labels: ['bug', 'urgent'] } })).toEqual([
@@ -205,6 +239,13 @@ describe('writes.rules operators', () => {
     expect(broken({ 'body.items[].sku': { forbidden: true } }, { body: { items: 'x' } })).toEqual([
       'body.items: must be a list',
     ]);
+    // optional lets a value be left out, not sent in the wrong shape.
+    expect(
+      broken(
+        { 'body.items[].price': { optional: true, max: 100 } },
+        { body: { items: { price: 900 } } },
+      ),
+    ).toEqual(['body.items: must be a list']);
   });
 
   it('applies to destructive operations, and never to reads or operations without rules', () => {
@@ -234,12 +275,19 @@ describe('writes.rules refusals', () => {
     expect(refused?.reason).toBe(
       'writes.rules.op.amount (max: 5000): amount must be at most 5000, got 6000; writes.rules.op.body.state (in: ["open","closed"]): body.state must be one of "open", "closed", got "locked"',
     );
-    expect(r.enforce('op', { owner: 'acme', amount: 10 })).toBeUndefined();
+    expect(r.enforce('op', { owner: 'acme', amount: 10, body: { state: 'open' } })).toBeUndefined();
   });
 
-  it('shows no value for a missing argument', () => {
-    const refused = rules({ op: { amount: { required: true } } }).enforce('op', { owner: 'a' });
-    expect(refused?.message).toContain('- amount: is required [rule amount required: true]');
+  it('shows no value for a missing argument, and says how to allow leaving it out', () => {
+    const r = rules({ op: { amount: { min: 1, max: 5000 }, owner: { required: true } } });
+    const refused = r.enforce('op', {});
+    expect(refused?.message).toContain(
+      '- amount: is missing; the rule requires it, mark it optional: true if leaving it out is safe [rule amount min: 1, max: 5000]',
+    );
+    expect(refused?.message).toContain('- owner: is required [rule owner required: true]');
+    expect(refused?.reason).toBe(
+      'writes.rules.op.amount (min: 1, max: 5000): amount is missing; the rule requires it, mark it optional: true if leaving it out is safe; writes.rules.op.owner (required: true): owner is required',
+    );
   });
 
   it('shows values through the redactor, by value and by key', () => {
@@ -276,32 +324,58 @@ describe('writes.rules refusals', () => {
   });
 });
 
+describe('writes.rules in skill examples', () => {
+  it('adds values the rules need, fixes values they refuse and leaves optional ones out', () => {
+    const r = rules({
+      op: {
+        amount: { max: 5000 },
+        owner: { in: ['acme'] },
+        'body.state': { optional: true, in: ['open', 'closed'] },
+        'body.title': { optional: true, maxLength: 5 },
+        'body.password': { forbidden: true },
+        'body.items[].price': { max: 1 },
+      },
+    });
+    expect(
+      r.example('op', {
+        owner: 'octocat',
+        amount: 9000,
+        body: { password: 'x', items: [{ price: 5 }] },
+      }),
+    ).toEqual({ owner: 'acme', amount: 5000, body: { items: [{ price: 5 }] } });
+    expect(r.example('op', {})).toEqual({ owner: 'acme', amount: 5000 });
+    expect(r.example('remove', { owner: 'x' })).toEqual({ owner: 'x' });
+  });
+});
+
 describe('writes.rules descriptions', () => {
   it('describes rules in plain language, with units from the schema', () => {
     const r = rules({
       op: {
         amount: { required: true, min: 1, max: 5000 },
         owner: { in: ['acme'] },
-        'body.state': { in: ['open', 'closed'] },
+        'body.state': { optional: true, in: ['open', 'closed'] },
         'body.title': { maxLength: 80 },
-        'body.labels': { minLength: 1, maxLength: 3 },
+        'body.labels': { optional: true, minLength: 1, maxLength: 3 },
         'body.extra': { minLength: 1 },
         'body.password': { forbidden: true },
         'body.items[].sku': { pattern: '^[A-Z]{3}-\\d+$', notIn: ['XXX-0'] },
         confirmed: { equals: true },
+        'body.metadata': { required: true },
       },
     });
     expect(r.describe('op')).toBe(
       [
         'amount: required, between 1 and 5000',
-        'owner: must be "acme"',
-        'body.state: one of "open", "closed"',
-        'body.title: at most 80 characters',
-        'body.labels: 1 to 3 items',
-        'body.extra: at least 1 characters or items',
+        'owner: required, must be "acme"',
+        'body.state: if set, one of "open", "closed"',
+        'body.title: required, at most 80 characters',
+        'body.labels: if set, 1 to 3 items',
+        'body.extra: required, at least 1 characters or items',
         'body.password: must not be set',
-        'body.items[].sku: not "XXX-0", must match ^[A-Z]{3}-\\d+$',
-        'confirmed: must be true',
+        'body.items[].sku: required, not "XXX-0", must match ^[A-Z]{3}-\\d+$',
+        'confirmed: required, must be true',
+        'body.metadata: required',
       ].join('; '),
     );
     expect(r.describe('remove')).toBeUndefined();
@@ -397,9 +471,11 @@ describe('writes.rules in the config', () => {
         owner: { in: ['acme', 42, true, null], notIn: ['x'], equals: 'acme' },
         'body.items[].sku': { pattern: '^[A-Z]+$', minLength: 1, maxLength: 9 },
         'body.force': { forbidden: true },
+        'body.state': { optional: true, in: ['open', 'closed'] },
       },
     });
     expect(cfg.writes.rules.op?.amount).toEqual({ required: true, min: 0, max: 5000 });
+    expect(cfg.writes.rules.op?.['body.state']).toEqual({ optional: true, in: ['open', 'closed'] });
   });
 
   it.each([
@@ -423,6 +499,18 @@ describe('writes.rules in the config', () => {
     [{ op: { owner: { forbidden: 'yes' } } }, /forbidden can only be true/],
     [{ op: { owner: {} } }, /a rule needs at least one of in, notIn/],
     [{ op: { owner: { forbidden: true, in: ['a'] } } }, /cannot be combined/],
+    [{ op: { owner: { forbidden: true, optional: true } } }, /cannot be combined/],
+    [{ op: { owner: { optional: true } } }, /optional: true only applies next to in, notIn/],
+    [{ op: { owner: { optional: true, required: true } } }, /cannot be both required and optional/],
+    [
+      { op: { owner: { optional: true, required: true, in: ['a'] } } },
+      /cannot be both required and optional/,
+    ],
+    [{ op: { owner: { optional: false, in: ['a'] } } }, /optional can only be true/],
+    [
+      { op: { owner: { nullable: true, in: ['a'] } } },
+      /Unknown key "nullable" \(did you mean optional\?\)/,
+    ],
     [{ op: { amount: { min: 10, max: 1 } } }, /min \(10\) is greater than max \(1\)/],
     [
       { op: { owner: { minLength: 5, maxLength: 1 } } },
