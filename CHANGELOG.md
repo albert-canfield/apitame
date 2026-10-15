@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `apitame diff <old-spec> [new-spec]` shows what a new version of an OpenAPI spec changes for the agent under the current config, before the agent sees it: operations added, removed and renamed, with the tool each lands in; access level changes in both directions; new writes that the config allows without naming them (a `writes.allow` pattern such as `create*`, or a POST, PUT, PATCH or DELETE that runs as a read through a `writes.treatAsRead` pattern or `x-apitame-access: read`), and whether they ask for approval; names and patterns in `writes`, `tools` and `http.oauth.permissions` that no longer match an operation, with the new id of a renamed one; added, newly required and removed arguments of allowed writes, and `writes.rules` entries they break; a new base URL; and the token cost of the tool list before and after. Without a second spec it compares with the spec the config points to. A renamed write counts as new, because its rules, approval and group stay with the old id. `--json` for scripts, and `--fail-on` (`new-writes` by default, or `access-changes`, `added`, `removed`, `renamed`, `stale-config`, `write-changes`, `base-url`, `any`) exits with code 1 for CI. It reads the two specs only and never calls the API. [docs/cli.md](docs/cli.md#apitame-diff-old-spec-new-spec) has a GitHub Actions example (#60).
+
 ## [0.3.0] - 2026-10-15
 
 ### Changed
