@@ -24,6 +24,7 @@ skills/
 - The call shape for grouped tools.
 - Workflows inferred from the API's structure, each with copy-ready JSON arguments: list a collection then open one item, search with filters, page through long lists, create safely with a dry run, delete with confirmation, and find an operation that has no dedicated tool. Only workflows that the current mode allows are included.
 - Safety rules that match the mode: in read-only mode, do not look for workarounds and tell the user how writes can be enabled; in read-write mode, dry-run first and never send a confirmation token the user did not approve.
+- The argument rules of each available write (`writes.rules`), in SKILL.md and next to each operation in the reference. Example calls follow the rules, so the skill never shows a call the server would refuse.
 
 ### For SQL sources
 

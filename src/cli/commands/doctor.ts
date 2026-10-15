@@ -350,7 +350,7 @@ export async function runDoctor(opts: DoctorOptions): Promise<Finding[]> {
   }
   try {
     for (const w of rt.warnings.filter((x) => !/Missing environment variable/.test(x)))
-      add('warn', 'Config', w);
+      add('warn', w.startsWith('writes.rules') ? 'writes.rules' : 'Config', w);
     checkPatterns(rt, add);
 
     let canGenerate = true;

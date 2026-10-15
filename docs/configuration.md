@@ -4,7 +4,7 @@ apitame reads `apitame.config.yaml` from the current folder (or `--config <path>
 
 Values may reference environment variables as `${NAME}` or `${NAME:-default}`. Secret fields must use a reference; a literal secret is a validation error.
 
-Unknown keys at the top level and under `http` are an error that names the key, so a typo (`scope:` for `scopes:`) or a block at the wrong level cannot silently turn a setting off.
+Unknown keys at the top level and under `http` and `writes` (including inside each argument rule) are an error that names the key, so a typo (`scope:` for `scopes:`, `rule:` for `rules:`) or a block at the wrong level cannot silently turn a setting off.
 
 ## Top level
 
@@ -160,9 +160,64 @@ writes:
   confirm: []        # writes that need confirmation even if they are not destructive
   treatAsRead: []    # OpenAPI: non-GET operations that only read (POST /search), * allowed
   destructive: []    # writes to treat as destructive, * allowed
+  rules: {}          # limits on the arguments of allowed writes, see below
 ```
 
 Destructive operations always need confirmation; there is no setting to turn that off.
+
+### `writes.rules`
+
+Argument rules limit how an allowed write may be called. A call that breaks one is refused before anything is previewed, confirmed or sent. Rules only ever refuse calls; whether an operation can run at all is still up to `mode` and `writes.allow`. See [safety.md](safety.md#argument-rules) for how they are enforced.
+
+```yaml
+writes:
+  allow: [createRefund, issues/update, archive_order]
+  rules:
+    createRefund:                                  # an exact operation id
+      body.amount: { required: true, min: 1, max: 5000 }
+      body.currency: { in: [usd, eur] }
+      body.metadata.reason: { required: true, maxLength: 200 }
+    issues/update:
+      owner: { in: [acme] }
+      repo: { pattern: '^(web|api)$' }
+      body.state: { in: [open, closed] }
+      body.labels[]: { notIn: [security, legal] }  # every item of the list
+      body.assignees: { maxLength: 3 }             # at most 3 items
+      body.locked: { forbidden: true }
+    archive_order:                                 # a named SQL write query
+      id: { required: true, min: 1 }
+```
+
+**Keys** are exact operation ids (or named query names), never patterns, so a rule cannot miss an operation by accident.
+
+**Paths** name a tool argument, the way the agent passes it:
+
+- A parameter by name: `owner`, `amount`. The request body is `body`. For named queries, the parameter names. Rule paths always use the API's own parameter names, even where a single-operation tool exposes them as `api_dryRun` or `api_confirm`.
+- Nested fields with dots: `body.state`, `body.metadata.reason`.
+- `[]` after a name for every item of a list: `body.labels[]` (each label), `body.items[].price` (the price of each item), `matrix[][]` for a list of lists. Indexes such as `items[0]` and `*` are not accepted.
+
+**Operators.** A rule needs at least one.
+
+| Operator | Value | The argument must |
+| --- | --- | --- |
+| `in` | list of values | be one of them. |
+| `notIn` | list of values | not be any of them. Text is compared ignoring case and surrounding spaces, and anything that reads as a number by its value, so `"Security "` and `"042"` match `security` and `42`. |
+| `equals` | a value | be exactly this value. |
+| `pattern` | text, up to 200 characters | match as a whole, as if the pattern were wrapped in `^(?:...)$`. Numbers are checked in their usual text form. |
+| `min`, `max` | numbers | be a number from `min` to `max`, both included. Text that is plainly a number (`"12.50"`) is compared as one; any other value is refused. |
+| `minLength`, `maxLength` | whole numbers | have that many characters (text, counted as characters, not bytes) or items (lists). |
+| `required` | `true` | be present and not `null`. |
+| `forbidden` | `true` | be left out. `null` counts as set. It cannot be combined with other operators. |
+
+Values in `in`, `notIn` and `equals` are text, numbers, `true`, `false` or `null`. `in` and `equals` also accept a number or boolean sent in its usual text form (`"42"` for 42, `"true"` for true), since many APIs take both, but nothing looser: `"42.0"` is not 42. A list or object is never equal to a listed value, and `notIn` refuses it.
+
+**Missing values.** Every operator except `required` checks only a value that is there: `{ max: 5000 }` lets a call without that argument through. Add `required: true` when leaving the argument out is risky, for example a refund amount, where the API's default is often "everything". Below a missing object or list, everything counts as missing.
+
+**Shapes.** A value that does not fit the path is refused, not skipped: with `body.items[].price`, an `items` that is not a list is refused, and so is an item that is not an object.
+
+**Patterns** use a safe subset of regular expressions: literals, `.`, classes such as `[a-z0-9_]` and `[^,]`, `\d \w \s \D \W \S`, `\n \r \t \xHH \uXXXX`, escaped punctuation (`\.`, `\$`), groups `( )` and `(?: )`, alternation `|`, `* + ?`, `{n}`, `{n,}`, `{n,m}` and `^` and `$`. Backreferences, lookahead and lookbehind, named groups, flags and `\b` are refused with a message. apitame runs patterns on its own matcher, which takes time linear in the length of the value, so no pattern can be made to hang the server ([why](safety.md#argument-rules)). There is no case-insensitive flag: write `[Aa]` or list the values with `in`.
+
+**Checks.** Rules are validated when the config loads: unknown operators (`maximum` for `max`), values of the wrong type (`max: "5000"`), `min` above `max`, unsupported patterns and invalid paths are errors. Rules for operations or named queries that do not exist, for arguments or fields the schema does not have, for reads (which are never checked), on DuckDB sources (which cannot write) and operators that can never match the field's type are warnings in `serve`, `inspect` and `doctor`. `inspect` lists every rule.
 
 ## `confirmation`
 

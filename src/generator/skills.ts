@@ -58,7 +58,7 @@ interface Workflow {
   steps: string[];
 }
 
-function exampleArgs(
+function sampleArgs(
   op: Operation,
   includeOptional: (name: string) => boolean = () => false,
 ): Record<string, unknown> {
@@ -101,6 +101,9 @@ function returnsCollection(op: Operation): boolean {
 
 /** Find common multi-step workflows from the shape of the API. Deterministic. */
 function inferWorkflows(rt: OpenApiRuntime, refOf: Map<string, ToolRef>): Workflow[] {
+  // Examples follow the argument rules, so the skill never shows a call the server refuses.
+  const exampleArgs = (op: Operation, includeOptional?: (name: string) => boolean) =>
+    rt.rules.example(op.id, sampleArgs(op, includeOptional));
   const exposed = rt.operations.filter((o) => refOf.has(o.id));
   const reads = exposed.filter((o) => o.access === 'read' && o.method === 'get');
   const workflows: Workflow[] = [];
@@ -327,6 +330,12 @@ export function generateOpenApiSkill(rt: OpenApiRuntime): GeneratedFile[] {
       '- Only allowlisted writes run. Preview every write with `"dryRun": true` and show the user the request first.',
       '- Destructive operations need explicit approval from the user. Never send a `confirm` token the user did not approve.',
     );
+    const ruled = rt.operations.filter((o) => refOf.has(o.id) && rt.rules.has(o.id));
+    if (ruled.length > 0)
+      lines.push(
+        '- Some writes have argument rules. The server refuses a call that breaks one before anything is sent or anyone is asked. Follow them, and if the user asks for something they forbid, say so instead of looking for a way around them:',
+        ...ruled.map((o) => `  - \`${o.id}\`: ${rt.rules.describe(o.id, true)}`),
+      );
   }
   lines.push(
     `- Responses over ${Math.round(rt.config.limits.maxResponseBytes / 1000)} KB are cut. Use filters, pagination and \`fields\` rather than fetching everything.`,
@@ -403,6 +412,16 @@ function operationsReference(rt: OpenApiRuntime, refOf: Map<string, ToolRef>): s
       );
       if (op.summary || op.description) lines.push(inline(op.summary || op.description, 300), '');
       lines.push(...paramTable(op), '', `Signature: \`${signature(op)}\``, '');
+      const rules = refOf.has(op.id)
+        ? rt.rules.list(true).filter((r) => r.operation === op.id)
+        : [];
+      if (rules.length > 0)
+        lines.push(
+          'Rules, checked by the server before anything is sent:',
+          '',
+          ...rules.map((r) => `- \`${r.path}\`: ${r.text}`),
+          '',
+        );
     }
   }
   return lines.join('\n');

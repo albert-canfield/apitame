@@ -49,6 +49,13 @@ export async function inspectCommand(opts: InspectOptions): Promise<void> {
       for (const b of (runtime as SqlRuntime).blockedQueries())
         blocked.push({ id: b.name, access: 'write', reason: b.reason });
     }
+    const rules = runtime.rules.list();
+    const rulesByOperation: Record<
+      string,
+      Array<{ path: string; rule: unknown; text: string }>
+    > = {};
+    for (const r of rules)
+      (rulesByOperation[r.operation] ??= []).push({ path: r.path, rule: r.rule, text: r.text });
     const budget = opts.maxTokens ? Number(opts.maxTokens) : undefined;
     const overBudget = budget !== undefined && cost.total > budget;
 
@@ -72,6 +79,7 @@ export async function inspectCommand(opts: InspectOptions): Promise<void> {
             },
             operations: operationCount,
             blocked,
+            rules: rulesByOperation,
             skills: skills.map((s) => s.name),
             limits: {
               callsPerMinute: loaded.config.limits.maxCallsPerMinute,
@@ -154,6 +162,25 @@ export async function inspectCommand(opts: InspectOptions): Promise<void> {
             .join(', ')}${blocked.length > 8 ? ', ...' : ''}`,
         ),
       );
+    }
+    if (rules.length > 0) {
+      const count = Object.keys(rulesByOperation).length;
+      console.log('');
+      console.log(
+        ok(
+          `Argument rules for ${count} write${count === 1 ? '' : 's'}, checked before anything is sent or anyone is asked:`,
+        ),
+      );
+      console.log(
+        table(
+          ['OPERATION', 'ARGUMENT', 'RULE'],
+          rules.map((r) => [r.operation, r.path, r.text]),
+        )
+          .split('\n')
+          .map((l) => `  ${l}`)
+          .join('\n'),
+      );
+      console.log('');
     }
     if (skills.length > 0) console.log(ok(`Skills: ${skills.map((s) => s.name).join(', ')}`));
     const { maxCallsPerMinute: calls, maxWritesPerMinute: writesPm } = loaded.config.limits;

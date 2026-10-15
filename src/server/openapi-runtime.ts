@@ -6,6 +6,7 @@ import { ConfirmationStore, confirmOrChallenge } from '../safety/confirm.js';
 import { Guardrails, type AuditEntry, type AuditOutcome } from '../safety/guardrails.js';
 import { decide, type Decision } from '../safety/policy.js';
 import { REDACTED, Redactor } from '../safety/redact.js';
+import { WriteRules } from '../safety/rules.js';
 import { loadSpec, resolveBaseUrl, type LoadedSpec } from '../sources/openapi/load.js';
 import {
   extractOperations,
@@ -95,6 +96,8 @@ export class OpenApiRuntime implements Runtime {
   readonly byId: Map<string, Operation>;
   readonly baseUrl: string | undefined;
   readonly warnings: string[] = [];
+  /** `writes.rules`, checked before any write is previewed, confirmed or sent. */
+  readonly rules: WriteRules;
 
   private readonly tools: BuiltTool[];
   private readonly toolByName: Map<string, BuiltTool>;
@@ -130,6 +133,12 @@ export class OpenApiRuntime implements Runtime {
       authHeaders,
     });
     this.byId = new Map(this.operations.map((o) => [o.id, o]));
+    this.rules = new WriteRules(
+      config.writes.rules,
+      this.operations.map((o) => ({ id: o.id, access: o.access, schema: o.inputSchema })),
+      this.redactor,
+    );
+    this.warnings.push(...this.rules.warnings);
 
     // Values that come from environment variables are secrets wherever they are used:
     // a base URL can carry a token in its path (Telegram bots, webhooks), a static header
@@ -170,6 +179,12 @@ export class OpenApiRuntime implements Runtime {
 
   private exposed(op: Operation): boolean {
     return !op.unsupported && this.decision(op).allowed;
+  }
+
+  /** The argument rules of a write, as one line for its tool description. */
+  private rulesLine(op: Operation): string {
+    const text = this.rules.describe(op.id);
+    return text ? `Rules: ${text}.` : '';
   }
 
   private writesEnabled(): boolean {
@@ -235,6 +250,7 @@ export class OpenApiRuntime implements Runtime {
         const description = [
           g.description,
           `${operationTitle(op)} (${op.method.toUpperCase()} ${op.path})${tag(op, this.decision(op))}`,
+          this.rulesLine(op),
         ]
           .filter(Boolean)
           .join('\n');
@@ -274,9 +290,10 @@ export class OpenApiRuntime implements Runtime {
         continue;
       }
 
-      const lines = ops.map(
-        (op) => `- ${signature(op)}${tag(op, this.decision(op))}: ${operationTitle(op)}`,
-      );
+      const lines = ops.map((op) => {
+        const rules = this.rulesLine(op);
+        return `- ${signature(op)}${tag(op, this.decision(op))}: ${operationTitle(op)}${rules ? `\n  ${rules}` : ''}`;
+      });
       const description = [
         g.description,
         'Operations (pass the name as "operation" and its arguments in "params"):',
@@ -506,6 +523,7 @@ export class OpenApiRuntime implements Runtime {
 
     const results = scored.map(({ op }, i) => {
       const d = this.decision(op);
+      const rules = this.rules.describe(op.id);
       const status = op.unsupported
         ? `unsupported: ${op.unsupported}`
         : d.allowed
@@ -520,6 +538,7 @@ export class OpenApiRuntime implements Runtime {
         status,
         ...(groupOf.has(op.id) ? { tool: groupOf.get(op.id) } : {}),
         params: signature(op),
+        ...(rules ? { rules } : {}),
         // Full schemas only for the best matches, to keep results small.
         ...(i < 3 ? { inputSchema: op.inputSchema } : {}),
       };
@@ -559,6 +578,14 @@ export class OpenApiRuntime implements Runtime {
       );
     }
 
+    // After validation (rules see coerced values), before any preview, approval or rate limit.
+    const refused = this.rules.enforce(op.id, params);
+    if (refused) {
+      audit('blocked', { reason: refused.reason });
+      return errorResult(refused.message);
+    }
+    const rulesPassed = this.rules.describe(op.id);
+
     if (!this.baseUrl) {
       return errorResult(
         'No base URL: the spec has no absolute server URL. Set source.baseUrl in apitame.config.yaml.',
@@ -592,7 +619,12 @@ export class OpenApiRuntime implements Runtime {
 
     if (flags.dryRun) {
       audit('dry-run');
-      return jsonResult({ dryRun: true, note: 'Nothing was sent.', ...preview });
+      return jsonResult({
+        dryRun: true,
+        note: 'Nothing was sent.',
+        ...preview,
+        ...(rulesPassed ? { rulesPassed } : {}),
+      });
     }
 
     // Checked before asking: a call that would be rate-limited must not use up a human approval.
@@ -605,7 +637,7 @@ export class OpenApiRuntime implements Runtime {
     if (decision.needsConfirmation) {
       const outcome = await confirmOrChallenge({
         id: op.id,
-        preview: `${op.access.toUpperCase()}: ${operationTitle(op)}\n${JSON.stringify(preview.request, null, 2)}`,
+        preview: `${op.access.toUpperCase()}: ${operationTitle(op)}\n${JSON.stringify(preview.request, null, 2)}${rulesPassed ? `\nRules passed: ${rulesPassed}.` : ''}`,
         args: params,
         confirmToken: flags.confirm,
         method: this.config.confirmation.method,
