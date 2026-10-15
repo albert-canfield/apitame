@@ -88,7 +88,7 @@ With [argument rules](configuration.md#writesrules), it lists them too, and warn
 ```text
 ✔ Argument rules for 2 writes, checked before anything is sent or anyone is asked:
   OPERATION   ARGUMENT       RULE
-  addPet      body.status    one of "available", "pending"
+  addPet      body.status    if set, one of "available", "pending"
   placeOrder  body.quantity  required, between 1 and 5
 ! writes.rules.getPetById: "getPetById" is a read operation; rules only apply to writes, so these are ignored.
 ```

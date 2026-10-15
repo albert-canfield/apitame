@@ -21,12 +21,15 @@ export interface ArgumentRule {
   maxLength?: number;
   required?: true;
   forbidden?: true;
+  /** The value may be left out; the value operators then apply only when it is there. */
+  optional?: true;
 }
 
 /** `writes.rules`: operation id (or named query), then argument path, then the rule. */
 export type RulesConfig = Record<string, Record<string, ArgumentRule>>;
 
-export const RULE_OPERATORS = [
+/** Operators that check a value. A missing value breaks them, unless the rule is optional. */
+export const VALUE_OPERATORS = [
   'in',
   'notIn',
   'equals',
@@ -35,9 +38,19 @@ export const RULE_OPERATORS = [
   'max',
   'minLength',
   'maxLength',
-  'required',
-  'forbidden',
 ] as const;
+
+export const RULE_OPERATORS = [...VALUE_OPERATORS, 'required', 'forbidden'] as const;
+
+const checksValue = (rule: ArgumentRule) => VALUE_OPERATORS.some((op) => rule[op] !== undefined);
+
+/** True when the rule refuses a call without this value. */
+const needsValue = (rule: ArgumentRule) =>
+  Boolean(rule.required) || (checksValue(rule) && !rule.optional);
+
+/** What a refusal says about a value a rule needs but did not get. */
+export const MISSING =
+  'is missing; the rule requires it, mark it optional: true if leaving it out is safe';
 
 /** One step of a rule path: a field name, then `[]` once per list level (`items[]`). */
 interface Segment {
@@ -66,11 +79,17 @@ export const RULE_PATH_HELP =
 export function ruleProblems(rule: ArgumentRule): string[] {
   const used = RULE_OPERATORS.filter((op) => rule[op] !== undefined);
   const out: string[] = [];
-  if (used.length === 0) out.push(`a rule needs at least one of ${RULE_OPERATORS.join(', ')}`);
-  if (rule.forbidden && used.length > 1)
+  if (used.length === 0)
+    out.push(
+      rule.optional
+        ? `optional: true only applies next to ${VALUE_OPERATORS.join(', ')}`
+        : `a rule needs at least one of ${RULE_OPERATORS.join(', ')}`,
+    );
+  if (rule.forbidden && (used.length > 1 || rule.optional))
     out.push(
       'forbidden means the argument must be left out, so it cannot be combined with other operators',
     );
+  if (rule.required && rule.optional) out.push('a rule cannot be both required and optional');
   if (rule.min !== undefined && rule.max !== undefined && rule.min > rule.max)
     out.push(`min (${rule.min}) is greater than max (${rule.max})`);
   if (
@@ -246,8 +265,8 @@ export class WriteRules {
 
   /**
    * Example arguments (for generated skills) changed to follow the simple rules: the first
-   * allowed value, numbers within min and max, required values added when the rule names one,
-   * forbidden ones removed. Paths through lists and patterns are left alone.
+   * allowed value, numbers within min and max, required values added when the rule can supply
+   * one, forbidden ones removed. Paths through lists and patterns are left alone.
    */
   example(id: string, args: Record<string, unknown>): Record<string, unknown> {
     const out = structuredClone(args);
@@ -264,10 +283,11 @@ export class WriteRules {
             ? { v: rule.min ?? rule.max! }
             : undefined;
       // Walk to the parent object, creating it only for a required value the rule can supply.
+      const mandatory = needsValue(rule);
       let parent: Record<string, unknown> | undefined = out;
       for (const name of names) {
         if (!isRecord(parent[name])) {
-          if (!rule.required || !supplied) {
+          if (!mandatory || !supplied) {
             parent = undefined;
             break;
           }
@@ -279,7 +299,7 @@ export class WriteRules {
       const value = parent[key];
       if (rule.forbidden) delete parent[key];
       else if (value === undefined) {
-        if (rule.required && supplied) parent[key] = supplied.v;
+        if (mandatory && supplied) parent[key] = supplied.v;
       } else if (rule.in && !(isScalar(value) && rule.in.some((o) => sameValue(value, o))))
         parent[key] = rule.in[0];
       else if (rule.equals !== undefined && !(isScalar(value) && sameValue(value, rule.equals)))
@@ -358,6 +378,13 @@ function valuesAt(args: Record<string, unknown>, segments: Segment[]): Leaf[] {
 
 const json = (v: unknown) => JSON.stringify(v);
 
+/** The value operators of a rule as written in the config, for refusals: `min: 1, max: 5000`. */
+function valueRuleText(rule: ArgumentRule): string {
+  return VALUE_OPERATORS.filter((op) => rule[op] !== undefined)
+    .map((op) => `${op}: ${json(rule[op])}`)
+    .join(', ');
+}
+
 function checkLeaf(r: Compiled, leaf: Leaf): Violation[] {
   const { rule } = r;
   const fail = (problem: string, ruleText: string, hasValue = true): Violation => ({
@@ -372,7 +399,10 @@ function checkLeaf(r: Compiled, leaf: Leaf): Violation[] {
   if (leaf.shape)
     return [fail(leaf.shape === 'list' ? 'must be a list' : 'must be an object', `path ${r.path}`)];
   if (rule.forbidden) return leaf.present ? [fail('must not be set', 'forbidden: true')] : [];
-  if (!leaf.present) return rule.required ? [fail('is required', 'required: true', false)] : [];
+  if (!leaf.present) {
+    if (rule.required) return [fail('is required', 'required: true', false)];
+    return needsValue(rule) ? [fail(MISSING, valueRuleText(rule), false)] : [];
+  }
   const value = leaf.value;
   if (value === null && rule.required) return [fail('is required', 'required: true')];
 
@@ -380,10 +410,13 @@ function checkLeaf(r: Compiled, leaf: Leaf): Violation[] {
   const scalar = isScalar(value);
   if (rule.in && !(scalar && rule.in.some((o) => sameValue(value, o))))
     out.push(fail(`must be ${oneOf(rule.in)}`, `in: ${json(rule.in)}`));
-  if (rule.notIn && (!scalar || rule.notIn.some((o) => looksLike(value, o))))
+  // null is refused too: an API often reads it as "use the default", which may be listed.
+  if (rule.notIn && (!scalar || value === null || rule.notIn.some((o) => looksLike(value, o))))
     out.push(
       fail(
-        scalar ? `must not be ${rule.notIn.map(show).join(' or ')}` : 'must be a single value',
+        scalar && value !== null
+          ? `must not be ${rule.notIn.map(show).join(' or ')}`
+          : 'must be a single value, not null',
         `notIn: ${json(rule.notIn)}`,
       ),
     );
@@ -512,7 +545,8 @@ function length(rule: ArgumentRule, unit: string): string {
 function phrases(r: Compiled, markdown = false): string[] {
   const { rule } = r;
   const out: string[] = [];
-  if (rule.required) out.push('required');
+  if (needsValue(rule)) out.push('required');
+  if (rule.optional) out.push('if set');
   if (rule.forbidden) out.push('must not be set');
   if (rule.in) out.push(rule.in.length === 1 ? `must be ${show(rule.in[0]!)}` : oneOf(rule.in));
   if (rule.notIn) out.push(`not ${rule.notIn.map(show).join(' or ')}`);

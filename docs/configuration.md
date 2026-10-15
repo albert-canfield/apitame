@@ -174,18 +174,18 @@ writes:
   allow: [createRefund, issues/update, archive_order]
   rules:
     createRefund:                                  # an exact operation id
-      body.amount: { required: true, min: 1, max: 5000 }
+      body.amount: { min: 1, max: 5000 }           # a refund without an amount is refused too
       body.currency: { in: [usd, eur] }
-      body.metadata.reason: { required: true, maxLength: 200 }
+      body.metadata.reason: { maxLength: 200 }
     issues/update:
       owner: { in: [acme] }
       repo: { pattern: '^(web|api)$' }
-      body.state: { in: [open, closed] }
-      body.labels[]: { notIn: [security, legal] }  # every item of the list
-      body.assignees: { maxLength: 3 }             # at most 3 items
+      body.state: { optional: true, in: [open, closed] }           # an update may leave it out
+      body.labels[]: { optional: true, notIn: [security, legal] }  # every item of the list
+      body.assignees: { optional: true, maxLength: 3 }             # at most 3 items
       body.locked: { forbidden: true }
     archive_order:                                 # a named SQL write query
-      id: { required: true, min: 1 }
+      id: { min: 1 }
 ```
 
 **Keys** are exact operation ids (or named query names), never patterns, so a rule cannot miss an operation by accident.
@@ -196,22 +196,29 @@ writes:
 - Nested fields with dots: `body.state`, `body.metadata.reason`.
 - `[]` after a name for every item of a list: `body.labels[]` (each label), `body.items[].price` (the price of each item), `matrix[][]` for a list of lists. Indexes such as `items[0]` and `*` are not accepted.
 
-**Operators.** A rule needs at least one.
+**Operators.** A rule needs at least one. The first eight check a value, and a call that leaves that value out is refused unless the rule also says `optional: true` (see [Missing values](#missing-values)).
 
 | Operator | Value | The argument must |
 | --- | --- | --- |
 | `in` | list of values | be one of them. |
-| `notIn` | list of values | not be any of them. Text is compared ignoring case and surrounding spaces, and anything that reads as a number by its value, so `"Security "` and `"042"` match `security` and `42`. |
+| `notIn` | list of values | not be any of them, and not be `null`. Text is compared ignoring case and surrounding spaces, and anything that reads as a number by its value, so `"Security "` and `"042"` match `security` and `42`. |
 | `equals` | a value | be exactly this value. |
 | `pattern` | text, up to 200 characters | match as a whole, as if the pattern were wrapped in `^(?:...)$`. Numbers are checked in their usual text form. |
 | `min`, `max` | numbers | be a number from `min` to `max`, both included. Text that is plainly a number (`"12.50"`) is compared as one; any other value is refused. |
 | `minLength`, `maxLength` | whole numbers | have that many characters (text, counted as characters, not bytes) or items (lists). |
-| `required` | `true` | be present and not `null`. |
+| `required` | `true` | be present and not `null`. Value operators need the value anyway, so next to them it only changes the wording of the refusal. |
 | `forbidden` | `true` | be left out. `null` counts as set. It cannot be combined with other operators. |
+| `optional` | `true` | Not a check: lets the value be left out. The value operators next to it then apply only when it is there. It needs at least one value operator and cannot be combined with `required` or `forbidden`. |
 
 Values in `in`, `notIn` and `equals` are text, numbers, `true`, `false` or `null`. `in` and `equals` also accept a number or boolean sent in its usual text form (`"42"` for 42, `"true"` for true), since many APIs take both, but nothing looser: `"42.0"` is not 42. A list or object is never equal to a listed value, and `notIn` refuses it.
 
-**Missing values.** Every operator except `required` checks only a value that is there: `{ max: 5000 }` lets a call without that argument through. Add `required: true` when leaving the argument out is risky, for example a refund amount, where the API's default is often "everything". Below a missing object or list, everything counts as missing.
+#### Missing values
+
+A value operator refuses a call that leaves its value out: `body.amount: { max: 5000 }` refuses a refund without an amount, because for a write, a missing value often means "everything" or "the default", which the rule never sees. The refusal says `is missing; the rule requires it, mark it optional: true if leaving it out is safe`.
+
+When leaving the value out is safe, for example `body.state` in an update that may change only the title, add `optional: true`: the other operators then check the value only when it is there. Below a missing object, everything counts as missing. For a path through a list, a missing list counts as missing (refused unless `optional`), an item without the field counts as missing too, and an empty list passes, since it has no item to break the rule.
+
+`null` is a value, not a missing one: it fails `in`, `equals`, `pattern`, `min`, `max`, `minLength`, `maxLength` and `notIn` unless `in` or `equals` lists it, with or without `optional`. For `required` it counts as missing, and for `forbidden` as set.
 
 **Shapes.** A value that does not fit the path is refused, not skipped: with `body.items[].price`, an `items` that is not a list is refused, and so is an item that is not an object.
 

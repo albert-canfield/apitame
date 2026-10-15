@@ -63,12 +63,12 @@ writes:
   allow: [createRefund, issues/update]
   rules:
     createRefund:
-      body.amount: { required: true, max: 5000 }   # cents
+      body.amount: { max: 5000 }                      # cents; a missing amount is refused too
     issues/update:
       owner: { in: [acme] }
       repo: { pattern: '^(web|api)$' }
-      body.state: { in: [open, closed] }
-      body.labels[]: { notIn: [security] }
+      body.state: { optional: true, in: [open, closed] }
+      body.labels[]: { optional: true, notIn: [security] }
 ```
 
 - Rules are checked after the arguments are validated (so `"5000"` for an integer is already 5000), and before the dry run preview, the confirmation prompt, the write rate limit and the request. A call that breaks a rule is never sent, never shown to a human for approval and does not count against `limits.maxWritesPerMinute`.
@@ -77,8 +77,8 @@ writes:
 - Rules only narrow `writes.allow`. They never make an operation callable, and in read-only mode every write stays blocked. Rules on read operations (GET, or anything in `writes.treatAsRead`) are ignored, with a warning.
 - Operations are named by their exact id, never by a pattern, so a rule cannot silently miss an operation. `serve`, `inspect` and `doctor` warn about rules for ids, arguments or fields that do not exist, and about operators that can never match the field's type (`in: [ten]` on an integer).
 - The agent sees the rules before it calls: in the tool description (`Rules: body.amount: required, at most 5000.`), in `search_operations` results and in the generated skill, whose examples follow the rules. Dry run results and confirmation prompts say which rules passed.
-- A rule on a value only checks a value that is there. When leaving an argument out is risky, add `required: true`: a refund without an amount usually refunds the whole charge, and the rule above would not see it otherwise.
-- `null` is a value: it fails `in`, `min` or `pattern` unless listed, and counts as missing for `required` but as set for `forbidden`.
+- Missing values fail closed. A rule that checks a value (`in`, `notIn`, `equals`, `pattern`, `min`, `max`, `minLength`, `maxLength`) refuses a call that leaves the value out, because for a write, a missing value often means "everything" or "the default": a refund without an amount usually refunds the whole charge. `optional: true` lets the value be left out when that is safe (`body.state` in an update that may change only the title); the rule then checks the value only when it is there. For a path through a list, a missing list is missing too, and an empty list passes.
+- `null` is a value: it fails every value operator unless `in` or `equals` lists it, `optional` or not. It counts as missing for `required` and as set for `forbidden`. `notIn` refuses it too, since an API may read `null` as the default, which may be a value the rule denies.
 - A path that cannot be followed is refused, not skipped: with `body.items[].price` in a rule, `items` sent as an object instead of a list is refused.
 - Prefer `in` (an allowlist) to `notIn` (a denylist). `notIn` ignores case and surrounding spaces and compares numbers by value (`"042"` matches 42), but an API may accept other spellings that apitame cannot predict.
 
@@ -196,7 +196,7 @@ writes:
   rules:
     set_order_status:
       status: { in: [paid, shipped] }
-      id: { required: true, min: 1 }
+      id: { min: 1 }
 ```
 
 The rules are checked after the parameters are validated and coerced, and before the dry run, the row count measured for the confirmation preview, the confirmation and the write, so a refused call never touches the database. Everything in [Argument rules](#argument-rules) for HTTP operations holds here as well, including the audit entry and the warning for rules on read queries. DuckDB sources cannot write, so rules there only produce a warning.
