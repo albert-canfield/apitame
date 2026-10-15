@@ -586,7 +586,10 @@ export class OpenApiRuntime implements Runtime {
     const tool = this.toolsFor(this.permissionsOf(ctx)).byName.get(name);
     if (!tool) return errorResult(`Unknown tool "${name}".`);
     const limited = this.guardrails.checkCall(ctx?.caller) ?? this.guardrails.checkTool(name);
-    if (limited) return errorResult(limited);
+    if (limited) {
+      ctx?.observe?.({ outcome: 'rate-limited' });
+      return errorResult(limited);
+    }
     try {
       return await this.dispatch(tool, args ?? {}, ctx);
     } catch (err) {
@@ -718,7 +721,7 @@ export class OpenApiRuntime implements Runtime {
   ): Promise<ToolResult> {
     const perm = this.permissionsOf(ctx);
     const audit = (outcome: AuditOutcome, extra: Partial<AuditEntry> = {}) =>
-      this.guardrails.record({
+      this.guardrails.recordCall(ctx, {
         tool,
         operation: op.id,
         access: op.access,

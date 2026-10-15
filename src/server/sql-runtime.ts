@@ -419,7 +419,10 @@ export class SqlRuntime implements Runtime {
       return errorResult(`Unknown tool "${name}".`);
     }
     const limited = this.guardrails.checkCall(ctx?.caller) ?? this.guardrails.checkTool(name);
-    if (limited) return errorResult(limited);
+    if (limited) {
+      ctx?.observe?.({ outcome: 'rate-limited' });
+      return errorResult(limited);
+    }
     try {
       switch (name) {
         case 'list_tables':
@@ -519,7 +522,7 @@ export class SqlRuntime implements Runtime {
       denyTables: this.config.sql.tables.deny,
     });
     if (!g.ok) {
-      this.guardrails.record({
+      this.guardrails.recordCall(ctx, {
         tool: 'query',
         access: 'read',
         outcome: 'refused',
@@ -546,7 +549,7 @@ export class SqlRuntime implements Runtime {
       timeoutMs: this.config.limits.timeoutMs,
       maxBytes: this.config.limits.maxResponseBytes,
     });
-    this.guardrails.record({
+    this.guardrails.recordCall(ctx, {
       tool: 'query',
       access: 'read',
       outcome: 'sent',
@@ -586,7 +589,7 @@ export class SqlRuntime implements Runtime {
     const bound = bindNamedParams(named.sql, this.dialect, params);
     const perm = this.permissionsOf(ctx);
     const audit = (outcome: AuditOutcome, extra: Partial<AuditEntry> = {}) =>
-      this.guardrails.record({
+      this.guardrails.recordCall(ctx, {
         tool: named.query.name,
         access: named.access,
         outcome,

@@ -19,7 +19,7 @@ ghcr.io/albert-canfield/apitame:latest   # the latest release, whatever its vers
 Images are published for `linux/amd64` and `linux/arm64` by the release workflow, from the same commit as the npm package, starting with the first release after 0.3.0. Each one contains:
 
 - Debian 13 (slim) and Node.js 22, without npm, npx, yarn or corepack;
-- the `apitame` npm package, packed from that commit exactly as it is published, with its production dependencies. PostgreSQL, MySQL and SQLite work out of the box; the DuckDB driver is not included ([how to add it](#duckdb));
+- the `apitame` npm package, packed from that commit exactly as it is published, with its production dependencies. PostgreSQL, MySQL and SQLite work out of the box; the DuckDB driver and the OpenTelemetry packages are not included (how to add [DuckDB](#duckdb) and [OpenTelemetry](#opentelemetry));
 - a user `apitame` (UID and GID 10001). The server never runs as root.
 
 | Setting | Value |
@@ -102,7 +102,7 @@ Either way the value is redacted from logs and errors like any other secret, and
 
 ### Logs
 
-apitame logs to standard error, so `docker logs` and `docker compose logs` show them. Set `APITAME_LOG_LEVEL=debug` to see why a token was refused or which MCP protocol version each request uses. Secrets from the environment are redacted from logs. The audit log is a separate JSON Lines file (see [safety.md](safety.md#audit-log)).
+apitame logs to standard error, so `docker logs` and `docker compose logs` show them. Set `APITAME_LOG_LEVEL=debug` to see why a token was refused or which MCP protocol version each request uses. Secrets from the environment are redacted from logs. The audit log is a separate JSON Lines file (see [safety.md](safety.md#audit-log)), and tool calls can also go to an OpenTelemetry collector (see [OpenTelemetry](#opentelemetry)).
 
 apitame stops cleanly on `SIGTERM`, so `docker stop` takes a moment, not the ten second timeout.
 
@@ -283,6 +283,35 @@ COPY --from=duckdb /usr/local/lib/node_modules/@duckdb /usr/local/lib/node_modul
 ```
 
 `doctor` then reports `DuckDB driver  @duckdb/node-api (DuckDB v1.5.6)`. Mount the DuckDB file read-only with the config.
+
+## OpenTelemetry
+
+apitame can send every tool call to your observability stack as an OpenTelemetry span, with metrics ([telemetry.md](telemetry.md)). The image leaves out the OpenTelemetry packages, like the npm package (they add about 29 MB). Build an image that adds the tested releases:
+
+```dockerfile
+FROM node:22-trixie-slim AS otel
+WORKDIR /otel
+RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund \
+      @opentelemetry/api@1.9.1 @opentelemetry/sdk-trace@2.12.0 @opentelemetry/sdk-metrics@2.12.0 \
+      @opentelemetry/resources@2.12.0 @opentelemetry/exporter-trace-otlp-proto@0.223.0 \
+      @opentelemetry/exporter-metrics-otlp-proto@0.223.0 \
+ && rm node_modules/.package-lock.json
+
+FROM ghcr.io/albert-canfield/apitame:0.4
+COPY --from=otel /otel/node_modules /usr/local/lib/node_modules
+```
+
+The packages land next to apitame in the global `node_modules`, where it finds them. Then point it at your collector:
+
+```yaml
+services:
+  apitame:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=prod
+```
+
+`docker compose exec apitame apitame doctor` reports `Telemetry  traces to http://otel-collector:4318/v1/traces, metrics to ...; packages load`. With the endpoint set and the packages missing, the server starts anyway and logs a warning with the packages to add. Keep a vendor API key for `OTEL_EXPORTER_OTLP_HEADERS` in an environment file or a secret, like the other credentials; apitame redacts it from its logs.
 
 ## Build the image yourself
 

@@ -5,7 +5,8 @@
 export { loadConfig, parseConfig, ConfigError, type LoadedConfig } from './config/load.js';
 export { ConfigSchema, type Config, type ConfigInput } from './config/schema.js';
 export { createRuntime, type AnyRuntime, type RuntimeOptions } from './server/runtime.js';
-export { createMcpServer } from './server/mcp.js';
+export { createMcpServer, type McpServerOptions } from './server/mcp.js';
+export { startTelemetry, type StartTelemetryOptions, type Telemetry } from './telemetry/index.js';
 export { LiveRuntime } from './server/live.js';
 export {
   serveStdio,

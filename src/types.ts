@@ -1,3 +1,5 @@
+import type { AuditOutcome } from './safety/guardrails.js';
+
 /** A JSON Schema object, kept loose on purpose: specs in the wild are messy. */
 export type JsonSchema = Record<string, unknown>;
 
@@ -72,6 +74,24 @@ export interface CallContext {
    * (`http.oauth.permissions`). Not audited: the audit log names the entries that applied.
    */
   scopes?: string[];
+  /**
+   * Told what happens to the call as the runtime decides it: every audit entry it writes
+   * (whether or not the audit file records it), and a call refused by a per-minute call limit.
+   * Set by the MCP layer when OpenTelemetry export is on.
+   */
+  observe?: (event: CallEvent) => void;
+}
+
+/**
+ * What a runtime reports about a tool call: the fields of an audit entry that are safe to export,
+ * never arguments, reasons or the caller.
+ */
+export interface CallEvent {
+  outcome: AuditOutcome;
+  operation?: string;
+  access?: Access;
+  /** HTTP status of the API's response, when one arrived. */
+  status?: number;
 }
 
 /** Who is asking, for the tools a caller may see. Without `caller`, the server config applies. */

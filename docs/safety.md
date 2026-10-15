@@ -341,6 +341,20 @@ With a file set, apitame appends one JSON object per line:
 - Over HTTP with `http.oauth`, each entry also names the token's client and subject (`"client"`, `"subject"`), each when the token carries it, so you can tell which user's agent made the call. With `http.oauth.permissions`, `"permissions"` lists the entries that applied to that user: `default` first, then the matching ones, such as `["default", "byScope.mcp:write"]` or `["default"]`.
 - If the file cannot be written, apitame logs one error and keeps serving; tool calls never fail because of the audit log.
 
+## Telemetry
+
+With `OTEL_EXPORTER_OTLP_ENDPOINT` set (and the optional OpenTelemetry packages installed), apitame sends one span per tool call and two metrics to that OTLP endpoint ([telemetry.md](telemetry.md)). This is what leaves the process:
+
+- Per call: the tool name (only names the server has), the operation id or named query, the access level, the outcome in the audit log's words, the API's HTTP status, the number of requests sent, the duration, the JSON-RPC request id, the protocol version, the session id with `--sessions`, and over HTTP with `http.oauth` the OAuth client. The OAuth subject only with `APITAME_OTEL_SUBJECT`: `hash` sends an HMAC with a key that never leaves the process, `plain` sends it as it is.
+- Metrics: call counts by tool, access level and outcome, and durations by tool. No caller, no operation id, no session.
+- Never: arguments, results, error and refusal texts, audit reasons, SQL, URLs, headers, credentials, tokens or scopes. There is no option to export arguments or results. String attributes also go through the redactor.
+
+Whoever can read your traces learns which tools ran, when, how they ended and which OAuth client called them: protect the backend like the audit log. The headers apitame sends to the collector (`OTEL_EXPORTER_OTLP_HEADERS`, usually a vendor API key) are secrets: they are redacted from apitame's log like every other secret, and `APITAME_OTEL_SUBJECT_KEY` is too.
+
+A client can send W3C trace context (`params._meta.traceparent`, or the HTTP `traceparent` header from a gateway), and apitame's span then joins that trace. It is read after authentication and decides nothing: not who the caller is, not what the call may do. It cannot hide a call either. The default sampler records every call whatever the incoming "sampled" flag says, unless you choose a `parentbased_` sampler, and metrics count every call regardless. `OTEL_PROPAGATORS=none` ignores incoming trace context.
+
+Telemetry never changes a tool call's result: an export that fails is a warning in the log (at most once a minute), and shutdown waits at most 3 seconds for the collector. Without an endpoint, none of the OpenTelemetry code is loaded.
+
 ## Secrets
 
 - Auth secrets, and the token introspection secret under `http.oauth`, must be `${ENV_VAR}` references or secret manager references (`${op://...}`, `${aws-sm://...}`, `${gcp-sm://...}`). A literal secret in the config is a validation error, and so are the ways to write one that look like references: a default (`${TOKEN:-hunter2}`), or text next to references that may all be empty (`hunter2${UNSET:-}`).

@@ -19,6 +19,7 @@ import { createRuntime, type AnyRuntime } from '../../server/runtime.js';
 import type { SqlRuntime } from '../../server/sql-runtime.js';
 import type { GeneratedFile } from '../../generator/skills.js';
 import { apitameCommand, DUCKDB_PACKAGE, DUCKDB_SPEC } from '../../sources/sql/duckdb-package.js';
+import { telemetryFindings } from '../../telemetry/index.js';
 import { withDeadline } from '../../util/deadline.js';
 import { c } from '../ui.js';
 import { claudeDesktopConfigPath } from './add-to.js';
@@ -383,6 +384,8 @@ export async function runDoctor(opts: DoctorOptions): Promise<Finding[]> {
       (u) => secretChecks.find((c) => c.reference === u.reference.text)?.ok,
     );
   const secretsRead = read(['auth', 'source']);
+  // Loads the OpenTelemetry packages when an OTLP endpoint is set; never contacts the collector.
+  for (const f of await telemetryFindings()) add(f.status, 'Telemetry', f.detail);
   // Before the source: an HTTP deployment can be checked even when the API or database is down.
   const httpToken = process.env.APITAME_HTTP_TOKEN;
   if (wantsHttpChecks(loaded.config.http, opts, httpToken)) {

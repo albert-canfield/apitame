@@ -110,6 +110,30 @@ jobs:
           test -f .mcp.json && test -f .claude/skills/petstore-api/SKILL.md
           # The DuckDB driver is an optional peer dependency: never part of the default install.
           test ! -e "$(npm root -g)/@duckdb"
+          # So are the OpenTelemetry packages.
+          test ! -e "$(npm root -g)/@opentelemetry"
+      - name: OpenTelemetry through npx -p (optional peer dependencies, pinned releases)
+        run: |
+          cd /tmp/first-run
+          # Without the packages, serve warns with the command to run and still serves.
+          OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 apitame serve < /dev/null 2> otel-missing.txt
+          cat otel-missing.txt
+          grep -q "npx -p apitame -p @opentelemetry/api@" otel-missing.txt
+          grep -q "serving " otel-missing.txt
+          # With them, doctor loads them (it never contacts the collector).
+          TGZ="$(ls "$GITHUB_WORKSPACE"/apitame-*.tgz)"
+          OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 npx -y -p "$TGZ" \
+            -p @opentelemetry/api@1.9.1 -p @opentelemetry/sdk-trace@2.12.0 \
+            -p @opentelemetry/sdk-metrics@2.12.0 -p @opentelemetry/resources@2.12.0 \
+            -p @opentelemetry/exporter-trace-otlp-proto@0.223.0 \
+            -p @opentelemetry/exporter-metrics-otlp-proto@0.223.0 \
+            apitame doctor --offline --json > doctor.json || true
+          node -e "
+            const { findings } = JSON.parse(require('node:fs').readFileSync('doctor.json', 'utf8'));
+            const t = findings.find((f) => f.check === 'Telemetry');
+            console.log(t);
+            if (t?.status !== 'ok' || !t.detail.includes('packages load')) process.exit(1);
+          "
       - name: DuckDB through npx -p (optional peer dependency, pinned release)
         run: |
           mkdir -p /tmp/duckdb-run

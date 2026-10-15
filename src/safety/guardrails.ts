@@ -220,6 +220,24 @@ export class Guardrails {
     return Boolean(this.opts.auditFile);
   }
 
+  /**
+   * Record an entry about a tool call. The call's observer (telemetry, `CallContext.observe`) is
+   * told about every entry, audit file or not, without arguments, reasons or the caller.
+   */
+  recordCall(ctx: CallContext | undefined, entry: AuditEntry): void {
+    try {
+      ctx?.observe?.({
+        outcome: entry.outcome,
+        access: entry.access,
+        ...(entry.operation !== undefined ? { operation: entry.operation } : {}),
+        ...(entry.status !== undefined ? { status: entry.status } : {}),
+      });
+    } catch {
+      // Telemetry never fails a tool call.
+    }
+    this.record(entry);
+  }
+
   /** Append an entry to the audit file. Reads are only written with `include: all`. */
   record(entry: AuditEntry): void {
     if (!this.opts.auditFile || this.auditBroken) return;

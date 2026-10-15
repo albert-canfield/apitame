@@ -61,6 +61,8 @@ Both MCP protocol eras are served on stdio and HTTP: 2025-era clients (which sta
 
 Missing credentials do not stop the server: it starts, logs a warning, and tool calls explain which variable is missing. Secret manager references (`${op://...}`, `${aws-sm://...}`, `${gcp-sm://...}`) are different: they are read at startup, and one that cannot be read stops the server with a message that names the field and the reference ([configuration.md](configuration.md#secret-managers)).
 
+With `OTEL_EXPORTER_OTLP_ENDPOINT` set and the optional OpenTelemetry packages next to apitame, every tool call is also exported as an OpenTelemetry span, with call and duration metrics, over stdio and HTTP alike. Without the packages, `serve` warns and runs without telemetry. See [telemetry.md](telemetry.md).
+
 With `--watch`, editing the config takes effect without restarting the client: allow a write, save, and the new tool appears (clients that support `notifications/tools/list_changed`, such as Claude Code, refresh their tool list). A config that does not validate is reported in the log and the previous one keeps serving. Changed `.env` values are picked up too.
 
 ## `apitame inspect`
@@ -297,6 +299,7 @@ $ apitame doctor
 | .env | If present, that git ignores it (a committed `.env` leaks secrets). |
 | Environment | Every `${VAR}` the config needs is set (after loading `.env`). |
 | Secrets | Each secret manager reference (`${op://...}`, `${aws-sm://...}`, `${gcp-sm://...}`): its CLI is found, and it reads as `serve` reads it. The value is never printed, nor what a failing CLI said. With `--offline`, only the CLI is looked for. When one cannot be read, the API or database check is skipped. |
+| Telemetry | Whether OpenTelemetry export is on (`OTEL_EXPORTER_OTLP_ENDPOINT` and the other `OTEL_*` variables), settings apitame cannot use, and whether the optional OpenTelemetry packages load. The collector is not contacted. |
 | writes.* | Every allowlist or confirm pattern matches at least one operation (catches typos). |
 | writes.rules | Argument rules name operations, arguments and fields that exist, are not on reads (where they are ignored), and use operators that can match the field's type. |
 | API | Calls the first GET that needs no input, to test DNS, TLS and credentials. 401 and 403 are failures. |

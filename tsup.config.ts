@@ -19,6 +19,7 @@ export default defineConfig({
   banner: { js: '#!/usr/bin/env node' },
   // Bundle the three SQL dialect parsers instead of installing the whole package (about 88 MB).
   noExternal: ['node-sql-parser', 'big-integer'],
-  // The DuckDB driver is an optional peer dependency, loaded with import() only for DuckDB sources.
-  external: ['@duckdb/node-api'],
+  // Optional peer dependencies, loaded with import() only when needed: the DuckDB driver for
+  // DuckDB sources, OpenTelemetry when an OTLP endpoint is set (src/telemetry/otel.ts).
+  external: ['@duckdb/node-api', /^@opentelemetry\//],
 });

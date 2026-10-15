@@ -8,6 +8,7 @@ import { createMcpServer } from '../../server/mcp.js';
 import { createOAuthVerifiers, IntrospectionMisconfigured } from '../../server/introspection.js';
 import { oauthChange, oauthReloadRefusal, oauthWarnings } from '../../server/oauth.js';
 import { serveHttp, serveStdio } from '../../server/transport.js';
+import { startTelemetry } from '../../telemetry/index.js';
 import type { ToolDefinition } from '../../types.js';
 
 export interface ServeOptions {
@@ -77,10 +78,22 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
     { redactor, logger },
   );
   for (const w of live.runtime.warnings) logger.warn(w);
+  // After the config: OTEL_* variables may come from the .env next to it. Nothing is loaded
+  // unless an OTLP endpoint is set (docs/telemetry.md).
+  const telemetry = await startTelemetry({
+    transport: opts.transport === 'http' ? 'http' : 'stdio',
+    logger,
+    redactor,
+    server: { name: live.runtime.name, source: live.runtime.sourceType },
+  });
 
   const watching = opts.watch === true;
   const buildServer = () =>
-    createMcpServer(() => live.runtime, { skills: () => live.skills, listChanged: watching });
+    createMcpServer(() => live.runtime, {
+      skills: () => live.skills,
+      listChanged: watching,
+      ...(telemetry ? { telemetry } : {}),
+    });
   // Open servers, so a reload can tell every connected client that the tool list changed.
   const servers = new Set<Server>();
   const makeServer = () => trackOpen(servers, buildServer());
@@ -106,6 +119,8 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
     if (closing) return;
     closing = true;
     await live.close().catch(() => {});
+    // Exports the last spans, waiting a few seconds at most for the collector.
+    await telemetry?.shutdown();
     process.exit(code);
   };
   process.on('SIGINT', () => void shutdown(0));
