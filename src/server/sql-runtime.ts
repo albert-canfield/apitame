@@ -4,6 +4,12 @@ import type { Config, NamedQueryConfig } from '../config/schema.js';
 import { Logger } from '../log.js';
 import { ConfirmationStore, confirmOrChallenge } from '../safety/confirm.js';
 import { Guardrails, type AuditEntry, type AuditOutcome } from '../safety/guardrails.js';
+import {
+  callerPermissions,
+  checkPermissions,
+  toolAllowed,
+  type CallerPermissions,
+} from '../safety/permissions.js';
 import { decide, matchesAny } from '../safety/policy.js';
 import { Redactor } from '../safety/redact.js';
 import { WriteRules } from '../safety/rules.js';
@@ -20,6 +26,7 @@ import { tokenize } from '../sources/sql/lexer.js';
 import type {
   Access,
   CallContext,
+  CallerContext,
   JsonSchema,
   Runtime,
   ToolDefinition,
@@ -54,6 +61,13 @@ const DEFAULT_SCHEMA: Partial<Record<keyof typeof ENGINE, string>> = {
   postgres: '',
   duckdb: 'main',
 };
+
+/** Tools every SQL source has, whatever the config. */
+const BUILT_IN_TOOLS = ['list_tables', 'describe_table', 'query'];
+
+/** The audit fields that say which permissions applied to an OAuth caller. */
+const appliedTo = (perm: CallerPermissions | undefined) =>
+  perm ? { permissions: perm.applied } : {};
 
 export class SqlRuntime implements Runtime {
   readonly name: string;
@@ -108,6 +122,13 @@ export class SqlRuntime implements Runtime {
         );
     this.warnings.push(...this.rules.warnings);
     for (const q of config.sql.queries) this.registerNamed(q);
+    this.warnings.push(
+      ...checkPermissions(config, {
+        tools: [...BUILT_IN_TOOLS, ...config.sql.queries.map((q) => q.name)],
+        operations: config.sql.queries.map((q) => ({ id: q.name, write: q.write })),
+        noun: 'named query',
+      }),
+    );
   }
 
   private get dialect() {
@@ -248,8 +269,16 @@ export class SqlRuntime implements Runtime {
     this.named.set(q.name, { query: q, access, sql, def });
   }
 
-  private policy() {
-    return { mode: this.config.mode, writes: this.config.writes };
+  /** The server config, narrowed by an OAuth caller's permissions when there are any. */
+  private policy(perm?: CallerPermissions) {
+    return { mode: this.config.mode, writes: this.config.writes, caller: perm };
+  }
+
+  /** Whether a caller with these permissions sees the tool: allowed by `tools`, and its writes. */
+  private visibleTo(name: string, perm: CallerPermissions): boolean {
+    if (!toolAllowed(name, perm)) return false;
+    const named = this.named.get(name);
+    return !named || decide(name, named.access, this.policy(perm)).allowed;
   }
 
   /** Named queries that exist in config but are not exposed, with the reason. */
@@ -291,7 +320,7 @@ export class SqlRuntime implements Runtime {
       .join(' ');
   }
 
-  listTools(): ToolDefinition[] {
+  listTools(who?: CallerContext): ToolDefinition[] {
     const limit = this.config.limits.rowLimit;
     const engine = ENGINE[this.sourceType];
     const builtIn: ToolDefinition[] = [
@@ -347,7 +376,9 @@ export class SqlRuntime implements Runtime {
         annotations: { title: 'Query', readOnlyHint: true, openWorldHint: false },
       },
     ];
-    return [...builtIn, ...[...this.named.values()].map((n) => n.def)];
+    const all = [...builtIn, ...[...this.named.values()].map((n) => n.def)];
+    const perm = callerPermissions(this.config, who);
+    return perm ? all.filter((t) => this.visibleTo(t.name, perm)) : all;
   }
 
   summarizeTools(): ToolSummary[] {
@@ -369,7 +400,11 @@ export class SqlRuntime implements Runtime {
     args: Record<string, unknown>,
     ctx?: CallContext,
   ): Promise<ToolResult> {
-    const limited = this.guardrails.checkCall() ?? this.guardrails.checkTool(name);
+    // A tool the caller may not see is unknown to it, exactly like one that does not exist.
+    if (!toolAllowed(name, callerPermissions(this.config, ctx))) {
+      return errorResult(`Unknown tool "${name}".`);
+    }
+    const limited = this.guardrails.checkCall(ctx?.caller) ?? this.guardrails.checkTool(name);
     if (limited) return errorResult(limited);
     try {
       switch (name) {
@@ -464,6 +499,7 @@ export class SqlRuntime implements Runtime {
   }
 
   private async query(sql: string, limitArg: unknown, ctx?: CallContext): Promise<ToolResult> {
+    const perm = callerPermissions(this.config, ctx);
     const g = await this.checkSelect(sql, {
       allowTables: this.config.sql.tables.allow,
       denyTables: this.config.sql.tables.deny,
@@ -476,6 +512,7 @@ export class SqlRuntime implements Runtime {
         reason: g.reason,
         args: { sql },
         caller: ctx?.caller,
+        ...appliedTo(perm),
       });
       return errorResult(`Refused: ${g.reason}`);
     }
@@ -502,6 +539,7 @@ export class SqlRuntime implements Runtime {
       durationMs: Date.now() - started,
       args: { sql },
       caller: ctx?.caller,
+      ...appliedTo(perm),
     });
     return this.format(res, limit);
   }
@@ -532,6 +570,7 @@ export class SqlRuntime implements Runtime {
     }
     const { dryRun: _dryRun, confirm, ...params } = checked;
     const bound = bindNamedParams(named.sql, this.dialect, params);
+    const perm = callerPermissions(this.config, ctx);
     const audit = (outcome: AuditOutcome, extra: Partial<AuditEntry> = {}) =>
       this.guardrails.record({
         tool: named.query.name,
@@ -539,6 +578,7 @@ export class SqlRuntime implements Runtime {
         outcome,
         args: params,
         caller: ctx?.caller,
+        ...appliedTo(perm),
         ...extra,
       });
 
@@ -565,7 +605,7 @@ export class SqlRuntime implements Runtime {
       return this.format(res, limit);
     }
 
-    const decision = decide(named.query.name, named.access, this.policy());
+    const decision = decide(named.query.name, named.access, this.policy(perm));
     if (!decision.allowed) {
       audit('blocked', { reason: decision.reason });
       return errorResult(`Blocked: ${decision.reason}\n${decision.hint}`);
@@ -596,7 +636,7 @@ export class SqlRuntime implements Runtime {
     }
 
     // Checked before asking: a call that would be rate-limited must not use up a human approval.
-    const limitedBefore = this.guardrails.peekWrite();
+    const limitedBefore = this.guardrails.peekWrite(ctx?.caller);
     if (limitedBefore) {
       audit('rate-limited');
       return errorResult(limitedBefore);
@@ -626,7 +666,7 @@ export class SqlRuntime implements Runtime {
       }
     }
 
-    const limited = this.guardrails.checkWrite();
+    const limited = this.guardrails.checkWrite(ctx?.caller);
     if (limited) {
       audit('rate-limited');
       return errorResult(limited);

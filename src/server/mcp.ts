@@ -7,12 +7,19 @@ import {
   SdkError,
   SdkErrorCode,
   Server,
+  type AuthInfo,
   type ElicitRequestFormParams,
   type ServerContext,
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { VERSION } from '../version.js';
-import type { ApprovalRound, CallContext, ElicitOutcome, Runtime } from '../types.js';
+import type {
+  ApprovalRound,
+  CallContext,
+  CallerContext,
+  ElicitOutcome,
+  Runtime,
+} from '../types.js';
 import { identityOf } from './oauth.js';
 import { findSkillFile, mimeTypeFor, skillListEntry, skillUri, type SkillEntry } from './skills.js';
 
@@ -83,6 +90,15 @@ function canShowForm(capabilities: unknown): boolean {
   return modes.form !== undefined || modes.url === undefined;
 }
 
+/**
+ * Who an OAuth access token speaks for (client and subject, kept apart, for the audit log and the
+ * rate limits) and its scopes (for `http.oauth.permissions`). Nothing without OAuth: then the
+ * server config applies unchanged.
+ */
+function callerOf(auth: AuthInfo | undefined): CallerContext {
+  return auth ? { caller: identityOf(auth), scopes: auth.scopes } : {};
+}
+
 /** Read the approval state of a 2026-07-28 request: what the client can do and what it sent back. */
 function approvalRoundOf(ctx: ServerContext): ApprovalRound {
   const envelope = ctx.mcpReq.envelope as Record<string, unknown> | undefined;
@@ -138,15 +154,17 @@ export function createMcpServer(
     },
   );
 
-  server.setRequestHandler('tools/list', async () => ({ tools: current().listTools() }));
+  // Each OAuth caller sees only the tools its permissions let it use.
+  server.setRequestHandler('tools/list', async (_request, ctx) => ({
+    tools: current().listTools(callerOf(ctx.http?.authInfo)),
+  }));
 
   server.setRequestHandler('tools/call', async (request, ctx) => {
     const auth = ctx.http?.authInfo;
     const modern = servesModernEra(server);
     const callCtx: CallContext = {
       signal: ctx.mcpReq.signal,
-      // Who the OAuth token speaks for, for the audit log. Client and subject stay separate.
-      ...(auth ? { caller: identityOf(auth) } : {}),
+      ...callerOf(auth),
       ...(withoutAuth.has(server) ? { anyoneCanAnswer: true } : {}),
     };
     if (modern) {

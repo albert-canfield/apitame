@@ -86,6 +86,38 @@ describe('serve --watch', () => {
     ]);
   });
 
+  it('counts a change of per-caller permissions as a tool list change', async () => {
+    const oauth = (permissions: unknown) => ({
+      http: {
+        oauth: {
+          issuer: 'https://login.example.com',
+          resource: 'https://mcp.example.com/mcp',
+          scopes: ['mcp:tools'],
+          permissions,
+        },
+      },
+    });
+    const p = project({ mode: 'read-write', writes: { allow: ['addPet'] } });
+    p.write(oauth({ byScope: { 'mcp:write': {} } }));
+    const live = await LiveRuntime.start(p.file, {
+      redactor: new Redactor(),
+      logger: new Logger(new Redactor(), 'silent'),
+    });
+    cleanups.push(() => live.close());
+    const changes: boolean[] = [];
+    live.onReload(({ toolsChanged }) => changes.push(toolsChanged));
+    const writer = { caller: { subject: 'w' }, scopes: ['mcp:tools', 'mcp:write'] };
+    expect(operations(live.runtime.listTools(writer))).toContain('addPet');
+
+    p.write(oauth({ byScope: { 'mcp:write': { mode: 'read-only' } } }));
+    expect(await live.reload()).toBe(true);
+    // The server's own list is the same, but this caller's changed.
+    expect(operations(live.runtime.listTools())).toContain('addPet');
+    expect(operations(live.runtime.listTools(writer))).not.toContain('addPet');
+    expect(await live.reload()).toBe(true);
+    expect(changes).toEqual([true, false]);
+  });
+
   it('keeps serving the previous config when the new one is invalid', async () => {
     const p = project();
     const errors: string[] = [];

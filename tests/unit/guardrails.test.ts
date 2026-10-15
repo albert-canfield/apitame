@@ -247,3 +247,70 @@ describe('per-tool rate limits', () => {
     ).not.toMatch(/Rate limit/);
   });
 });
+
+describe('per-caller rate limits', () => {
+  const guardrails = (now: () => number) =>
+    new Guardrails({
+      server: 's',
+      include: 'writes',
+      callsPerMinute: 0,
+      writesPerMinute: 0,
+      perCaller: { callsPerMinute: 1, writesPerMinute: 0 },
+      redactor: new Redactor(),
+      logger: new Logger(new Redactor(), 'silent'),
+      now,
+    });
+  const tracked = (g: Guardrails) => (g as unknown as { callers: Map<string, unknown> }).callers;
+
+  it('forget callers whose window is empty once many are tracked', () => {
+    let now = 0;
+    const g = guardrails(() => now);
+    for (let i = 0; i < 1_000; i++) expect(g.checkCall({ subject: `u${i}` })).toBeUndefined();
+    expect(tracked(g).size).toBe(1_000);
+    // Still within the minute: nobody is forgotten, so nobody gets a fresh budget.
+    expect(g.checkCall({ subject: 'late' })).toBeUndefined();
+    expect(g.checkCall({ subject: 'u0' })).toMatch(/for this user/);
+    now = 61_000;
+    expect(g.checkCall({ subject: 'new' })).toBeUndefined();
+    expect(tracked(g).size).toBe(1);
+  });
+
+  it('do not apply without a caller or with both limits at 0', () => {
+    const g = guardrails(() => 0);
+    for (let i = 0; i < 5; i++) expect(g.checkCall()).toBeUndefined();
+    const off = new Guardrails({
+      server: 's',
+      include: 'writes',
+      callsPerMinute: 0,
+      writesPerMinute: 0,
+      perCaller: { callsPerMinute: 0, writesPerMinute: 0 },
+      redactor: new Redactor(),
+      logger: new Logger(new Redactor(), 'silent'),
+    });
+    for (let i = 0; i < 5; i++) expect(off.checkCall({ subject: 'a' })).toBeUndefined();
+    expect(tracked(off).size).toBe(0);
+  });
+});
+
+describe('per-caller write limits', () => {
+  it('refuse a caller over its own budget without using up the shared one', () => {
+    const g = new Guardrails({
+      server: 's',
+      include: 'writes',
+      callsPerMinute: 0,
+      writesPerMinute: 2,
+      perCaller: { callsPerMinute: 0, writesPerMinute: 1 },
+      redactor: new Redactor(),
+      logger: new Logger(new Redactor(), 'silent'),
+      now: () => 0,
+    });
+    expect(g.checkWrite({ subject: 'a' })).toBeUndefined();
+    // The write limit can fill up between the check before asking and the send.
+    for (let i = 0; i < 3; i++) {
+      expect(g.checkWrite({ subject: 'a' })).toMatch(/more than 1 writes per minute for this user/);
+    }
+    expect(g.checkWrite({ subject: 'b' })).toBeUndefined();
+    expect(g.peekWrite({ subject: 'c' })).toMatch(/more than 2 writes per minute\./);
+    expect(g.checkWrite({ subject: 'c' })).toMatch(/more than 2 writes per minute\./);
+  });
+});

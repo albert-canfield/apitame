@@ -123,6 +123,8 @@ auth:
 | `maxCallsPerMinute` | 120 | all | Tool calls per minute across all tools. `0` means unlimited. |
 | `maxWritesPerMinute` | 20 | all | Writes per minute, counted just before they are sent. `0` means unlimited. |
 | `perTool` | `{}` | all | Calls per minute for individual tools, for example `{ search: 10, call_operation: 30 }`, on top of the server-wide limits. |
+| `perCaller.maxCallsPerMinute` | 0 | all | Tool calls per minute for each OAuth user (client and subject), on top of the server-wide limits. `0` means no per-user limit. Only applies over HTTP with `http.oauth`. |
+| `perCaller.maxWritesPerMinute` | 0 | all | Writes per minute for each OAuth user. `0` means no per-user limit. |
 
 ## `tools`
 
@@ -288,6 +290,13 @@ http:
     requireAccessTokenType: true
     # clients: [mcp-desktop, mcp-web]
     # jwksUri: https://login.example.com/realms/tools/protocol/openid-connect/certs
+    permissions:
+      byScope:
+        mcp:read: { mode: read-only }
+        mcp:write: { writes: [createIssue, updateIssue] }
+      byClient:
+        release-bot: { tools: [issues], writes: [closeIssue] }
+      # default: { mode: read-only }
 ```
 
 | Field | Type | Default | Description |
@@ -299,8 +308,23 @@ http:
 | `oauth.clients` | list | `[]` | When set, only tokens issued to these clients are accepted (the `client_id`, `azp`, `cid` or `appid` claim). |
 | `oauth.requireAccessTokenType` | boolean | `false` | Accept only tokens whose header says `typ: at+jwt` (RFC 9068). Turn it on when your authorization server sets it. ID and refresh tokens are refused either way. |
 | `oauth.jwksUri` | URL | discovered | Where the signing keys are, when the issuer publishes no RFC 8414 or OpenID Connect metadata. |
+| `oauth.permissions.byScope` | map | `{}` | Permissions for callers whose token carries the scope (the key). |
+| `oauth.permissions.byClient` | map | `{}` | Permissions for callers whose token was issued to the client (the key; `client_id`, `azp`, `cid` or `appid`). |
+| `oauth.permissions.default` | entry | read-only | Permissions for callers that no entry matches. Unset means read-only access. |
 
-URLs must use `https`, except on loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) for local testing. Metadata and keys are fetched without following redirects, so `issuer` and `jwksUri` must be final URLs. `http.oauth` cannot be combined with `APITAME_HTTP_TOKEN`, and changes to it need a restart, even with `--watch`. See [clients.md](clients.md#oauth) for the full picture.
+URLs must use `https`, except on loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) for local testing. Metadata and keys are fetched without following redirects, so `issuer` and `jwksUri` must be final URLs. `http.oauth` cannot be combined with `APITAME_HTTP_TOKEN`, and changes to it need a restart, even with `--watch`, except `permissions`, which apply on reload. See [clients.md](clients.md#oauth) for the full picture.
+
+### `http.oauth.permissions`
+
+Each entry narrows what a caller may do. A field that is not set narrows nothing.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `mode` | `read-only` or `read-write` | `read-only` hides and refuses every write for this caller. `read-write` never makes a read-only server writable. |
+| `writes` | list | Writes this caller may run (operation ids or named queries, `*` wildcards). A write must also be in `writes.allow`. Unset: every write in `writes.allow`. Cannot be combined with `mode: read-only`. |
+| `tools` | list | Tools this caller sees (`*` wildcards). Unset: every tool. |
+
+A caller gets the union of every entry that matches its token's scopes or client, then the server config narrows it. A name that matches no tool or operation is an error. Permissions only apply over HTTP with `http.oauth`; over stdio and other transports the server config applies. See [safety.md](safety.md#per-user-permissions) for the rules.
 
 ## Environment variables
 

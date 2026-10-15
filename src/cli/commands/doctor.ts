@@ -2,7 +2,12 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { envRefs, loadDotEnv } from '../../config/env.js';
-import { loadConfig, withoutGuardrails, type LoadedConfig } from '../../config/load.js';
+import {
+  ConfigError,
+  loadConfig,
+  withoutGuardrails,
+  type LoadedConfig,
+} from '../../config/load.js';
 import { Logger } from '../../log.js';
 import { matchesAny } from '../../safety/policy.js';
 import { Redactor } from '../../safety/redact.js';
@@ -345,7 +350,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<Finding[]> {
       dotenv: false,
     });
   } catch (err) {
-    add('fail', 'Source', redactor.text((err as Error).message));
+    // A config that only the source can check (http.oauth.permissions) fails as Config.
+    const check = err instanceof ConfigError ? 'Config' : 'Source';
+    add('fail', check, redactor.text((err as Error).message));
     return findings;
   }
   try {
