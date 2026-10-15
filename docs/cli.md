@@ -272,7 +272,7 @@ For SQL sources it lists tables, describes each one, runs `SELECT * ... LIMIT 1`
 
 Exit code 1 when any check fails. Warnings (for example HTTP 404 for a sample id in `--live` mode) do not fail the run.
 
-Against the mock, secret manager references are not read (the mock accepts any credentials); with `--live` and for SQL sources they are read as `serve` reads them.
+Against the mock, no credentials are sent: the configured auth is replaced by fixed fake credentials of the same kind (an OAuth2 client becomes a bearer token, so no token is requested), static headers get placeholders, and secret manager references are not read. With `--live` and for SQL sources, credentials and references are read as `serve` reads them.
 
 ## `apitame doctor`
 

@@ -1,13 +1,23 @@
 import { z } from 'zod';
 import { MAX_PATTERN_LENGTH } from '../safety/pattern.js';
 import { parseRulePath, RULE_PATH_HELP, ruleProblems } from '../safety/rules.js';
-import { REFERENCE_SOURCE, referenceProblem } from '../secrets/reference.js';
+import {
+  REFERENCE_SOURCE,
+  referenceProblem,
+  secretReferencesIn,
+  shownReference,
+  CREDENTIAL_FIELDS,
+  type ReferencePlacement,
+} from '../secrets/reference.js';
 
 /** Matches a `${VAR}` or `${VAR:-default}` reference anywhere in a string. */
 export const ENV_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/;
 
 /** Environment variable and secret manager references (`${op://...}` and the like). */
 const REFERENCES = new RegExp(REFERENCE_SOURCE, 'g');
+
+/** An AWS region name, as `secrets.aws.region` and AWS_REGION from `.env` must be. */
+export const AWS_REGION = /^[a-z]{2}(?:-[a-z]+)+-\d{1,2}$/;
 
 /**
  * Why a secret field's value does not come from the environment or a secret manager, if it does
@@ -47,12 +57,13 @@ const envRef = (field: string, only = false) =>
     });
 
 /**
- * A field that reads `${VAR}` without being a secret field: secret manager references are read
- * there too, and checked here like in secret fields.
+ * A field that reads `${VAR}` without being a secret field. `placement` says whether secret
+ * manager references are read there too (see ReferencePlacement): in credentials, in the user
+ * and password of a database URL, or never, in fields that choose where requests go.
  */
-const withRefs = (schema: z.ZodString) =>
+const withRefs = (schema: z.ZodString, placement: ReferencePlacement) =>
   schema.superRefine((v, ctx) => {
-    const problem = referenceProblem(v);
+    const problem = referenceProblem(v, placement);
     if (problem) ctx.addIssue({ code: 'custom', message: problem });
   });
 
@@ -111,7 +122,7 @@ export const IntrospectionSchema = z.strictObject(
           'environment variables are not read here (the text "${...}" would be sent as it is). Write the URL itself.',
       }),
     /** apitame's client at the authorization server. May use ${VAR}. */
-    clientId: withRefs(z.string().min(1)),
+    clientId: withRefs(z.string().min(1), 'anywhere'),
     /** Only references (`${VAR}`, `${op://...}`), so the secret itself never sits in the config. */
     clientSecret: envRef('http.oauth.introspection.clientSecret', true),
     clientAuthMethod: z
@@ -136,44 +147,24 @@ export const IntrospectionSchema = z.strictObject(
   },
 );
 
-/**
- * The program of a secret manager: its name, looked up on PATH, or the absolute path of the same
- * program (`/opt/homebrew/bin/op`), for clients that start apitame with a short PATH. Any other
- * program is refused: the config chooses where a CLI is, not which command runs.
- */
-const secretCli = (key: string, name: string) =>
-  z
-    .string()
-    .min(1)
-    .default(name)
-    .superRefine((v, ctx) => {
-      if (v === name) return;
-      const absolute = v.startsWith('/') || /^[A-Za-z]:[\\/]/.test(v) || v.startsWith('\\\\');
-      const file = v.split(/[\\/]/).pop() ?? '';
-      if (absolute && file.replace(/\.exe$/i, '') === name) return;
-      ctx.addIssue({
-        code: 'custom',
-        message: `must be "${name}" (found on PATH) or the absolute path of the ${name} program, for example /usr/local/bin/${name}. secrets.${key}.cli chooses where the CLI is, not which program runs.`,
-      });
-    });
+/** Where the CLIs are comes from the environment, never from the config: see src/secrets/cli.ts. */
+const CLI_IN_ENVIRONMENT =
+  'the CLI is found on PATH, or set APITAME_OP_CLI, APITAME_AWS_CLI or APITAME_GCLOUD_CLI in the environment that starts apitame: the config never chooses a program';
 
 /** How secret manager references (`${op://...}`, `${aws-sm://...}`, `${gcp-sm://...}`) are read. */
 export const SecretsSchema = z.strictObject(
   {
-    /** How long one CLI call may take before it is stopped. */
-    timeoutSeconds: z.number().int().min(1).max(300).default(15),
-    /** 1Password CLI. */
-    op: z.strictObject({ cli: secretCli('op', 'op') }, { error: unknownKeys() }).prefault({}),
+    /**
+     * How long one CLI call may take before it is stopped. 1Password references are read one at
+     * a time, so several that fail can take this long each.
+     */
+    timeoutSeconds: z.number().int().min(1).max(60).default(15),
     /** AWS CLI, for AWS Secrets Manager. */
     aws: z
       .strictObject(
         {
-          cli: secretCli('aws', 'aws'),
           /** --region for every call. Unset: the CLI's own (AWS_REGION, the profile). */
-          region: z
-            .string()
-            .regex(/^[a-z]{2}(?:-[a-z]+)+-\d{1,2}$/, 'Use a region name such as eu-west-1')
-            .optional(),
+          region: z.string().regex(AWS_REGION, 'Use a region name such as eu-west-1').optional(),
           /** --profile for every call. Unset: the CLI's own (AWS_PROFILE, default). */
           profile: z
             .string()
@@ -183,23 +174,20 @@ export const SecretsSchema = z.strictObject(
             )
             .optional(),
         },
-        { error: unknownKeys({ defaultRegion: 'did you mean region?' }) },
+        { error: unknownKeys({ defaultRegion: 'did you mean region?', cli: CLI_IN_ENVIRONMENT }) },
       )
       .prefault({}),
-    /** Google Cloud CLI, for Google Secret Manager. */
-    gcp: z.strictObject({ cli: secretCli('gcp', 'gcloud') }, { error: unknownKeys() }).prefault({}),
   },
   {
     error: unknownKeys({
       timeoutMs: 'use timeoutSeconds',
       timeout: 'did you mean timeoutSeconds?',
-      '1password': 'did you mean op?',
-      onePassword: 'did you mean op?',
-      onepassword: 'did you mean op?',
+      op: CLI_IN_ENVIRONMENT,
+      gcp: CLI_IN_ENVIRONMENT,
+      cli: CLI_IN_ENVIRONMENT,
+      '1password': CLI_IN_ENVIRONMENT,
+      onePassword: CLI_IN_ENVIRONMENT,
       'aws-sm': 'did you mean aws?',
-      'gcp-sm': 'did you mean gcp?',
-      gcloud: 'did you mean gcp?',
-      google: 'did you mean gcp?',
     }),
   },
 );
@@ -249,14 +237,14 @@ export const AuthSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('basic'),
-    username: withRefs(z.string().min(1)),
+    username: withRefs(z.string().min(1), 'anywhere'),
     password: envRef('auth.password'),
   }),
   z.object({
     type: z.literal('oauth2'),
     flow: z.literal('client_credentials').default('client_credentials'),
-    tokenUrl: withRefs(z.string().min(1)),
-    clientId: withRefs(z.string().min(1)),
+    tokenUrl: withRefs(z.string().min(1), 'never'),
+    clientId: withRefs(z.string().min(1), 'anywhere'),
     clientSecret: envRef('auth.clientSecret'),
     scopes: z.array(z.string()).default([]),
     audience: z.string().optional(),
@@ -271,33 +259,33 @@ export const OpenApiSourceSchema = z.object({
   /** File path (relative to the config file) or http(s) URL. */
   spec: z.string().min(1),
   /** Overrides `servers[0].url` from the spec. */
-  baseUrl: withRefs(z.string()).optional(),
+  baseUrl: withRefs(z.string(), 'never').optional(),
   /** Extra static headers sent with every request. Values may use ${VAR}. */
-  headers: z.record(z.string(), withRefs(z.string())).default({}),
+  headers: z.record(z.string(), withRefs(z.string(), 'anywhere')).default({}),
 });
 
 export const PostgresSourceSchema = z.object({
   type: z.literal('postgres'),
-  url: withRefs(z.string().min(1)).default('${DATABASE_URL}'),
+  url: withRefs(z.string().min(1), 'userinfo').default('${DATABASE_URL}'),
   schemas: z.array(z.string()).min(1).default(['public']),
 });
 
 export const MysqlSourceSchema = z.object({
   type: z.literal('mysql'),
   /** mysql:// (or mariadb://) connection string, normally from an environment variable. */
-  url: withRefs(z.string().min(1)).default('${DATABASE_URL}'),
+  url: withRefs(z.string().min(1), 'userinfo').default('${DATABASE_URL}'),
 });
 
 export const SqliteSourceSchema = z.object({
   type: z.literal('sqlite'),
   /** Database file path, relative to the config file. */
-  path: withRefs(z.string().min(1)),
+  path: withRefs(z.string().min(1), 'never'),
 });
 
 export const DuckdbSourceSchema = z.object({
   type: z.literal('duckdb'),
   /** Database file path, relative to the config file. Opened read-only. */
-  path: withRefs(z.string().min(1)),
+  path: withRefs(z.string().min(1), 'never'),
 });
 
 export const SourceSchema = z.discriminatedUnion('type', [
@@ -422,6 +410,43 @@ const WriteRulesSchema = z
     { when: (payload) => isRecord(payload.value) },
   )
   .default({});
+
+/** Fields that check their own references (see envRef and withRefs). */
+const REFERENCE_FIELDS = new Set([
+  'auth.token',
+  'auth.value',
+  'auth.username',
+  'auth.password',
+  'auth.clientId',
+  'auth.clientSecret',
+  'auth.tokenUrl',
+  'source.baseUrl',
+  'source.url',
+  'source.path',
+  'http.oauth.introspection.url',
+  'http.oauth.introspection.clientId',
+  'http.oauth.introspection.clientSecret',
+]);
+
+/**
+ * Secret manager references in fields that never read them (`audience`, a tool description, a
+ * SQL query): an error, rather than text sent as it is.
+ */
+function strayReferences(
+  value: unknown,
+  path: Array<string | number> = [],
+): Array<{ path: Array<string | number>; text: string }> {
+  const joined = path.join('.');
+  if (REFERENCE_FIELDS.has(joined) || (path[0] === 'source' && path[1] === 'headers')) return [];
+  if (typeof value === 'string') {
+    const text = secretReferencesIn(value)[0];
+    return text === undefined ? [] : [{ path, text }];
+  }
+  if (Array.isArray(value)) return value.flatMap((v, i) => strayReferences(v, [...path, i]));
+  if (isRecord(value))
+    return Object.entries(value).flatMap(([k, v]) => strayReferences(v, [...path, k]));
+  return [];
+}
 
 export const ConfigSchema = z
   .strictObject(
@@ -591,6 +616,13 @@ export const ConfigSchema = z
     { error: unknownKeys({ oauth: 'it belongs under http.oauth' }) },
   )
   .superRefine((cfg, ctx) => {
+    for (const { path, text } of strayReferences(cfg)) {
+      ctx.addIssue({
+        code: 'custom',
+        path,
+        message: `${shownReference(text)} is not read here. Secret manager references are only read in credential fields (${CREDENTIAL_FIELDS}).`,
+      });
+    }
     const oauth = cfg.http.oauth;
     if (
       oauth &&

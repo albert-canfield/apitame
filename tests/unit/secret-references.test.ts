@@ -4,10 +4,12 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   envRefs,
   envValues,
+  loadDotEnv,
   resolveEnv,
   UnreadSecretError,
   withSecretValues,
 } from '../../src/config/env.js';
+import { mockAuth, mockEnv } from '../../src/cli/commands/test.js';
 import { parseConfig } from '../../src/config/load.js';
 import type { Config } from '../../src/config/schema.js';
 import { REDACTED, Redactor } from '../../src/safety/redact.js';
@@ -55,6 +57,14 @@ describe('secret manager references: syntax', () => {
       },
     ],
     [
+      'aws-sm://arn:aws-us-gov:secretsmanager:us-gov-west-1:123456789012:secret:x',
+      {
+        provider: 'aws-sm',
+        secretId: 'arn:aws-us-gov:secretsmanager:us-gov-west-1:123456789012:secret:x',
+      },
+    ],
+    ['aws-sm:///prod/db', { provider: 'aws-sm', secretId: '/prod/db' }],
+    [
       'gcp-sm://projects/my-project/secrets/stripe-key',
       { provider: 'gcp-sm', project: 'my-project', secret: 'stripe-key', version: 'latest' },
     ],
@@ -86,6 +96,18 @@ describe('secret manager references: syntax', () => {
     ['op://vault/item/field?attribute=otp', /not a valid reference/],
     ['op://vault/item', /not a valid reference/],
     ['op://a/b/c/d/e', /not a valid reference/],
+    // The AWS CLI reads a parameter that starts with one of these from the file or URL.
+    ['aws-sm://file:///etc/passwd', /not a valid reference/],
+    ['aws-sm://fileb:///etc/passwd', /not a valid reference/],
+    ['aws-sm://http://evil.example/x', /not a valid reference/],
+    ['aws-sm://https://evil.example/x', /not a valid reference/],
+    ['aws-sm://prod:x', /not a valid reference/],
+    ['aws-sm://arn:aws:secretsmanager:eu-west-1:1234:secret:x', /not a valid reference/],
+    ['aws-sm://arn:aws:s3:eu-west-1:123456789012:secret:x', /not a valid reference/],
+    [
+      'aws-sm://arn:aws:secretsmanager:eu-west-1:123456789012:secret:file://x',
+      /not a valid reference/,
+    ],
     ['aws-sm://--profile x', /not a valid reference/],
     ['aws-sm://-secret', /not a valid reference/],
     ['aws-sm://prod/db --region us-east-1', /not a valid reference/],
@@ -161,13 +183,9 @@ describe('secret manager references in the config', () => {
     expect(introspection('${op://vault/introspection}')).toThrow(/not a valid reference/);
   });
 
-  it('is checked in every other field that reads ${VAR}', () => {
+  it('is checked in every other credential field', () => {
     const bad = '${aws-sm://-x}';
     const cases: Array<[Record<string, unknown>, RegExp]> = [
-      [
-        { source: { ...minimal.source, baseUrl: `https://api.example.com/${bad}` } },
-        /source\.baseUrl/,
-      ],
       [
         { source: { ...minimal.source, headers: { 'X-Tenant': bad } } },
         /source\.headers\.X-Tenant/,
@@ -191,42 +209,113 @@ describe('secret manager references in the config', () => {
       expect(() => parseConfig({ ...minimal, ...extra })).toThrow(path);
       expect(() => parseConfig({ ...minimal, ...extra })).toThrow(/not a valid reference/);
     }
+  });
+
+  it('is only read in credential fields, never where requests go or what is opened', () => {
+    const ref = '${op://vault/item/field}';
+    const refused: Array<[Record<string, unknown>, RegExp]> = [
+      [{ source: { ...minimal.source, baseUrl: ref } }, /source\.baseUrl: .*cannot be used here/],
+      [
+        { source: { ...minimal.source, baseUrl: `https://api.example.com/bot${ref}` } },
+        /source\.baseUrl: .*cannot be used here/,
+      ],
+      [{ source: { type: 'sqlite', path: ref } }, /source\.path: .*cannot be used here/],
+      [{ source: { type: 'duckdb', path: `./${ref}.duckdb` } }, /source\.path/],
+      [
+        {
+          auth: { type: 'oauth2', tokenUrl: ref, clientId: 'apitame', clientSecret: '${S}' },
+        },
+        /auth\.tokenUrl: .*cannot be used here/,
+      ],
+      // In a database URL, only the whole URL or its user and password.
+      [
+        { source: { type: 'postgres', url: `postgres://app:pw@${ref}/shop` } },
+        /source\.url: .*user or password/,
+      ],
+      [{ source: { type: 'postgres', url: `postgres://app:pw@db/${ref}` } }, /source\.url/],
+      [{ source: { type: 'mysql', url: `mysql://app:pw@db/shop?ssl=${ref}` } }, /source\.url/],
+      [{ source: { type: 'postgres', url: `${ref}/shop` } }, /source\.url/],
+      [{ source: { type: 'postgres', url: `host=db password=${ref}` } }, /source\.url/],
+      // Fields that never read references at all are errors too, not text sent as it is.
+      [
+        {
+          auth: {
+            type: 'oauth2',
+            tokenUrl: 'https://x/token',
+            clientId: 'a',
+            clientSecret: '${S}',
+            audience: ref,
+          },
+        },
+        /auth\.audience: .*is not read here/,
+      ],
+      [{ description: `uses ${ref}` }, /description: .*is not read here/],
+      [{ tools: [{ name: 'x', description: ref, operations: ['a'] }] }, /tools\.0\.description/],
+    ];
+    for (const [extra, message] of refused)
+      expect(() => parseConfig({ ...minimal, ...extra })).toThrow(message);
+    // Environment variables still work in those fields.
     expect(
       parseConfig({
         ...minimal,
-        source: { type: 'postgres', url: 'postgres://app:${op://vault/db/password}@db/shop' },
-      }).source,
-    ).toMatchObject({ url: 'postgres://app:${op://vault/db/password}@db/shop' });
+        source: { ...minimal.source, baseUrl: 'https://api.example.com/bot${BOT}' },
+      }),
+    ).toBeTruthy();
+    for (const url of [
+      ref,
+      'postgres://app:${op://vault/db/password}@db.internal:5432/shop?sslmode=require',
+      'postgres://${op://vault/db/user}:${op://vault/db/password}@db/shop',
+      'postgres://${DB_USER}:${aws-sm://prod/db#password}@${DB_HOST}/shop',
+    ])
+      expect(parseConfig({ ...minimal, source: { type: 'postgres', url } }).source).toMatchObject({
+        url,
+      });
+    for (const field of ['token', 'value']) {
+      const auth =
+        field === 'token'
+          ? { type: 'bearer', token: ref }
+          : { type: 'apiKey', name: 'X', value: ref };
+      expect(parseConfig({ ...minimal, auth })).toBeTruthy();
+    }
+    expect(
+      parseConfig({
+        ...minimal,
+        source: { ...minimal.source, headers: { 'X-Api-Key': `Key ${ref}` } },
+      }),
+    ).toBeTruthy();
   });
 
-  it('has a secrets block with safe defaults that names CLIs, never other programs', () => {
-    expect(parseConfig(minimal).secrets).toEqual({
-      timeoutSeconds: 15,
-      op: { cli: 'op' },
-      aws: { cli: 'aws' },
-      gcp: { cli: 'gcloud' },
-    });
-    const secrets = (s: Record<string, unknown>) => () => parseConfig({ ...minimal, secrets: s });
-    expect(secrets({ op: { cli: '/opt/homebrew/bin/op' } })().secrets.op.cli).toBe(
-      '/opt/homebrew/bin/op',
-    );
+  it('refuses a reference inside a default, which would be sent as written', () => {
+    for (const extra of [
+      { source: { ...minimal.source, headers: { 'X-Default': '${UNSET:-${op://v/i/user}}' } } },
+      { source: { ...minimal.source, baseUrl: 'https://${HOST:-${OTHER}}/v1' } },
+      { auth: { type: 'basic', username: '${U:-${op://v/i/user}}', password: '${P}' } },
+    ])
+      expect(() => parseConfig({ ...minimal, ...extra })).toThrow(
+        /a default cannot hold another reference/,
+      );
     expect(
-      secrets({ aws: { cli: 'C:\\Program Files\\Amazon\\AWSCLIV2\\aws.exe' } })(),
+      parseConfig({
+        ...minimal,
+        source: { ...minimal.source, headers: { 'X-Default': '${T:-x}' } },
+      }),
     ).toBeTruthy();
-    for (const cli of [
-      '/bin/sh',
-      './bin/op',
-      'bin/op',
-      'op.exe',
-      '/usr/bin/python3',
-      'op --help',
-    ]) {
-      expect(secrets({ op: { cli } })).toThrow(/secrets\.op\.cli/);
-    }
-    expect(secrets({ gcp: { cli: '/usr/bin/gcloud' } })()).toBeTruthy();
-    expect(secrets({ gcp: { cli: '/usr/bin/gsutil' } })).toThrow(/gcloud program/);
+  });
+
+  it('has a secrets block with safe defaults, and no say over which program runs', () => {
+    expect(parseConfig(minimal).secrets).toEqual({ timeoutSeconds: 15, aws: {} });
+    const secrets = (s: Record<string, unknown>) => () => parseConfig({ ...minimal, secrets: s });
+    // Where a CLI is comes from the environment that starts apitame, never from the config.
+    for (const extra of [
+      { op: { cli: '/opt/homebrew/bin/op' } },
+      { aws: { cli: '/usr/local/bin/aws' } },
+      { gcp: { cli: '/usr/bin/gcloud' } },
+      { cli: '/bin/sh' },
+    ])
+      expect(secrets(extra)).toThrow(
+        /APITAME_OP_CLI, APITAME_AWS_CLI or APITAME_GCLOUD_CLI in the environment/,
+      );
     expect(secrets({ aws: { region: 'eu-west-1', profile: 'apitame' } })().secrets.aws).toEqual({
-      cli: 'aws',
       region: 'eu-west-1',
       profile: 'apitame',
     });
@@ -235,8 +324,10 @@ describe('secret manager references in the config', () => {
     for (const profile of ['--debug', '-x', 'a b', 'a;b', ''])
       expect(secrets({ aws: { profile } })).toThrow(/profile/);
     expect(secrets({ timeoutSeconds: 0 })).toThrow(/timeoutSeconds/);
-    expect(secrets({ onePassword: {} })).toThrow(/Unknown key "onePassword" \(did you mean op\?\)/);
-    expect(secrets({ op: { path: '/x/op' } })).toThrow(/Unknown key "path"/);
+    // 1Password references are read one at a time: a long timeout would add up.
+    expect(secrets({ timeoutSeconds: 60 })().secrets.timeoutSeconds).toBe(60);
+    expect(secrets({ timeoutSeconds: 61 })).toThrow(/timeoutSeconds/);
+    expect(secrets({ timeoutMs: 1000 })).toThrow(/Unknown key "timeoutMs" \(use timeoutSeconds\)/);
   });
 });
 
@@ -276,9 +367,20 @@ describe('resolving references in config values', () => {
     const env = withSecretValues(base, values);
     expect(Object.keys(env)).toEqual(['PATH']);
     expect(JSON.stringify({ ...env })).not.toContain('fake-op-value');
-    // Reads and writes go through to the environment it wraps.
-    env.LOADED = 'x';
-    expect(base.LOADED).toBe('x');
+    // Read only: nothing reaches the environment it wraps through it, process.env included.
+    expect(() => {
+      env.LOADED = 'x';
+    }).toThrow(TypeError);
+    expect(() => {
+      delete env.PATH;
+    }).toThrow(TypeError);
+    expect(base).toEqual({ PATH: '/bin' });
+    const proc = withSecretValues(process.env, values);
+    expect(proc.PATH).toBe(process.env.PATH);
+    expect(() => {
+      proc.APITAME_TEST_WRITE = 'x';
+    }).toThrow(TypeError);
+    expect(process.env.APITAME_TEST_WRITE).toBeUndefined();
   });
 
   it('puts placeholders in place of references for commands that send nothing', () => {
@@ -393,6 +495,16 @@ describe('secret manager CLIs: command lines and answers', () => {
     expect(() => checkValue('fake\u0000value')).toThrow(/control character/);
     expect(() => checkValue('fake\u007fvalue')).toThrow(/control character/);
     expect(() => checkValue('fake\tvalue with spaces')).not.toThrow();
+    // Unicode line breaks, C1 controls and a byte order mark, and values of only spaces.
+    for (const odd of [
+      'fake\u2028value',
+      'fake\u2029value',
+      'fake\u0085value',
+      '\uFEFFfake-value',
+      'fake\u009bvalue',
+    ])
+      expect(() => checkValue(odd)).toThrow(/control character/);
+    for (const blank of ['    ', ' \t ']) expect(() => checkValue(blank)).toThrow(/only spaces/);
   });
 
   it('explains failures from what the CLI printed, without repeating it', () => {
@@ -441,6 +553,66 @@ describe('secret manager CLIs: command lines and answers', () => {
     expect(PROVIDERS.op.explain(`something new ${secret}`)).toBeUndefined();
     // Not an AWS error code, however it is written.
     expect(PROVIDERS['aws-sm'].explain(`An error occurred (${secret}) when`)).toBeUndefined();
+  });
+
+  it('passes only credentials and a region from .env, which may come with the config', () => {
+    const dir = tempDir('apitame-dotenv-cli-');
+    try {
+      writeFileSync(
+        join(dir.dir, '.env'),
+        [
+          'OP_SERVICE_ACCOUNT_TOKEN=fake-dotenv-op-token',
+          'OP_CONNECT_HOST=https://connect.attacker.example',
+          'OP_CONFIG_DIR=./evil-op',
+          'AWS_ACCESS_KEY_ID=fake-dotenv-key-id',
+          'AWS_SECRET_ACCESS_KEY=fake-dotenv-key-secret',
+          'AWS_SESSION_TOKEN=fake-dotenv-session',
+          'AWS_PROFILE=dotenv-profile',
+          'AWS_REGION=eu-west-1',
+          'AWS_DEFAULT_REGION=evil.example.com',
+          'AWS_CONFIG_FILE=./evil-aws-config',
+          'AWS_ENDPOINT_URL=https://attacker.example',
+          'CLOUDSDK_PYTHON=./evil-python',
+          'CLOUDSDK_CONFIG=./evil-gcloud',
+          'HOME=./evil-home',
+          'XDG_CONFIG_HOME=./evil-xdg',
+          'HTTPS_PROXY=http://attacker.example:3128',
+          'PATH=./tools',
+          '',
+        ].join('\n'),
+      );
+      // The real environment: its own values keep the usual rules.
+      const env: NodeJS.ProcessEnv = { USER: 'u', OP_CONNECT_TOKEN: 'fake-real-connect-token' };
+      loadDotEnv(dir.dir, env);
+      const keys = (provider: keyof typeof PROVIDERS) =>
+        Object.keys(cliEnvironment(PROVIDERS[provider], env)).sort();
+      // A Connect host from .env next to the user's own Connect token would send it there.
+      expect(keys('op')).toEqual(['OP_CONNECT_TOKEN', 'OP_SERVICE_ACCOUNT_TOKEN', 'USER']);
+      expect(keys('aws-sm')).toEqual([
+        'AWS_ACCESS_KEY_ID',
+        'AWS_PAGER',
+        'AWS_PROFILE',
+        'AWS_REGION',
+        'AWS_SECRET_ACCESS_KEY',
+        'AWS_SESSION_TOKEN',
+        'USER',
+      ]);
+      expect(keys('gcp-sm')).toEqual(['CLOUDSDK_CORE_DISABLE_PROMPTS', 'USER']);
+      // With a Connect token from .env too, the pair comes from .env and nothing of the user's
+      // goes to that host.
+      const both: NodeJS.ProcessEnv = {};
+      writeFileSync(
+        join(dir.dir, '.env'),
+        'OP_CONNECT_HOST=https://connect.example\nOP_CONNECT_TOKEN=fake-dotenv-connect-token\n',
+      );
+      loadDotEnv(dir.dir, both);
+      expect(Object.keys(cliEnvironment(PROVIDERS.op, both)).sort()).toEqual([
+        'OP_CONNECT_HOST',
+        'OP_CONNECT_TOKEN',
+      ]);
+    } finally {
+      dir.cleanup();
+    }
   });
 
   it('gives each CLI only the environment it needs', () => {
@@ -570,16 +742,18 @@ describe('SecretResolver', () => {
     expect(fake.calls).toHaveLength(1);
     // The cached value is registered with the second command's redactor too.
     expect(other.text('fake-op-token-value')).toBe(REDACTED);
-    await resolver.environment(
+    // Other settings for the CLI (an AWS region): read again.
+    const aws = fakeRunner(() => ({ stdout: Buffer.from('"fake-aws-value"') }));
+    const awsResolver = new SecretResolver({ run: aws.run });
+    const awsConfig = (region: string) =>
       configWith({
-        auth: { type: 'bearer', token: '${op://vault/api/token}' },
-        // Other settings for the CLI: read again.
-        secrets: { op: { cli: cliPath('op') } },
-      }),
-      ['auth'],
-      { redactor, env },
-    );
-    expect(fake.calls).toHaveLength(2);
+        auth: { type: 'bearer', token: '${aws-sm://prod/api}' },
+        secrets: { aws: { region } },
+      });
+    await awsResolver.environment(awsConfig('eu-west-1'), ['auth'], { redactor, env });
+    await awsResolver.environment(awsConfig('eu-west-1'), ['auth'], { redactor, env });
+    await awsResolver.environment(awsConfig('us-east-1'), ['auth'], { redactor, env });
+    expect(aws.calls.map((c) => c.args.at(-1))).toEqual(['eu-west-1', 'us-east-1']);
   });
 
   it('is all or nothing: one failure stops everything and names fields and references, never values', async () => {
@@ -657,6 +831,85 @@ describe('SecretResolver', () => {
     expect(await failure(crashed.run)).toMatch(/AWS CLI \(aws\) was stopped by SIGSEGV\. Run /);
   });
 
+  it('refuses values too short to be hidden in secret fields', async () => {
+    const short = fakeRunner(() => ({ stdout: Buffer.from('abc') }));
+    const read = (extra: Record<string, unknown>) =>
+      new SecretResolver({ run: short.run })
+        .environment(configWith(extra), ['auth', 'source'], { redactor: new Redactor(), env })
+        .then(
+          () => 'read',
+          (err: Error) => err.message,
+        );
+    for (const extra of [
+      { auth: { type: 'bearer', token: '${op://v/i/f}' } },
+      { auth: { type: 'apiKey', name: 'X', value: '${op://v/i/f}' } },
+      { auth: { type: 'basic', username: 'u', password: '${op://v/i/f}' } },
+      { source: { ...minimal.source, headers: { 'X-Key': '${op://v/i/f}' } } },
+      { source: { type: 'postgres', url: 'postgres://app:${op://v/i/f}@db/shop' } },
+    ])
+      expect(await read(extra)).toMatch(/fewer than 4 characters, too few to be hidden/);
+    // A short user name is no secret on its own.
+    expect(
+      await read({ auth: { type: 'basic', username: '${op://v/i/f}', password: '${P}' } }),
+    ).toBe('read');
+  });
+
+  it('finds a CLI through APITAME_*_CLI from the real environment, never from .env', async () => {
+    const fake = fakeRunner(answerOp);
+    const config = configWith({ auth: { type: 'bearer', token: '${op://vault/api/token}' } });
+    const read = (e: NodeJS.ProcessEnv) =>
+      new SecretResolver({ run: fake.run })
+        .environment(config, ['auth'], { redactor: new Redactor(), env: e })
+        .then(
+          () => fake.calls.at(-1)?.file,
+          (err: Error) => err.message,
+        );
+    // Set by the environment that starts apitame: used, without PATH.
+    expect(await read({ APITAME_OP_CLI: cliPath('op') })).toBe(cliPath('op'));
+    expect(await read({ APITAME_OP_CLI: 'op' })).toMatch(/APITAME_OP_CLI must be an absolute path/);
+    expect(await read({ APITAME_OP_CLI: join(bin.dir, 'missing') })).toMatch(
+      /APITAME_OP_CLI \(.*missing\) is not an executable file/,
+    );
+    // Set by .env, which may come with the config: refused, and so is a PATH it sets.
+    const dir = tempDir('apitame-dotenv-cli-path-');
+    try {
+      writeFileSync(join(dir.dir, '.env'), `APITAME_OP_CLI=${cliPath('op')}\nPATH=${bin.dir}\n`);
+      const fromDotEnv: NodeJS.ProcessEnv = {};
+      loadDotEnv(dir.dir, fromDotEnv);
+      expect(await read(fromDotEnv)).toMatch(
+        /APITAME_OP_CLI is set in \.env, which cannot choose a program/,
+      );
+      delete fromDotEnv.APITAME_OP_CLI;
+      expect(await read(fromDotEnv)).toMatch(/op was not found on PATH/);
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  it('logs each reference read, never its value', async () => {
+    const lines: string[] = [];
+    const resolver = new SecretResolver({
+      run: fakeRunner(answerOp).run,
+      log: (l) => lines.push(l),
+    });
+    await resolver.environment(
+      configWith({
+        auth: {
+          type: 'basic',
+          username: '${op://vault/api/user}',
+          password: '${op://vault/api/token}',
+        },
+      }),
+      ['auth'],
+      { redactor: new Redactor(), env },
+    );
+    expect(lines).toEqual([
+      `read secret reference "\${op://vault/api/user}" for auth.username with ${cliPath('op')}`,
+      `read secret reference "\${op://vault/api/token}" for auth.password with ${cliPath('op')}`,
+    ]);
+    expect(lines.join('\n')).not.toContain('fake-op');
+  });
+
   it('checks references for doctor without reading them offline', async () => {
     const fake = fakeRunner(answerOp);
     const resolver = new SecretResolver({ run: fake.run });
@@ -704,5 +957,59 @@ describe('SecretResolver', () => {
         fields: ['http.oauth.introspection.clientSecret'],
       },
     ]);
+  });
+});
+
+describe('redaction of values read', () => {
+  it('hides the JSON-escaped form too, in text that is not parsed as JSON', () => {
+    const redactor = new Redactor();
+    const secret = 'pa"ss\\word-9999';
+    redactor.addSecret(secret);
+    const html = `<p>${JSON.stringify(secret)}</p>`;
+    expect(redactor.text(html)).toBe(`<p>"${REDACTED}"</p>`);
+    expect(redactor.text(`raw ${secret}`)).toBe(`raw ${REDACTED}`);
+  });
+});
+
+describe('test against the mock', () => {
+  it('sends fake credentials of the same kind, never configured ones', () => {
+    expect(mockAuth({ type: 'none' })).toEqual({ type: 'none' });
+    expect(mockAuth({ type: 'bearer', token: '${op://v/i/f}' })).toEqual({
+      type: 'bearer',
+      token: 'apitame-mock-credential',
+    });
+    expect(mockAuth({ type: 'apiKey', in: 'header', name: 'X-Key', value: '${KEY}' })).toEqual({
+      type: 'apiKey',
+      in: 'header',
+      name: 'X-Key',
+      value: 'apitame-mock-credential',
+    });
+    // No client credentials grant, so nothing asks the real token endpoint.
+    expect(
+      mockAuth({
+        type: 'oauth2',
+        flow: 'client_credentials',
+        tokenUrl: 'https://auth.example.com/token',
+        clientId: 'a',
+        clientSecret: '${S}',
+        scopes: [],
+        clientAuthMethod: 'client_secret_basic',
+      }),
+    ).toEqual({ type: 'bearer', token: 'apitame-mock-credential' });
+    const config = parseConfig({
+      ...minimal,
+      source: { ...minimal.source, headers: { 'X-Tenant': '${TENANT_KEY}' } },
+    });
+    const before = process.env.TENANT_KEY;
+    process.env.TENANT_KEY = 'fake-real-tenant-key';
+    try {
+      // A real value for a static header is not sent to the mock either.
+      expect(mockEnv({ config, path: '/x/apitame.config.yaml', dir: '/x' }).TENANT_KEY).toBe(
+        'apitame-mock-credential',
+      );
+    } finally {
+      if (before === undefined) delete process.env.TENANT_KEY;
+      else process.env.TENANT_KEY = before;
+    }
   });
 });

@@ -4,11 +4,18 @@ import type { Redactor } from '../safety/redact.js';
 import {
   CliOutputTooLargeError,
   CliTimeoutError,
-  findExecutable,
+  locateCli,
   runCli,
   type CliRunner,
 } from './cli.js';
-import { checkValue, cliEnvironment, PROVIDERS, SecretValueError } from './providers.js';
+import {
+  checkValue,
+  cliEnvironment,
+  isSecretField,
+  MIN_SECRET_LENGTH,
+  PROVIDERS,
+  SecretValueError,
+} from './providers.js';
 import {
   parseSecretReference,
   secretReferencesIn,
@@ -35,8 +42,8 @@ const MAX_OUTPUT_BYTES = 1_048_576;
 export const SECRET_PLACEHOLDER = 'apitame-placeholder';
 
 /**
- * The config fields that read `${...}`, with their values: exactly those that `resolveEnv` is
- * called on. A reference anywhere else is never read.
+ * The config fields where secret manager references are read, with their values: the credential
+ * fields (see ReferencePlacement). The config schema refuses references anywhere else.
  */
 export function referenceFields(
   config: Config,
@@ -50,15 +57,12 @@ export function referenceFields(
     const auth = config.auth as Record<string, unknown>;
     for (const key of ['token', 'value', 'username', 'password', 'clientId', 'clientSecret'])
       add(`auth.${key}`, auth[key]);
-    add('auth.tokenUrl', auth.tokenUrl);
   }
   if (scopes.includes('source')) {
     const src = config.source;
     if (src.type === 'openapi') {
-      add('source.baseUrl', src.baseUrl);
       for (const [k, v] of Object.entries(src.headers)) add(`source.headers.${k}`, v);
     } else if (src.type === 'postgres' || src.type === 'mysql') add('source.url', src.url);
-    else add('source.path', src.path);
   }
   const introspection = config.http.oauth?.introspection;
   if (scopes.includes('introspection') && introspection) {
@@ -175,11 +179,11 @@ export class SecretResolver {
     const values = new Map(
       uses.map((u) => [u.reference.text, this.values.get(this.key(config.secrets, u.reference))]),
     ) as Map<string, string>;
-    const fresh = checks.filter((c) => c.cli !== undefined && c.ok);
-    if (fresh.length > 0 && this.opts.log) {
-      const clis = [...new Set(fresh.map((c) => PROVIDERS[c.provider].label))].join(', ');
-      this.opts.log(
-        `read ${fresh.length} secret reference${fresh.length === 1 ? '' : 's'} with ${clis}`,
+    // Each reference read, by name and never by value, so what a config reads is on record.
+    for (const c of checks) {
+      if (c.cli === undefined) continue;
+      this.opts.log?.(
+        `read secret reference ${shownReference(c.reference)} for ${c.fields.join(', ')} with ${c.cli}`,
       );
     }
     return withSecretValues(env, values);
@@ -207,7 +211,7 @@ export class SecretResolver {
 
   /** Cache key: the provider's settings and the reference, so a new region reads again. */
   private key(settings: SecretsConfig, ref: SecretReference): string {
-    return `${JSON.stringify(settings[PROVIDERS[ref.provider].key])}\n${ref.text}`;
+    return `${JSON.stringify(ref.provider === 'aws-sm' ? settings.aws : {})}\n${ref.text}`;
   }
 
   private async read(
@@ -253,14 +257,11 @@ export class SecretResolver {
       redactor.addSecret(known);
       return { ...base, ok: true };
     }
-    const configured = settings[provider.key].cli;
-    const file = findExecutable(configured, env);
-    if (!file) {
-      return {
-        ...base,
-        problem: `${configured} ${configured.includes('/') || configured.includes('\\') ? 'is not an executable file' : 'was not found on PATH'}. ${provider.install}.`,
-      };
+    const located = locateCli(provider.cli, provider.cliVariable, env);
+    if ('problem' in located) {
+      return { ...base, problem: `${located.problem}. ${provider.install}.` };
     }
+    const file = located.file;
     const found = { ...base, cli: file };
     if (!readValue) return found;
     const args = provider.args(ref, settings);
@@ -304,6 +305,12 @@ export class SecretResolver {
     try {
       value = provider.value(result.stdout, ref);
       checkValue(value);
+      const short = use.fields.filter(isSecretField);
+      if (value.length < MIN_SECRET_LENGTH && short.length > 0) {
+        throw new SecretValueError(
+          `The value has fewer than ${MIN_SECRET_LENGTH} characters, too few to be hidden from output reliably, and ${short.join(', ')} ${short.length === 1 ? 'is a secret' : 'are secrets'}.`,
+        );
+      }
     } catch (err) {
       if (err instanceof SecretValueError) return { ...found, problem: err.message };
       throw err;

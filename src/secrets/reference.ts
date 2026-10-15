@@ -1,5 +1,5 @@
 /**
- * Secret manager references. Wherever the config reads `${VAR}`, it also reads
+ * Secret manager references. Credential fields (see ReferencePlacement) read, next to `${VAR}`,
  *
  * - `${op://vault/item/field}` or `${op://vault/item/section/field}` (1Password, through `op`),
  * - `${aws-sm://secret-id}` or `${aws-sm://secret-id#key}` (AWS Secrets Manager, through `aws`),
@@ -42,11 +42,16 @@ const OP_REF = new RegExp(
 );
 
 /**
- * An AWS secret name (letters, digits and `/_+=.@-`) or ARN (with `:`), not starting with `-`,
- * then an optional `#key` of the JSON object stored in the secret.
+ * An AWS secret name (letters, digits and `/_+=.@-`, never `:`, not starting with `-`) or a full
+ * ARN, then an optional `#key` of the JSON object stored in the secret. Nothing else: the AWS CLI
+ * reads any parameter that starts with `file://`, `fileb://`, `http://` or `https://` from that
+ * file or URL, and none of those can match without a `:` outside an ARN.
  */
-const AWS_REF =
-  /^aws-sm:\/\/([A-Za-z0-9/_+=.@:][A-Za-z0-9/_+=.@:-]{0,1023})(?:#([A-Za-z0-9_.@+/-]{1,256}))?$/;
+const AWS_NAME = String.raw`[A-Za-z0-9/_+=.@][A-Za-z0-9/_+=.@-]{0,511}`;
+const AWS_ARN = String.raw`arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+`;
+const AWS_REF = new RegExp(
+  String.raw`^aws-sm:\/\/(${AWS_NAME}|${AWS_ARN})(?:#([A-Za-z0-9_.@+/-]{1,256}))?$`,
+);
 
 /** A project id (or number, or a domain-scoped id), a secret id, and a version number or alias. */
 const GCP_PROJECT = String.raw`[a-z][a-z0-9-]{4,28}[a-z0-9]|[0-9]{1,20}|[a-z0-9][a-z0-9.-]{0,62}:[a-z][a-z0-9-]{4,28}[a-z0-9]`;
@@ -57,7 +62,7 @@ const GCP_REF = new RegExp(
 const HELP: Record<SecretProvider, string> = {
   op: 'use op://vault/item/field or op://vault/item/section/field, with names made of letters, digits, spaces, "-", "_" and "." that do not start with "-" (write the ID for any other name)',
   'aws-sm':
-    'use aws-sm://secret-name or aws-sm://secret-name#key, with a secret name or ARN made of letters, digits and "/_+=.@:-" that does not start with "-", and a key made of letters, digits and "_.@+/-"',
+    'use aws-sm://secret-name or aws-sm://secret-name#key, with a secret name made of letters, digits and "/_+=.@-" that does not start with "-" (or the full ARN, arn:aws:secretsmanager:REGION:ACCOUNT:secret:NAME), and a key made of letters, digits and "_.@+/-"',
   'gcp-sm':
     'use gcp-sm://projects/PROJECT/secrets/SECRET or gcp-sm://projects/PROJECT/secrets/SECRET/versions/VERSION, with a project id or number, a secret id made of letters, digits, "_" and "-", and a version number, latest or an alias',
 };
@@ -111,11 +116,61 @@ export function secretReferencesIn(value: string): string[] {
     .filter((t): t is string => t !== undefined);
 }
 
-/** What is wrong with the secret manager references in a config value, if anything. */
-export function referenceProblem(value: string): string | undefined {
-  for (const text of secretReferencesIn(value)) {
+/**
+ * Where a config field may hold secret manager references:
+ *
+ * - `anywhere`: credential fields (the credentials under `auth` and `http.oauth.introspection`,
+ *   and `source.headers` values);
+ * - `userinfo`: a database URL, as the whole URL or as its user and password only;
+ * - `never`: every other field that reads `${VAR}` (`source.baseUrl`, `auth.tokenUrl`,
+ *   `source.path`), since it chooses where requests go or what is opened.
+ */
+export type ReferencePlacement = 'anywhere' | 'userinfo' | 'never';
+
+/** Where secret manager references are read, for messages. */
+export const CREDENTIAL_FIELDS =
+  'the credentials under auth and http.oauth.introspection, source.headers values, and the user and password of a database URL';
+
+/** Whether every secret manager reference in a URL template sits in its user and password. */
+function onlyInUserinfo(value: string): boolean {
+  if (/^\$\{[^}]*\}$/.test(value) && secretReferencesIn(value).length === 1) return true;
+  // References become one character each, so their own `/` and `:` do not count.
+  const masked = value.replace(new RegExp(REFERENCE_SOURCE, 'g'), (_m, name?: string) =>
+    name === undefined ? '\u0001' : 'v',
+  );
+  const total = masked.split('\u0001').length - 1;
+  const scheme = masked.indexOf('://');
+  if (scheme < 0) return false;
+  const rest = masked.slice(scheme + 3);
+  const end = rest.search(/[/?#]/);
+  const authority = end < 0 ? rest : rest.slice(0, end);
+  const at = authority.lastIndexOf('@');
+  const userinfo = at < 0 ? '' : authority.slice(0, at);
+  return userinfo.split('\u0001').length - 1 === total;
+}
+
+/** What is wrong with the references in a config value, if anything. */
+export function referenceProblem(
+  value: string,
+  placement: ReferencePlacement = 'anywhere',
+): string | undefined {
+  const all = [...value.matchAll(new RegExp(REFERENCE_SOURCE, 'g'))];
+  // `${UNSET:-${op://...}}` would be sent as written: nothing reads a reference in a default.
+  if (all.some((m) => m[2]?.includes('${'))) {
+    return 'a default cannot hold another reference ("${NAME:-${...}}"): references inside a default are never read. Set the variable instead.';
+  }
+  const texts = secretReferencesIn(value);
+  for (const text of texts) {
     const parsed = parseSecretReference(text);
     if ('problem' in parsed) return parsed.problem;
+  }
+  if (texts.length === 0) return undefined;
+  const shown = shownReference(texts[0] as string);
+  if (placement === 'never') {
+    return `${shown} cannot be used here. Secret manager references are only read in credential fields (${CREDENTIAL_FIELDS}), never in a field that chooses where requests go or what is opened. Use an environment variable here.`;
+  }
+  if (placement === 'userinfo' && !onlyInUserinfo(value)) {
+    return `${shown} can only be the whole connection URL or its user or password ("postgres://app:\${op://vault/db/password}@db.internal/shop"), not the host, port, database or options.`;
   }
   return undefined;
 }

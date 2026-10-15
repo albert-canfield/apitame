@@ -45,17 +45,42 @@ const SECRET_VALUES = new WeakMap<object, ReadonlyMap<string, string>>();
 
 /**
  * An environment that reads like `env` and also answers the secret manager references in
- * `values` (reference text such as `op://vault/item/field`, without `${` and `}`).
+ * `values` (reference text such as `op://vault/item/field`, without `${` and `}`). It is read
+ * only: a proxy that reads through to `env` and refuses every change (a TypeError in strict
+ * code), so nothing can be written to the process environment through it.
  */
 export function withSecretValues(
   env: NodeJS.ProcessEnv,
   values: ReadonlyMap<string, string>,
 ): NodeJS.ProcessEnv {
   const merged = new Map([...(SECRET_VALUES.get(env) ?? []), ...values]);
-  // A proxy without traps reads and writes through to `env`, but is an object of its own.
-  const out = new Proxy(env, {});
+  const out = new Proxy(env, {
+    set: () => false,
+    defineProperty: () => false,
+    deleteProperty: () => false,
+  });
   SECRET_VALUES.set(out, merged);
   return out;
+}
+
+/**
+ * Variables `.env` set, with the value it set, by the environment object it set them in. `.env`
+ * sits next to the config and may come with it, so what it sets is not trusted like the
+ * environment that starts apitame: it never chooses a secret manager CLI, and only a few of its
+ * variables reach one (see src/secrets/providers.ts).
+ */
+const FROM_DOT_ENV = new WeakMap<object, Map<string, string>>();
+
+/**
+ * Whether `env[name]` holds the value that `.env` set, rather than one from the real environment.
+ * A copy of (or a proxy over) `process.env` keeps what `.env` set in `process.env`.
+ */
+export function fromDotEnv(env: NodeJS.ProcessEnv, name: string): boolean {
+  const value = env[name];
+  if (value === undefined) return false;
+  return (
+    FROM_DOT_ENV.get(env)?.get(name) === value || FROM_DOT_ENV.get(process.env)?.get(name) === value
+  );
 }
 
 /** Names of the env vars referenced by a string. */
@@ -123,6 +148,8 @@ export function loadDotEnv(dir: string, env: NodeJS.ProcessEnv = process.env): s
   for (const [k, v] of Object.entries(parsed)) {
     if (env[k] === undefined && v !== undefined) {
       env[k] = v;
+      const loaded = FROM_DOT_ENV.get(env) ?? new Map<string, string>();
+      FROM_DOT_ENV.set(env, loaded.set(k, v));
       set.push(k);
     }
   }

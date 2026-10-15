@@ -1,5 +1,6 @@
 import { envRefs } from '../../config/env.js';
 import { loadConfig, withoutGuardrails, type LoadedConfig } from '../../config/load.js';
+import type { AuthConfig } from '../../config/schema.js';
 import { Logger } from '../../log.js';
 import { sampleFromSchema } from '../../mock/sample.js';
 import { startMockServer } from '../../mock/server.js';
@@ -61,11 +62,32 @@ function sampleParams(op: Operation): Record<string, unknown> {
   return out;
 }
 
-/** For mock runs: fill credentials that are not set with a placeholder (the mock accepts anything). */
-function mockEnv(loaded: LoadedConfig): NodeJS.ProcessEnv {
+const MOCK_CREDENTIAL = 'apitame-mock-credential';
+
+/**
+ * For mock runs: auth of the same kind, so tools look as they do against the API, with fixed fake
+ * credentials. An OAuth2 client becomes a bearer token, so no token is requested.
+ */
+export function mockAuth(auth: AuthConfig): AuthConfig {
+  switch (auth.type) {
+    case 'none':
+      return auth;
+    case 'apiKey':
+      return { ...auth, value: MOCK_CREDENTIAL };
+    case 'basic':
+      return { type: 'basic', username: 'apitame-mock', password: MOCK_CREDENTIAL };
+    default:
+      return { type: 'bearer', token: MOCK_CREDENTIAL };
+  }
+}
+
+/**
+ * For mock runs: a placeholder for every variable the source reads (static headers), set or not,
+ * so no real value is sent even to the local mock.
+ */
+export function mockEnv(loaded: LoadedConfig): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  const fields = [JSON.stringify(loaded.config.auth), JSON.stringify(loaded.config.source)];
-  for (const name of fields.flatMap(envRefs)) if (!env[name]) env[name] = 'apitame-mock-credential';
+  for (const name of envRefs(JSON.stringify(loaded.config.source))) env[name] = MOCK_CREDENTIAL;
   return env;
 }
 
@@ -77,12 +99,17 @@ async function testOpenApi(
   const checks: Check[] = [];
   const logger = new Logger(redactor, 'silent');
   const env = opts.live ? process.env : mockEnv(loaded);
-  // The mock accepts any credentials, so secret managers are only asked with --live.
+  // The mock needs no credentials, so none are sent: fixed fake ones take the place of the
+  // configured auth (an OAuth2 client would ask the real token endpoint for a token), and no
+  // secret manager is asked.
+  const target = opts.live
+    ? loaded
+    : { ...loaded, config: { ...loaded.config, auth: mockAuth(loaded.config.auth) } };
   const secrets = opts.live ? undefined : 'placeholder';
-  const probe = (await createRuntime(loaded, { redactor, logger, env, secrets })) as OpenApiRuntime;
+  const probe = (await createRuntime(target, { redactor, logger, env, secrets })) as OpenApiRuntime;
   const mock = opts.live ? undefined : await startMockServer(probe.operations);
   const rt = mock
-    ? ((await createRuntime(loaded, {
+    ? ((await createRuntime(target, {
         redactor,
         logger,
         env,
