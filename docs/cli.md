@@ -101,6 +101,157 @@ With [argument rules](configuration.md#writesrules), it lists them too, and warn
 
 Token counts are estimates. They are calibrated against a common BPE tokenizer and land slightly above it, because tokenizers differ between models.
 
+## `apitame diff <old-spec> [new-spec]`
+
+Shows what a new version of the OpenAPI spec changes for the agent, under your current config, before the agent sees it. It only reads the two specs: it never calls the API and needs no credentials.
+
+New in apitame 0.4.
+
+```bash
+apitame diff ./openapi.old.yaml ./openapi.yaml        # two files
+apitame diff ./openapi.reviewed.json                  # against the spec the config points to (file or URL)
+apitame diff ./v1.json https://api.example.com/v2/openapi.json
+apitame diff ./openapi.old.yaml --fail-on             # exit 1 when a new write would be allowed (CI)
+apitame diff ./openapi.old.yaml --json
+```
+
+Both versions are built with the same `apitame.config.yaml`, exactly as `serve` and `inspect` would build them, and compared. Without `new-spec`, the old spec is compared with the one in `source.spec`, its current file or URL. Specs are files or spec URLs (not API base URLs), and Swagger 2.0 is converted as in `init`. Relative paths on the command line are relative to the current folder.
+
+The config below allows every `create*` write, asks before `createRefund` and limits its amount. In the new spec, `createRefund` is renamed to `createOrderRefund`, a bulk refund endpoint appears, and a GET turns into a POST:
+
+```yaml
+mode: read-write
+tools:
+  - name: orders
+    operations: [listOrders, getOrder, listOrderNotes, createOrder, cancelOrder, createRefund]
+  - name: reports
+    operations: [exportReport]
+writes:
+  allow: ['create*', cancelOrder]
+  confirm: [createRefund]
+  rules:
+    createRefund:
+      amount: { max: 5000 }
+    createOrder:
+      body.quantity: { max: 10 }
+```
+
+```text
+$ apitame diff shop-v1.yaml shop-v2.yaml --fail-on new-writes,access-changes
+shop  read-write · shop-v1.yaml -> shop-v2.yaml
+Operations: 7 -> 8 (2 added, 1 removed, 2 renamed)
+
+Added (2)
+  OPERATION         ACCESS       ENDPOINT            AGENT
+  createBulkRefund  destructive  POST /refunds/bulk  call_operation (asks for approval)
+  listInvoices      read         GET /invoices       call_operation
+
+Removed (1)
+  OPERATION       ACCESS  ENDPOINT                     WAS IN
+  listOrderNotes  read    GET /orders/{orderId}/notes  orders
+
+Renamed (2)
+  BEFORE        AFTER              ENDPOINT                                     AGENT
+  createRefund  createOrderRefund  POST /orders/{id}/refunds                    call_operation
+  exportReport  exportReport       GET /reports/export -> POST /reports/export  blocked: not in writes.allow
+
+! Access level changes (1)
+  OPERATION     ENDPOINT              ACCESS         AGENT
+  exportReport  POST /reports/export  read -> write  reports -> blocked: not in writes.allow
+
+! New writes that the config allows without naming them (2)
+  OPERATION          ACCESS       ALLOWED BY            AGENT                               WHY
+  createOrderRefund  write        writes.allow create*  call_operation                      renamed from createRefund
+  createBulkRefund   destructive  writes.allow create*  call_operation (asks for approval)  added
+
+! Config references that match no operation now (4)
+  WHERE           REFERENCE       MATCHED BEFORE  NOW
+  writes.confirm  createRefund    createRefund    renamed to createOrderRefund
+  writes.rules    createRefund    createRefund    renamed to createOrderRefund
+  tools.orders    listOrderNotes  listOrderNotes  removed
+  tools.orders    createRefund    createRefund    renamed to createOrderRefund
+
+! Argument changes on allowed writes (1)
+  createOrder (POST /orders, orders)
+    added: body.items, body.currency (required)
+    removed: body.quantity
+    ! writes.rules.createOrder.body.quantity: there is no field "quantity" in body
+
+! Base URL: https://api.shop.test/v1 -> https://api.shop.test/v2
+
+Tool list: ~796 -> ~659 tokens (-137; estimate)
+  TOOL     BEFORE  AFTER
+  orders      329    265
+  reports      73      -
+
+✖ --fail-on new-writes: 2 found (new writes the config allows without naming them)
+✖ --fail-on access-changes: 1 found (access level changes)
+```
+
+The renamed refund is the case to look for: the config names `createRefund`, so its approval, its amount rule and its group stay behind, and `create*` lets `createOrderRefund` run without either. The AGENT column says where the agent finds an operation (its group, or `call_operation` for operations in no group), whether it asks for approval, or why it cannot call it.
+
+What each section lists, and the `--fail-on` category that counts it:
+
+| Section | What it lists | Category |
+| --- | --- | --- |
+| Added | Operations only in the new spec, with the tool they land in. A new operation is in no group unless the config already names it, so it lands in `call_operation`. | `added` |
+| Removed | Operations only in the old spec, with the tool they were in. | `removed` |
+| Renamed | A new id on the same method and path (path parameter names do not count), when exactly one operation on each side has them; or the same id on a new method or path. Anything else is an addition plus a removal. | `renamed` |
+| Access level changes | Operations whose access level changed, in either direction, with what the agent could do before and after. A destructive operation that becomes a write stops asking for approval, and a write that becomes a read runs in read-only mode and outside the allowlist, so a downgrade counts as much as an upgrade. | `access-changes` |
+| New writes the config allows without naming them | Writes the agent can call in the new spec, and could not call as a write before, that no one listed by exact id: allowed by a `writes.allow` pattern such as `create*` or `*`, or a POST, PUT, PATCH or DELETE that runs as a read because of a `writes.treatAsRead` pattern or `x-apitame-access: read` in the spec (those run even in read-only mode). Renamed writes count, because everything the config said about the old id stays with the old id. Each one shows whether it asks for approval. | `new-writes` |
+| Config references that match no operation now | Names and patterns in `writes.allow`, `writes.confirm`, `writes.treatAsRead`, `writes.destructive`, `writes.rules`, `tools` and `http.oauth.permissions` that matched an operation in the old spec and match none in the new one, with the new id when the operation was renamed. A name that matched nothing before is a typo that `doctor` reports, not a change. | `stale-config` |
+| Argument changes on allowed writes | For writes the agent can call, under the same id in both specs: arguments added (and whether they are required), arguments that became required, arguments removed, and `writes.rules` entries that no longer fit (a field that is gone or changed type). Paths are written as in `writes.rules`, such as `body.items[].price`. | `write-changes` |
+| Base URL | The first server in the spec, when it changed and the config does not set `source.baseUrl`. Requests, with their credentials, go there. | `base-url` |
+| Tool list | The estimated token cost of the tool list before and after, as `inspect` measures it, and the tools whose cost changed (`-` when a tool is not in that list). | none; use `inspect --max-tokens` for a budget |
+
+`any` counts every category in the table.
+
+| Option | Description |
+| --- | --- |
+| `-c, --config <path>` | Config file (default: `$APITAME_CONFIG` or `apitame.config.yaml`). |
+| `--json` | Machine-readable output: `before` and `after` (spec and operation count), `added`, `removed`, `renamed`, `accessChanges`, `newWrites`, `staleConfig`, `writeChanges`, `baseUrl`, `tokens`, and `failOn` and `failed`. Operations carry their id, method, path, access, the tools that reach them, whether they ask for approval and, when the agent cannot call them, why. |
+| `--fail-on [categories]` | Exit with code 1 when one of these categories has findings: `new-writes`, `access-changes`, `added`, `removed`, `renamed`, `stale-config`, `write-changes`, `base-url` or `any`, separated by commas (`--fail-on new-writes,access-changes`) or in repeated options. Without a value it means `new-writes`. Put the spec files before it. |
+
+Without `--fail-on`, diff is a report and exits with code 0. A spec that cannot be read, or a config that does not validate, exits with code 1 too, so a CI check fails closed. For SQL sources there is no spec to compare, and diff says so.
+
+When `source.spec` is a URL the API publishes, keep a reviewed copy next to the config and compare it with what the URL serves now, for example in a scheduled job: `apitame diff ./openapi.reviewed.json --fail-on any`. Once the change is reviewed, replace the copy.
+
+### In CI
+
+This GitHub Actions workflow runs on pull requests that touch the spec or the config, and fails when the change lets the agent run a write that no one named, or changes an access level. The report is in the job log.
+
+```yaml
+name: API spec review
+
+on:
+  pull_request:
+    paths: ['openapi.yaml', 'apitame.config.yaml']
+
+permissions:
+  contents: read
+
+jobs:
+  apitame-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Check out the spec as it is on the base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --depth=1 origin "$BASE_REF"
+          git worktree add --detach "$RUNNER_TEMP/base" FETCH_HEAD
+      - name: What the change means for the agent
+        run: npx -y apitame@0.4 diff "$RUNNER_TEMP/base/openapi.yaml" --fail-on new-writes,access-changes
+```
+
+The base branch is checked out as a whole, so specs split over several files (`$ref` to other files) work too. The config is the one in the pull request, so a wildcard added to `writes.allow` in the same pull request is taken into account. Add `stale-config` to catch renames that leave rules or approvals behind, or use `--fail-on any` to have a human look at every change.
+
+diff compares two specs under one config, so a pull request that changes only the config (a new `writes.allow` pattern, a removed approval) shows no findings. Review config changes in the pull request itself, and run `apitame inspect` on the new config to see what the agent can call.
+
 ## `apitame test`
 
 ```bash

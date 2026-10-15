@@ -1,0 +1,21 @@
+# Config for the apitame diff tests: shop-v1.yaml is the spec it was reviewed with.
+name: shop
+source:
+  type: openapi
+  spec: ./shop-v1.yaml
+mode: read-write
+tools:
+  - name: orders
+    description: Orders and refunds
+    operations: [listOrders, getOrder, listOrderNotes, createOrder, cancelOrder, createRefund]
+  - name: reports
+    description: Sales reports
+    operations: [exportReport]
+writes:
+  allow: ['create*', cancelOrder]
+  confirm: [createRefund]
+  rules:
+    createRefund:
+      amount: { max: 5000 }
+    createOrder:
+      body.quantity: { max: 10 }

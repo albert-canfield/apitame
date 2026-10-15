@@ -1,11 +1,13 @@
 import { Command, Option } from 'commander';
 import { addToCommand, CLIENTS } from './cli/commands/add-to.js';
+import { diffCommand, parseFailOn } from './cli/commands/diff.js';
 import { doctorCommand } from './cli/commands/doctor.js';
 import { initCommand } from './cli/commands/init.js';
 import { inspectCommand } from './cli/commands/inspect.js';
 import { serveCommand } from './cli/commands/serve.js';
 import { testCommand } from './cli/commands/test.js';
 import { c } from './cli/ui.js';
+import { FAIL_ON_VALUES } from './diff/compare.js';
 import { VERSION } from './version.js';
 
 const program = new Command();
@@ -69,6 +71,25 @@ program
   .option('--verbose', 'list the operations in each tool')
   .option('--max-tokens <n>', 'exit with code 1 if the tool list costs more (for CI)')
   .action(inspectCommand);
+
+program
+  .command('diff')
+  .description(
+    'Show what a new version of the OpenAPI spec changes for the agent (never calls the API)',
+  )
+  .argument('<old-spec>', 'the spec before the change: file or URL')
+  .argument('[new-spec]', 'the spec after the change (default: the spec the config points to)')
+  .option('-c, --config <path>', 'config file (default: $APITAME_CONFIG or apitame.config.yaml)')
+  .option('--json', 'machine readable output')
+  .addOption(
+    new Option(
+      '--fail-on [categories]',
+      `exit with code 1 when a category has findings, comma separated: ${FAIL_ON_VALUES.join(', ')}`,
+    )
+      .preset('new-writes')
+      .argParser(parseFailOn),
+  )
+  .action(diffCommand);
 
 program
   .command('test')

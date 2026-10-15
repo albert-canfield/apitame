@@ -8,6 +8,7 @@ flowchart LR
     init[init] --> gen[generator]
     serve[serve]
     inspect[inspect]
+    diff[diff]
     test[test]
     doctor[doctor]
     addto[add-to]
@@ -26,6 +27,7 @@ flowchart LR
   mcp --> tr[stdio / streamable HTTP]
   serve --> mcp
   inspect --> rt
+  diff --> rt
   test --> rt
   doctor --> rt
 ```
@@ -34,7 +36,7 @@ flowchart LR
 
 | Path | Responsibility |
 | --- | --- |
-| `src/cli.ts`, `src/cli/` | Command parsing (commander) and the six commands: `init`, `serve`, `inspect`, `test`, `doctor`, `add-to`. Terminal output only; no business logic. |
+| `src/cli.ts`, `src/cli/` | Command parsing (commander) and the seven commands: `init`, `serve`, `inspect`, `diff`, `test`, `doctor`, `add-to`. Terminal output only; no business logic. |
 | `src/config/` | Zod schema for `apitame.config.yaml`, YAML loading, `${VAR}` resolution, `.env` loading. |
 | `src/sources/openapi/` | Load and dereference specs (file or URL, external refs, discovery), convert Swagger 2.0 in memory (`swagger2.ts`), normalize operations and body kinds, compact JSON Schemas, classify access, group operations into tools. |
 | `src/sources/sql/` | Database-accurate lexer (PostgreSQL, MySQL, SQLite and DuckDB rules), the SELECT guard, write classification, named parameter binding, and the PostgreSQL, MySQL, SQLite and DuckDB drivers (each with a `privileges()` check). DuckDB's parser layer (`duckdb-guard.ts`) asks DuckDB itself, its driver package is an optional peer dependency, and all DuckDB work runs in a child process (`duckdb-worker.ts`, built to `dist/duckdb-worker.js`) that is killed on timeout. Loaded on demand. |
@@ -43,6 +45,7 @@ flowchart LR
 | `src/auth/` | Bearer, API key, basic and OAuth2 client credentials providers. |
 | `src/generator/` | Config file rendering (with comments), skill generation, and a small ZIP writer for packaging skills as uploads. |
 | `src/mock/` | Sample values from JSON Schema and the mock HTTP server used by `test`. |
+| `src/diff/` | `apitame diff`: builds two versions of a spec into runtimes with the same config and compares operations, access levels, allowed writes, config references, write arguments and token cost. Reads specs only. |
 | `src/tokens/` | Token estimation for tool lists. |
 
 ## Request flow (OpenAPI)
@@ -83,9 +86,9 @@ Tool input schemas are generated JSON Schema, not Zod objects written by hand. T
 
 ## Testing
 
-- `tests/unit`: guard (about 160 cases across three dialects, including parser/database differentials), policy, confirmation, redaction, guardrails, config, schema compaction, Swagger 2.0 conversion, grouping, request building, redirects, uploads, field selection, auth, ZIP output and token estimation.
+- `tests/unit`: guard (about 160 cases across three dialects, including parser/database differentials), policy, confirmation, redaction, guardrails, config, schema compaction, Swagger 2.0 conversion, grouping, request building, redirects, uploads, field selection, auth, ZIP output, token estimation and the spec comparison behind `diff`.
 - `tests/integration`: the OpenAPI runtime against the mock server (blocking, allowlist, confirmation, dry run, redaction), the MCP protocol over an in-memory transport (including elicitation and skills), approvals for 2026-07-28 clients over stdio, stateless HTTP and HTTP sessions (tampered, replayed and expired approval ids, changed arguments, OAuth users, the checks in front of the handler), per-user permissions with OAuth tokens of different scopes and clients (tool lists in both eras, refused writes, per-user rate limits, SQL named queries, config warnings), `doctor`, and the SQL runtime against SQLite, DuckDB, PGlite and, in CI, real PostgreSQL 17 and MySQL 8.4 servers (timeouts, read-only roles, injection payloads). DuckDB runs from the development dependency, with no server; its tests check each safety layer on its own.
-- `tests/e2e`: the CLI as users run it, including stdio MCP sessions in both protocol eras, an approval and `--watch` over HTTP for a 2026-07-28 client, and every `add-to` client.
+- `tests/e2e`: the CLI as users run it, including stdio MCP sessions in both protocol eras, an approval and `--watch` over HTTP for a 2026-07-28 client, every `add-to` client, and `diff` with every `--fail-on` category.
 
 CI runs on Linux (Node 22, 24), macOS and Windows, plus a packed-tarball smoke test (which also runs a DuckDB file through `npx -p apitame -p @duckdb/node-api@1.5.6-r.1`) and the real-database job.
 
