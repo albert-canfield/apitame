@@ -4,6 +4,7 @@ import { dereference } from '@readme/openapi-parser';
 import { parse as parseYaml } from 'yaml';
 import { isObject } from './schema.js';
 import { convertSwagger2 } from './swagger2.js';
+import { withDeadline } from '../../util/deadline.js';
 
 export type OpenApiDocument = Record<string, unknown> & {
   openapi: string;
@@ -49,15 +50,22 @@ function looksLikeSpec(v: unknown): v is Record<string, unknown> {
   return isObject(v) && (typeof v.openapi === 'string' || typeof v.swagger === 'string');
 }
 
-async function fetchText(
+/** GET a spec (or what may be one), with a timeout that covers the body. */
+export async function fetchText(
   url: string,
   timeoutMs = 15_000,
 ): Promise<{ ok: boolean; status: number; text: string }> {
-  const res = await fetch(url, {
-    headers: { Accept: 'application/json, application/yaml, text/yaml, */*' },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  return { ok: res.ok, status: res.status, text: await res.text() };
+  return withDeadline(
+    timeoutMs,
+    () => new Error(`Fetching ${url} timed out after ${timeoutMs} ms.`),
+    async (signal) => {
+      const res = await fetch(url, {
+        headers: { Accept: 'application/json, application/yaml, text/yaml, */*' },
+        signal,
+      });
+      return { ok: res.ok, status: res.status, text: await res.text() };
+    },
+  );
 }
 
 function parseMaybe(text: string): unknown {

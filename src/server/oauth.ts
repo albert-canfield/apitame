@@ -1,6 +1,7 @@
 import { constants, createPublicKey, verify, type KeyObject } from 'node:crypto';
 import { OAuthError, OAuthErrorCode, type AuthInfo } from '@modelcontextprotocol/server';
 import { AUDIENCES_NEED_A_FILTER } from '../config/schema.js';
+import { withDeadline } from '../util/deadline.js';
 
 /**
  * OAuth 2.1 resource server support for the HTTP transport: apitame accepts
@@ -323,6 +324,8 @@ export class JwtVerifier {
     private readonly opts: OAuthOptions,
     private readonly fetchImpl: FetchLike = fetch,
     private readonly now: () => number = Date.now,
+    /** How long one metadata or key set request may take, body included. */
+    private readonly timeoutMs = FETCH_TIMEOUT_MS,
   ) {
     this.rules = claimRules(opts);
     if (opts.jwksUri) assertSecureUrl(opts.jwksUri, 'http.oauth.jwksUri');
@@ -448,30 +451,41 @@ export class JwtVerifier {
     return this.loading;
   }
 
-  /** GET a JSON document: no redirects (the configured URLs must be final), at most 1 MB. */
-  private async getJson(url: string): Promise<unknown> {
-    let res: Response;
-    try {
-      res = await this.fetchImpl(url, {
-        headers: { Accept: 'application/json' },
-        redirect: 'error',
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      });
-    } catch (err) {
-      const why = reason(err);
-      const hint = /redirect/i.test(why) ? ' Redirects are not followed: use the final URL.' : '';
-      throw new Error(`Fetching ${url} failed (${why}).${hint}`, { cause: err });
-    }
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => {});
-      throw new Error(`Fetching ${url} failed with HTTP ${res.status}.`);
-    }
-    const text = await readCapped(res, url);
-    try {
-      return JSON.parse(text) as unknown;
-    } catch {
-      throw new Error(`${url} did not answer with JSON.`);
-    }
+  /**
+   * GET a JSON document: no redirects (the configured URLs must be final), at most 1 MB, and
+   * `timeoutMs` for the whole exchange, body included.
+   */
+  private getJson(url: string): Promise<unknown> {
+    return withDeadline(
+      this.timeoutMs,
+      () => new Error(`Fetching ${url} timed out after ${this.timeoutMs} ms.`),
+      async (signal) => {
+        let res: Response;
+        try {
+          res = await this.fetchImpl(url, {
+            headers: { Accept: 'application/json' },
+            redirect: 'error',
+            signal,
+          });
+        } catch (err) {
+          const why = reason(err);
+          const hint = /redirect/i.test(why)
+            ? ' Redirects are not followed: use the final URL.'
+            : '';
+          throw new Error(`Fetching ${url} failed (${why}).${hint}`, { cause: err });
+        }
+        if (!res.ok) {
+          await res.body?.cancel().catch(() => {});
+          throw new Error(`Fetching ${url} failed with HTTP ${res.status}.`);
+        }
+        const text = await readCapped(res, url);
+        try {
+          return JSON.parse(text) as unknown;
+        } catch {
+          throw new Error(`${url} did not answer with JSON.`);
+        }
+      },
+    );
   }
 
   private async load(): Promise<void> {

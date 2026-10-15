@@ -1,6 +1,7 @@
 import type { AuthConfig } from '../config/schema.js';
 import { envRefs, envValues, resolveEnv } from '../config/env.js';
 import type { Redactor } from '../safety/redact.js';
+import { withDeadline } from '../util/deadline.js';
 
 export interface OutgoingRequest {
   url: URL;
@@ -16,6 +17,8 @@ export interface AuthProvider {
 }
 
 type FetchLike = typeof fetch;
+
+const TOKEN_TIMEOUT_MS = 15_000;
 
 /**
  * Resolve a config value and register it as a secret, together with every
@@ -43,6 +46,8 @@ export function createAuth(
   redactor: Redactor,
   env: NodeJS.ProcessEnv = process.env,
   fetchImpl: FetchLike = fetch,
+  /** How long an OAuth2 token request may take, body included. */
+  timeoutMs = TOKEN_TIMEOUT_MS,
 ): AuthProvider {
   switch (cfg.type) {
     case 'none':
@@ -96,7 +101,7 @@ export function createAuth(
     }
 
     case 'oauth2':
-      return new ClientCredentials(cfg, redactor, env, fetchImpl);
+      return new ClientCredentials(cfg, redactor, env, fetchImpl, timeoutMs);
   }
 }
 
@@ -127,6 +132,7 @@ class ClientCredentials implements AuthProvider {
     private readonly redactor: Redactor,
     env: NodeJS.ProcessEnv,
     private readonly fetchImpl: FetchLike,
+    private readonly timeoutMs: number,
   ) {
     this.clientId = resolveEnv(cfg.clientId, 'auth.clientId', env);
     this.clientSecret = resolveSecret(cfg.clientSecret, 'auth.clientSecret', redactor, env);
@@ -163,23 +169,28 @@ class ClientCredentials implements AuthProvider {
       body.set('client_secret', this.clientSecret);
     }
 
-    let res: Response;
-    try {
-      res = await this.fetchImpl(this.tokenUrl, {
-        method: 'POST',
-        headers,
-        body,
-        signal: AbortSignal.timeout(15_000),
-      });
-    } catch (err) {
-      // The original error is not attached as `cause`: it may hold unredacted secrets.
-      // eslint-disable-next-line preserve-caught-error
-      throw new Error(`OAuth2 token request failed: ${this.redactor.text((err as Error).message)}`);
-    }
-    const raw = await res.text();
-    if (!res.ok) {
+    // One deadline for the request and the body: a token endpoint that sends its headers and then
+    // stalls must not hold every API call waiting on the token.
+    const { status, ok, raw } = await withDeadline(
+      this.timeoutMs,
+      () => new Error(`OAuth2 token request timed out after ${this.timeoutMs} ms.`),
+      async (signal) => {
+        let res: Response;
+        try {
+          res = await this.fetchImpl(this.tokenUrl, { method: 'POST', headers, body, signal });
+        } catch (err) {
+          // The original error is not attached as `cause`: it may hold unredacted secrets.
+          // eslint-disable-next-line preserve-caught-error
+          throw new Error(
+            `OAuth2 token request failed: ${this.redactor.text((err as Error).message)}`,
+          );
+        }
+        return { status: res.status, ok: res.ok, raw: await res.text() };
+      },
+    );
+    if (!ok) {
       throw new Error(
-        `OAuth2 token request failed with HTTP ${res.status}: ${this.redactor.text(raw).slice(0, 300)}`,
+        `OAuth2 token request failed with HTTP ${status}: ${this.redactor.text(raw).slice(0, 300)}`,
       );
     }
     let json: { access_token?: unknown; expires_in?: unknown };
