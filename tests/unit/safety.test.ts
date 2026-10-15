@@ -354,7 +354,7 @@ describe('serve over HTTP without authentication', () => {
     expect(warning).toContain('Set APITAME_HTTP_TOKEN or http.oauth');
     expect(warning).not.toContain('are refused');
     expect(unauthenticatedHttpWarning([tool({ confirm: {} })], 'elicitation', URL)).toContain(
-      'approvals from clients on protocol 2026-07-28 are refused',
+      'Under confirmation.method: elicitation, approvals are refused',
     );
   });
 

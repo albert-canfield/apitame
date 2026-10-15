@@ -50,11 +50,6 @@ export interface ApprovalRound {
   state?: string;
   /** The human's answer on the second round. `accept` only when the form came back approved. */
   answer?: 'accept' | 'decline' | 'cancel';
-  /**
-   * Set when the server listens on HTTP without authentication: any local process that can reach
-   * it could send the answer, so it is not known to come from the client the human uses.
-   */
-  anyoneCanAnswer?: boolean;
 }
 
 /** Per-call context handed to a runtime by the MCP layer. */
@@ -63,6 +58,12 @@ export interface CallContext {
   elicit?: (message: string) => Promise<ElicitOutcome>;
   /** Set on 2026-07-28 requests instead of `elicit`. */
   approval?: ApprovalRound;
+  /**
+   * Set when the server is served over HTTP without authentication: any local process that can
+   * reach it could answer an approval prompt, so the answer is not known to come from the client
+   * the human uses. `confirmation.method: elicitation` then refuses, in both protocol eras.
+   */
+  anyoneCanAnswer?: boolean;
   signal?: AbortSignal;
   /** Who made the call, when the HTTP transport checked an OAuth access token. Audited. */
   caller?: { client?: string; subject?: string };

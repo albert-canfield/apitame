@@ -867,20 +867,44 @@ describe('HTTP without authentication', () => {
     });
   }
 
-  it('still asks under auto, with a token, over stdio, and 2025-era sessions as before', async () => {
+  it('under confirmation.method: elicitation, refuses 2025-era sessions before asking', async () => {
+    const { rt, outcomeList } = await petRuntime({ confirmation: { method: 'elicitation' } });
+    const s = await serveRuntime('http --sessions', rt);
+    try {
+      const before = deletes();
+      const { client, prompts } = legacyClient(APPROVE);
+      await s.connect(client);
+      expect(client.getNegotiatedProtocolVersion()).toBe('2025-11-25');
+      const res = await client.callTool(deletePet(4));
+      expect(res.isError).toBe(true);
+      expect(textOf(res as never)).toContain(
+        'does not support elicitation over this connection: apitame serves HTTP without authentication',
+      );
+      // Nothing was shown: a local script with its own session could have answered it.
+      expect(prompts).toHaveLength(0);
+      expect(deletes()).toBe(before);
+      expect(outcomeList()).toEqual(['declined: unauthenticated HTTP']);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('still asks under auto, with a token, and over stdio, in both eras', async () => {
     const cases: Array<
       [string, 'auto' | 'elicitation', Kind, string | undefined, 'modern' | 'legacy']
     > = [
       ['auto, no token', 'auto', 'http', undefined, 'modern'],
       ['elicitation, token', 'elicitation', 'http', 's3cret-mrtr-token', 'modern'],
       ['elicitation, stdio', 'elicitation', 'stdio', undefined, 'modern'],
+      ['auto, 2025-era session, no token', 'auto', 'http --sessions', undefined, 'legacy'],
       [
-        'elicitation, 2025-era session, no token',
+        'elicitation, 2025-era session, token',
         'elicitation',
         'http --sessions',
-        undefined,
+        's3cret-mrtr-token',
         'legacy',
       ],
+      ['elicitation, 2025-era, stdio', 'elicitation', 'stdio', undefined, 'legacy'],
     ];
     for (const [label, method, kind, token, era] of cases) {
       const { rt } = await petRuntime({ confirmation: { method } });

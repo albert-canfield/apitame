@@ -463,7 +463,7 @@ describe('CLI: serve for protocol 2026-07-28 clients', () => {
     const server = await serveHttpCli();
     try {
       expect(server.log()).toContain(
-        'Under confirmation.method: elicitation, approvals from clients on protocol 2026-07-28 are refused',
+        'Under confirmation.method: elicitation, approvals are refused',
       );
       const { client, prompts } = modern();
       await client.connect(new StreamableHTTPClientTransport(server.url));
