@@ -9,6 +9,7 @@ import { basicCredentials, resolveSecret } from '../auth/index.js';
 import { resolveEnv } from '../config/env.js';
 import { verifyMode, type OAuthConfig, type VerifyMode } from '../config/schema.js';
 import type { Redactor } from '../safety/redact.js';
+import { withDeadline } from '../util/deadline.js';
 import {
   accessTokenInfo,
   assertSecureUrl,
@@ -206,65 +207,76 @@ export class IntrospectionVerifier implements OAuthTokenVerifier {
   }
 
   /**
-   * POST the token to the introspection endpoint. Any failure (network, timeout, a redirect, a
-   * status other than 200, more than 1 MB, an answer that is not RFC 7662) throws a plain error,
-   * which the transport logs and answers with a 500: the token is refused, never let through.
+   * POST the token to the introspection endpoint. Any failure (network, a redirect, a status
+   * other than 200, more than 1 MB, an answer that is not RFC 7662, or `timeoutMs` passing before
+   * the whole answer arrived) throws a plain error, which the transport logs and answers with a
+   * 500: the token is refused, never let through.
    */
-  private async introspect(token: string): Promise<Record<string, unknown>> {
-    const body = new URLSearchParams({
-      token,
-      token_type_hint: 'access_token',
-      ...this.formCredentials,
-    });
-    let res: Response;
-    try {
-      res = await this.fetchImpl(this.url, {
-        method: 'POST',
-        headers: this.headers,
-        body,
-        redirect: 'error',
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-    } catch (err) {
-      const why = reason(err);
-      const hint = /redirect/i.test(why) ? ' Redirects are not followed: use the final URL.' : '';
-      // The original error is not attached as `cause`: nothing from the request should travel.
-      // eslint-disable-next-line preserve-caught-error
-      throw new Error(`Token introspection at ${this.url} failed (${why}).${hint}`);
-    }
-    if (res.status !== 200) {
-      // The body is not read: an error page may echo the request, credentials included.
-      await res.body?.cancel().catch(() => {});
-      const hint =
-        res.status === 401 || res.status === 403
-          ? ' Check http.oauth.introspection.clientId and clientSecret.'
-          : '';
-      throw new Error(`Token introspection at ${this.url} failed with HTTP ${res.status}.${hint}`);
-    }
-    let text: string;
-    try {
-      text = await readCapped(res, this.url);
-    } catch (err) {
-      // eslint-disable-next-line preserve-caught-error
-      throw new Error(`Token introspection at ${this.url} failed: ${reason(err)}`);
-    }
-    let answer: unknown;
-    try {
-      answer = JSON.parse(text);
-    } catch {
-      throw new Error(`Token introspection at ${this.url} did not answer with JSON.`);
-    }
-    if (
-      !answer ||
-      typeof answer !== 'object' ||
-      Array.isArray(answer) ||
-      typeof (answer as { active?: unknown }).active !== 'boolean'
-    ) {
-      throw new Error(
-        `Token introspection at ${this.url} did not answer as RFC 7662 says (no "active" true or false).`,
-      );
-    }
-    return answer as Record<string, unknown>;
+  private introspect(token: string): Promise<Record<string, unknown>> {
+    return withDeadline(
+      this.timeoutMs,
+      () => new Error(`Token introspection at ${this.url} timed out after ${this.timeoutMs} ms.`),
+      async (signal) => {
+        const body = new URLSearchParams({
+          token,
+          token_type_hint: 'access_token',
+          ...this.formCredentials,
+        });
+        let res: Response;
+        try {
+          res = await this.fetchImpl(this.url, {
+            method: 'POST',
+            headers: this.headers,
+            body,
+            redirect: 'error',
+            signal,
+          });
+        } catch (err) {
+          const why = reason(err);
+          const hint = /redirect/i.test(why)
+            ? ' Redirects are not followed: use the final URL.'
+            : '';
+          // The original error is not attached as `cause`: nothing from the request should travel.
+          // eslint-disable-next-line preserve-caught-error
+          throw new Error(`Token introspection at ${this.url} failed (${why}).${hint}`);
+        }
+        if (res.status !== 200) {
+          // The body is not read: an error page may echo the request, credentials included.
+          await res.body?.cancel().catch(() => {});
+          const hint =
+            res.status === 401 || res.status === 403
+              ? ' Check http.oauth.introspection.clientId and clientSecret.'
+              : '';
+          throw new Error(
+            `Token introspection at ${this.url} failed with HTTP ${res.status}.${hint}`,
+          );
+        }
+        let text: string;
+        try {
+          text = await readCapped(res, this.url);
+        } catch (err) {
+          // eslint-disable-next-line preserve-caught-error
+          throw new Error(`Token introspection at ${this.url} failed: ${reason(err)}`);
+        }
+        let answer: unknown;
+        try {
+          answer = JSON.parse(text);
+        } catch {
+          throw new Error(`Token introspection at ${this.url} did not answer with JSON.`);
+        }
+        if (
+          !answer ||
+          typeof answer !== 'object' ||
+          Array.isArray(answer) ||
+          typeof (answer as { active?: unknown }).active !== 'boolean'
+        ) {
+          throw new Error(
+            `Token introspection at ${this.url} did not answer as RFC 7662 says (no "active" true or false).`,
+          );
+        }
+        return answer as Record<string, unknown>;
+      },
+    );
   }
 
   /** Check an answer, and keep it for a while when the token is good. Only good answers are kept. */

@@ -427,7 +427,7 @@ describe('IntrospectionVerifier: limits and failures', () => {
     }
     // An endpoint that never answers is given up on after the timeout.
     as.overrides.set(INTROSPECT, () => {});
-    await failed(verifier({}, { timeoutMs: 200 }), opaque(), /timeout|aborted/i);
+    await failed(verifier({}, { timeoutMs: 200 }), opaque(), /timed out after 200 ms/);
     // Nothing listens there any more.
     const gone = createServer();
     await new Promise<void>((r) => gone.listen(0, '127.0.0.1', r));

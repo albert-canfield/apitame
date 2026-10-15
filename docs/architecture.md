@@ -47,6 +47,7 @@ flowchart LR
 | `src/mock/` | Sample values from JSON Schema and the mock HTTP server used by `test`. |
 | `src/diff/` | `apitame diff`: builds two versions of a spec into runtimes with the same config and compares operations, access levels, allowed writes, config references, write arguments and token cost. Reads specs only. |
 | `src/tokens/` | Token estimation for tool lists. |
+| `src/util/` | Small shared helpers: `withDeadline` gives an outgoing request one deadline, held by a timer, that covers the body too and survives garbage collection. |
 
 ## Request flow (OpenAPI)
 

@@ -1,7 +1,10 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import Database from 'better-sqlite3';
 import { parseConfig } from '../src/config/load.js';
 import type { Config, ConfigInput } from '../src/config/schema.js';
@@ -257,4 +260,72 @@ export function callOperation(
   flags: Record<string, unknown> = {},
 ) {
   return rt.callTool('call_operation', { operationId, params, ...flags });
+}
+
+let gc: (() => void) | undefined;
+/** A full garbage collection, as `node --expose-gc` would allow. */
+export function forceGc(): void {
+  if (!gc) {
+    setFlagsFromString('--expose-gc');
+    gc = runInNewContext('gc') as () => void;
+  }
+  gc();
+}
+
+/**
+ * An HTTP server on 127.0.0.1 that answers every request with `status`, sends `head`, then
+ * drips a space every 100 ms and never ends the body. `open()` counts its open sockets.
+ */
+export async function startDripServer(
+  head: string,
+  status = 200,
+  headers: Record<string, string> = {},
+): Promise<{ url: string; open: () => number; close: () => Promise<void> }> {
+  let open = 0;
+  const server = createHttpServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
+      res.write(head);
+      const timer = setInterval(() => res.write(' '), 100);
+      res.on('close', () => clearInterval(timer));
+    });
+  });
+  server.on('connection', (socket) => {
+    open++;
+    socket.on('close', () => open--);
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address() as { port: number };
+  return {
+    url: `http://127.0.0.1:${port}/`,
+    open: () => open,
+    close: () =>
+      new Promise<void>((r) => {
+        server.closeAllConnections();
+        server.close(() => r());
+      }),
+  };
+}
+
+/** How a promise stands after `ms`: settled one way or the other, or still pending. */
+export async function outcomeWithin(
+  promise: Promise<unknown>,
+  ms: number,
+): Promise<{ state: 'fulfilled' | 'rejected' | 'pending'; error?: Error }> {
+  let timer: NodeJS.Timeout | undefined;
+  const pending = new Promise<{ state: 'pending' }>((r) => {
+    timer = setTimeout(() => r({ state: 'pending' }), ms);
+  });
+  try {
+    return await Promise.race([
+      promise.then(
+        () => ({ state: 'fulfilled' as const }),
+        (error: unknown) => ({ state: 'rejected' as const, error: error as Error }),
+      ),
+      pending,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
