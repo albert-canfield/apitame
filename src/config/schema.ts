@@ -5,12 +5,34 @@ import { parseRulePath, RULE_PATH_HELP, ruleProblems } from '../safety/rules.js'
 /** Matches a `${VAR}` or `${VAR:-default}` reference anywhere in a string. */
 export const ENV_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/;
 
+const ENV_REFS = new RegExp(ENV_REF.source, 'g');
+
+/**
+ * Why a secret field's value does not come from the environment, if it does not. A value needs a
+ * `${VAR}` reference, and may not give a default (`${VAR:-hunter2}` is a secret written in the
+ * config). Text around references (`SSWS ${TOKEN}`) needs one reference without a default, so
+ * `hunter2${UNSET:-}` cannot pass a literal off as a reference. An empty default alone
+ * (`${VAR:-}`) stands for an empty value, as for a password that an API leaves empty.
+ */
+export function secretProblem(value: string, field: string): string | undefined {
+  const inline = `${field} must come from an environment variable, for example "\${MY_SECRET}". Inline secrets are refused.`;
+  const refs = [...value.matchAll(ENV_REFS)];
+  if (refs.some((m) => m[2])) {
+    return `${field} must not give a default value ("\${NAME:-...}"): a default is a secret written in the config. Set the variable instead.`;
+  }
+  // Without any reference, the whole value is outside one.
+  const outside = value.replace(ENV_REFS, '');
+  if (outside !== '' && refs.every((m) => m[2] !== undefined)) return inline;
+  return undefined;
+}
+
 const envRef = (field: string) =>
   z
     .string()
     .min(1)
-    .refine((v) => ENV_REF.test(v), {
-      message: `${field} must come from an environment variable, for example "\${MY_SECRET}". Inline secrets are refused.`,
+    .superRefine((v, ctx) => {
+      const problem = secretProblem(v, field);
+      if (problem) ctx.addIssue({ code: 'custom', message: problem });
     });
 
 /**
