@@ -1,11 +1,13 @@
 import { InMemoryServerEventBus, type Server } from '@modelcontextprotocol/server';
 import { DEFAULT_CONFIG_FILE } from '../../config/load.js';
 import { Logger, type LogLevel } from '../../log.js';
+import { asksForConfirmation, type ConfirmationMethod } from '../../safety/confirm.js';
 import { Redactor } from '../../safety/redact.js';
 import { LiveRuntime } from '../../server/live.js';
 import { createMcpServer } from '../../server/mcp.js';
 import { JwtVerifier, oauthChange, oauthWarnings } from '../../server/oauth.js';
 import { serveHttp, serveStdio } from '../../server/transport.js';
+import type { ToolDefinition } from '../../types.js';
 
 export interface ServeOptions {
   config?: string;
@@ -15,6 +17,39 @@ export interface ServeOptions {
   logLevel?: string;
   watch?: boolean;
   sessions?: boolean;
+}
+
+/**
+ * Keep `server` in `servers` while it is open, so a reload can tell its client that the lists
+ * changed. It leaves when it closes: an ended session, or a stdio probe the SDK threw away
+ * because the client fell back to `initialize`.
+ */
+export function trackOpen(servers: Set<Server>, server: Server): Server {
+  servers.add(server);
+  server.onclose = () => servers.delete(server);
+  return server;
+}
+
+/**
+ * Over HTTP without a token or OAuth, any local process that can reach the port (an agent's
+ * shell, for one) can call the tools and answer approval prompts itself. Returns the startup
+ * warning when some operation asks for a human decision.
+ */
+export function unauthenticatedHttpWarning(
+  tools: ToolDefinition[],
+  method: ConfirmationMethod,
+  url: string,
+): string | undefined {
+  if (!asksForConfirmation(tools)) return undefined;
+  return [
+    `HTTP without authentication: any local process that can reach ${url} can call the tools and approve destructive operations itself, so an approval does not prove that a human agreed.`,
+    'Set APITAME_HTTP_TOKEN or http.oauth and give the credentials only to the MCP client, or serve over stdio.',
+    method === 'elicitation'
+      ? 'Under confirmation.method: elicitation, approvals from clients on protocol 2026-07-28 are refused until then.'
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
 
 export async function serveCommand(opts: ServeOptions): Promise<void> {
@@ -34,13 +69,9 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
   const watching = opts.watch === true;
   const buildServer = () =>
     createMcpServer(() => live.runtime, { skills: () => live.skills, listChanged: watching });
-  // Live servers, so a reload can tell every connected client that the tool list changed.
+  // Open servers, so a reload can tell every connected client that the tool list changed.
   const servers = new Set<Server>();
-  const makeServer = () => {
-    const server = buildServer();
-    servers.add(server);
-    return server;
-  };
+  const makeServer = () => trackOpen(servers, buildServer());
   // Over HTTP, protocol 2026-07-28 clients get list changes on their subscriptions/listen
   // streams, which the SDK handler serves from this bus. Over stdio the connection's own server
   // delivers them on those streams.
@@ -97,10 +128,26 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
   const oauthConfig = live.loaded.config.http.oauth;
   const verifier = oauthConfig && new JwtVerifier(oauthConfig);
   if (oauthConfig) for (const w of oauthWarnings(oauthConfig)) logger.warn(w);
+  const unauthenticatedHttp = !token && !oauthConfig;
+  const url = `http://${host.includes(':') ? `[${host}]` : host}:${port}/mcp`;
+  let warnedUnauthenticated = false;
+  const warnUnauthenticated = () => {
+    if (!unauthenticatedHttp || warnedUnauthenticated) return;
+    const warning = unauthenticatedHttpWarning(
+      live.runtime.listTools(),
+      live.loaded.config.confirmation.method,
+      url,
+    );
+    if (!warning) return;
+    warnedUnauthenticated = true;
+    logger.warn(warning);
+  };
+  warnUnauthenticated();
   if (watching) {
     live.onReload(() => {
       const change = oauthChange(oauthConfig, live.loaded.config.http.oauth);
       if (change) logger.warn(change);
+      warnUnauthenticated();
     });
   }
   // Every server reads the runtime through `live`, so stateless requests and sessions alike see reloads.
@@ -134,7 +181,5 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
     token ? 'bearer token required' : '',
     oauthConfig ? `OAuth from ${oauthConfig.issuer}` : '',
   ].filter(Boolean);
-  logger.info(
-    `serving ${summary} at http://${host.includes(':') ? `[${host}]` : host}:${port}/mcp${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`,
-  );
+  logger.info(`serving ${summary} at ${url}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`);
 }

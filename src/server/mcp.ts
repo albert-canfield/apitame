@@ -25,6 +25,19 @@ export interface McpServerOptions {
   listChanged?: boolean;
 }
 
+/** Servers that `serveHttp` serves without a token or OAuth. */
+const withoutAuth = new WeakSet<Server>();
+
+/**
+ * Mark a server as served over HTTP without authentication: any local process that can reach the
+ * port could answer an approval form itself, so under `confirmation.method: elicitation`
+ * approvals from 2026-07-28 clients are refused. `serveHttp` marks every server it serves that way.
+ */
+export function markServedWithoutAuth(server: Server): Server {
+  withoutAuth.add(server);
+  return server;
+}
+
 const CACHE = { ttlMs: 300_000, cacheScope: 'public' as const };
 
 /** How long a human has to answer an approval prompt. */
@@ -71,7 +84,7 @@ function canShowForm(capabilities: unknown): boolean {
 }
 
 /** Read the approval state of a 2026-07-28 request: what the client can do and what it sent back. */
-function approvalRoundOf(ctx: ServerContext): ApprovalRound {
+function approvalRoundOf(ctx: ServerContext, anyoneCanAnswer: boolean): ApprovalRound {
   const envelope = ctx.mcpReq.envelope as Record<string, unknown> | undefined;
   const state = ctx.mcpReq.requestState();
   const response = inputResponse(ctx.mcpReq.inputResponses, 'approve');
@@ -87,6 +100,7 @@ function approvalRoundOf(ctx: ServerContext): ApprovalRound {
     canAsk: canShowForm(envelope?.[CLIENT_CAPABILITIES_META_KEY]),
     ...(typeof state === 'string' ? { state } : {}),
     ...(answer ? { answer } : {}),
+    ...(anyoneCanAnswer ? { anyoneCanAnswer } : {}),
   };
 }
 
@@ -138,7 +152,7 @@ export function createMcpServer(
     if (modern) {
       // Protocol 2026-07-28 has no requests from server to client: the prompt goes back to the
       // client as the result of this call (see `confirmOrChallenge`).
-      callCtx.approval = approvalRoundOf(ctx);
+      callCtx.approval = approvalRoundOf(ctx, withoutAuth.has(server));
     } else {
       callCtx.elicit = async (message: string): Promise<ElicitOutcome> => {
         if (!server.getClientCapabilities()?.elicitation) return 'unsupported';

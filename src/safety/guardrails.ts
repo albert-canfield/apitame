@@ -13,6 +13,8 @@ export type AuditOutcome =
   | 'dry-run'
   | 'confirmation-requested'
   | 'declined'
+  /** A 2026-07-28 approval id that was unknown, used before, expired or issued for another call. */
+  | 'approval-refused'
   | 'rate-limited';
 
 export interface AuditEntry {

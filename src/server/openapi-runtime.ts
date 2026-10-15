@@ -613,7 +613,7 @@ export class OpenApiRuntime implements Runtime {
         ctx,
       });
       if (!outcome.proceed) {
-        audit(outcome.result.isError ? 'declined' : 'confirmation-requested');
+        audit(outcome.audit, outcome.reason ? { reason: outcome.reason } : {});
         return outcome.result;
       }
     }
