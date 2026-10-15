@@ -131,3 +131,26 @@ jobs:
           if apitame init ./shop.duckdb 2> err.txt; then echo "init should fail without the driver"; exit 1; fi
           grep -q "npx -p apitame -p @duckdb/node-api" err.txt
           test ! -f apitame.config.yaml
+
+  image:
+    name: Container image smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Third-party actions are pinned by commit SHA.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build the image (never pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: apitame:ci
+          cache-from: type=gha,scope=image
+          cache-to: type=gha,mode=max,scope=image,ignore-error=true
+      - name: Smoke test (no start without auth, read-only, non-root, /health, MCP over HTTP)
+        run: scripts/docker-smoke.sh
+        env:
+          IMAGE: apitame:ci

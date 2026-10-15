@@ -18,3 +18,12 @@ updates:
     directory: /
     schedule:
       interval: monthly
+  # Base images of the container image, pinned by digest in the Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # The image runs Node.js 22, the oldest supported line; a new major is a decision of its own.
+      - dependency-name: node
+        update-types: ['version-update:semver-major']

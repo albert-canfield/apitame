@@ -154,6 +154,50 @@ describe('streamable HTTP transport', () => {
     }
   });
 
+  it('answers /health without the bearer token, with no details, to GET and HEAD only', async () => {
+    const { http, url } = await start('s3cret-http-token');
+    try {
+      const res = await fetch(`${url}/health`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(await res.text()).toBe('{"ok":true}');
+      const head = await fetch(`${url}/health`, { method: 'HEAD' });
+      expect(head.status).toBe(200);
+      expect(await head.text()).toBe('');
+      const post = await fetch(`${url}/health`, { method: 'POST', body: '{}' });
+      expect(post.status).toBe(405);
+      expect(post.headers.get('allow')).toBe('GET, HEAD');
+      // The token still guards everything else.
+      expect((await fetch(`${url}/mcp`, { method: 'POST', body: '{}' })).status).toBe(401);
+    } finally {
+      await stop(http);
+    }
+  });
+
+  it('checks the Host header on /health when listening on loopback (DNS rebinding)', async () => {
+    const { http, url } = await start();
+    try {
+      const { request } = await import('node:http');
+      const health = (host: string) =>
+        new Promise<{ status: number; body: string }>((resolve, reject) => {
+          const req = request(`${url}/health`, { headers: { Host: host } }, (res) => {
+            let body = '';
+            res.on('data', (chunk: Buffer) => (body += chunk.toString()));
+            res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+          });
+          req.on('error', reject);
+          req.end();
+        });
+      const port = new URL(url).port;
+      expect(await health(`localhost:${port}`)).toEqual({ status: 200, body: '{"ok":true}' });
+      const rebound = await health(`evil.example:${port}`);
+      expect(rebound.status).toBe(403);
+      expect(rebound.body).not.toContain('"ok":true');
+    } finally {
+      await stop(http);
+    }
+  });
+
   it('rejects requests with a foreign Host or Origin header (DNS rebinding)', async () => {
     const { http, url } = await start();
     try {

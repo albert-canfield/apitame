@@ -102,10 +102,15 @@ program
 program
   .command('doctor')
   .description(
-    'Check the setup: config, environment, connectivity, credentials, skills and clients',
+    'Check the setup: config, environment, connectivity, credentials, skills, clients and HTTP deployment',
   )
   .option('-c, --config <path>', 'config file (default: $APITAME_CONFIG or apitame.config.yaml)')
-  .option('--offline', 'skip checks that contact the API or database')
+  .option('--offline', 'skip checks that contact the API, database or authorization server')
+  .option(
+    '--http',
+    'check an HTTP deployment (on by default with http.oauth or APITAME_HTTP_TOKEN)',
+  )
+  .option('--host <host>', 'the host serve --transport http listens on (implies --http)')
   .option('--json', 'machine readable output')
   .action(doctorCommand);
 

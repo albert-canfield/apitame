@@ -57,7 +57,7 @@ APITAME_HTTP_TOKEN=... apitame serve --transport http --host 0.0.0.0
 | `-w, --watch` | | Reload when `apitame.config.yaml`, a local spec, the skills folder or `.env` change, and notify clients that the tool list changed (2026-07-28 clients on their `subscriptions/listen` stream). |
 | `--log-level <level>` | `info` | `debug`, `info`, `warn`, `error` or `silent`. Logs go to stderr. `debug` also logs the protocol era of each stdio connection and HTTP request. |
 
-Both MCP protocol eras are served on stdio and HTTP: 2025-era clients (which start with `initialize`) and clients on protocol 2026-07-28. The server exposes `tools/list` and `tools/call`. When the config has skills, it also declares the MCP Skills extension (`io.modelcontextprotocol/skills`) and answers `skills/list`, `skills/get`, `resources/list` and `resources/read` for `skill://` URIs. The HTTP server also answers `GET /health`, and with `http.oauth` it serves its protected resource metadata at `/.well-known/oauth-protected-resource`.
+Both MCP protocol eras are served on stdio and HTTP: 2025-era clients (which start with `initialize`) and clients on protocol 2026-07-28. The server exposes `tools/list` and `tools/call`. When the config has skills, it also declares the MCP Skills extension (`io.modelcontextprotocol/skills`) and answers `skills/list`, `skills/get`, `resources/list` and `resources/read` for `skill://` URIs. The HTTP server also answers `GET /health` with `{"ok":true}`, without authentication and without any detail about the server, for container health checks and load balancers (on loopback it checks the `Host` header, as for `/mcp`). With `http.oauth` it serves its protected resource metadata at `/.well-known/oauth-protected-resource`. To run it in a container or behind a reverse proxy, see [deploy.md](deploy.md).
 
 Missing credentials do not stop the server: it starts, logs a warning, and tool calls explain which variable is missing.
 
@@ -299,11 +299,20 @@ $ apitame doctor
 | Database | Connects, lists tables, and checks whether the role (or the SQLite or DuckDB file) could write. |
 | Skills | Generated skills match the current config, and installed copies in `.claude/skills` or `.agents/skills` match too. |
 | Clients | Which client configs in the current folder reference this server, and for DuckDB sources, whether they start it with `@duckdb/node-api` at the tested version. |
+| HTTP auth | Authentication where `serve --transport http` listens (`--host`, `127.0.0.1` by default). None beyond loopback fails, as `serve` refuses to start, and so do `APITAME_HTTP_TOKEN` and `http.oauth` together. A token shorter than 32 characters or with quotes or spaces in it (`docker run --env-file` keeps quotes), and empty `http.oauth.scopes`, are warnings. |
+| OAuth resource | `http.oauth.resource` uses https (http only on loopback), has no query, does not name a loopback address when `serve` listens beyond it, and ends in `/mcp`, where apitame answers (otherwise it says what the reverse proxy must map). |
+| OAuth issuer | The issuer's metadata (RFC 8414 or OpenID Connect discovery, fetched as `serve` fetches it: no redirects, at most 1 MB) is reachable and names the same issuer, with a hint when they differ only in a trailing slash. Warns when it names no authorization or token endpoint, or no PKCE `S256`, which MCP clients need to sign users in, and when `jwksUri` differs from the key set it publishes. |
+| OAuth keys | The key set loads as `serve` loads it at startup and has at least one key apitame can verify tokens with. |
+| Public URL | Through the reverse proxy, `resource` answers a request without a token with apitame's challenge, and the protected resource metadata it points to names this resource and issuer. A URL that is not reachable from where doctor runs is only a note. |
+
+The HTTP checks run when the config has `http.oauth`, when `APITAME_HTTP_TOKEN` is set, or with `--http` or `--host`. Run doctor where the server runs, with the host it listens on: `apitame doctor --host 0.0.0.0` (in a container, see [deploy.md](deploy.md#oauth-behind-the-proxy)).
 
 | Option | Description |
 | --- | --- |
 | `-c, --config <path>` | Config file. |
-| `--offline` | Skip the checks that contact the API or database. |
+| `--offline` | Skip the checks that contact the API, database, authorization server or public URL. |
+| `--http` | Check the HTTP setup even without `http.oauth` or `APITAME_HTTP_TOKEN`. |
+| `--host <host>` | The host `serve --transport http` listens on (default `127.0.0.1`). Implies `--http`. |
 | `--json` | Machine-readable findings. |
 
 Exit code 1 when a check fails; warnings do not fail.

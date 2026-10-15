@@ -78,7 +78,7 @@ const MIN_REFRESH_MS = 60_000;
 const EMPTY_RETRY_MS = 5_000;
 /** Keys are refreshed in the background after this long, even when every key id is known. */
 const MAX_KEY_AGE_MS = 60 * 60_000;
-const FETCH_TIMEOUT_MS = 10_000;
+export const FETCH_TIMEOUT_MS = 10_000;
 /** Metadata documents and key sets larger than this are refused. */
 const MAX_BODY_BYTES = 1_000_000;
 const BASE64URL = /^[A-Za-z0-9_-]*$/;

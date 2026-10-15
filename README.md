@@ -159,7 +159,7 @@ Or: `codex mcp add github -- npx -y apitame@0.3 serve --config /abs/path/apitame
 
 </details>
 
-Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp` (destructive actions are approved in the client: right away for clients on MCP protocol 2026-07-28, with `--sessions` for older clients). To share it with a team, `http.oauth` lets your identity provider sign each user in and apitame check their access tokens, and `http.oauth.permissions` gives each scope or client its own tools and writes. More in [docs/clients.md](docs/clients.md).
+Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp` (destructive actions are approved in the client: right away for clients on MCP protocol 2026-07-28, with `--sessions` for older clients). To share it with a team, `http.oauth` lets your identity provider sign each user in and apitame check their access tokens, and `http.oauth.permissions` gives each scope or client its own tools and writes. More in [docs/clients.md](docs/clients.md). The container image (`ghcr.io/albert-canfield/apitame`) and [docs/deploy.md](docs/deploy.md) cover running it behind a reverse proxy with TLS.
 
 ## What the agent sees
 
@@ -231,7 +231,7 @@ Read [docs/safety.md](docs/safety.md) for the full model, including what apitame
 | `apitame diff <old-spec> [new-spec]` | Show what a new version of the spec changes for the agent: operations added, removed or renamed, access level changes, new writes that a wildcard in `writes.allow` would let through, config entries left behind and token cost. `--fail-on new-writes` blocks a pull request in CI. Never calls the API. |
 | `apitame test` | Call every read tool against a local mock built from the spec (or `--live`, which also validates responses), and prove that blocked writes are refused. For SQL, check every table and try known injection payloads. |
 | `apitame add-to <client>` | Print or `--write` the config for `claude-code`, `codex`, `cursor`, `vscode`, `gemini` or `claude-desktop`, and install the skills. |
-| `apitame doctor` | Check the setup end to end: config, environment variables, `.env` safety, API or database connectivity and credentials, whether the database role could write, skills and client configs. |
+| `apitame doctor` | Check the setup end to end: config, environment variables, `.env` safety, API or database connectivity and credentials, whether the database role could write, skills and client configs, and for HTTP deployments authentication, the OAuth issuer and keys and the public URL behind the proxy (`--host 0.0.0.0`). |
 
 Full reference: [docs/cli.md](docs/cli.md).
 
@@ -313,6 +313,7 @@ Ideas and votes are welcome in [issues](https://github.com/albert-canfield/apita
 - [SQL sources](docs/sql.md)
 - [Skills](docs/skills.md)
 - [Client setup](docs/clients.md)
+- [Deploying over HTTP](docs/deploy.md) (container image, reverse proxy, OAuth)
 - [Architecture](docs/architecture.md)
 - [Design decisions](docs/decisions.md)
 

@@ -1,0 +1,11 @@
+# The image is built from the package sources only (see Dockerfile). Everything else, .env files
+# and node_modules included, stays out of the build context.
+*
+!package.json
+!pnpm-lock.yaml
+!tsconfig.json
+!tsup.config.ts
+!README.md
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!src/
