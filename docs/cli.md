@@ -50,7 +50,7 @@ APITAME_HTTP_TOKEN=... apitame serve --transport http --host 0.0.0.0
 | `-t, --transport <stdio\|http>` | `stdio` | Transport. |
 | `-p, --port <port>` | `3333` | HTTP port. |
 | `--host <host>` | `127.0.0.1` | HTTP host. Anything other than loopback needs `APITAME_HTTP_TOKEN` or `http.oauth` in the config (OAuth access tokens, see [clients.md](clients.md#oauth)). |
-| `--sessions` | | HTTP only. Keep one MCP session per 2025-era client (`Mcp-Session-Id`), so destructive operations can be confirmed by the human through elicitation. Without it the HTTP transport is stateless and those clients use the token flow. Clients on protocol 2026-07-28 are asked through elicitation either way, without a session. |
+| `--sessions` | | HTTP only. Keep one MCP session per 2025-era client (`Mcp-Session-Id`), so destructive operations can be confirmed by the human through elicitation. Without it the HTTP transport is stateless and those clients use the token flow. Clients on protocol 2026-07-28 are asked through elicitation either way, without a session. With it, requests without a session id may carry at most 1 MB. |
 | `-w, --watch` | | Reload when `apitame.config.yaml`, a local spec, the skills folder or `.env` change, and notify clients that the tool list changed (2026-07-28 clients on their `subscriptions/listen` stream). |
 | `--log-level <level>` | `info` | `debug`, `info`, `warn`, `error` or `silent`. Logs go to stderr. `debug` also logs the protocol era of each stdio connection and HTTP request. |
 

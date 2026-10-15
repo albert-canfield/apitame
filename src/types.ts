@@ -50,6 +50,11 @@ export interface ApprovalRound {
   state?: string;
   /** The human's answer on the second round. `accept` only when the form came back approved. */
   answer?: 'accept' | 'decline' | 'cancel';
+  /**
+   * Set when the server listens on HTTP without authentication: any local process that can reach
+   * it could send the answer, so it is not known to come from the client the human uses.
+   */
+  anyoneCanAnswer?: boolean;
 }
 
 /** Per-call context handed to a runtime by the MCP layer. */

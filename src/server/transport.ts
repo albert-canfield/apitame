@@ -5,7 +5,6 @@ import {
   type Server as HttpServer,
   type ServerResponse,
 } from 'node:http';
-import { Readable } from 'node:stream';
 import {
   hostHeaderValidation,
   localhostHostValidation,
@@ -29,6 +28,8 @@ import {
   OAuthErrorCode,
   verifyBearerToken,
   type AuthInfo,
+  type JSONRPCMessage,
+  type MessageExtraInfo,
   type OAuthTokenVerifier,
   type ProtocolEra,
   type Server,
@@ -40,6 +41,7 @@ import {
   StdioServerTransport,
 } from '@modelcontextprotocol/server/stdio';
 import type { Logger } from '../log.js';
+import { markServedWithoutAuth } from './mcp.js';
 import {
   identityOf,
   protectedResourceMetadata,
@@ -77,10 +79,28 @@ export async function serveStdio(
     return { close: () => server.close() };
   }
   const { logger } = opts;
+  // A client may open with a server/discover probe and then fall back to `initialize`, which
+  // throws the probe's server away. So the 2026-07-28 era is logged on the first other request,
+  // once the connection is pinned to it.
+  let era: ProtocolEra | undefined;
+  let called = false;
+  let logged = false;
+  const logModern = () => {
+    if (logged || !called || era !== 'modern') return;
+    logged = true;
+    logger?.debug('stdio: the client uses protocol 2026-07-28');
+  };
+  const wire = observe(opts.transport ?? new StdioServerTransport(), (message) => {
+    if (!isJSONRPCRequest(message)) return;
+    if (message.method === 'server/discover' || message.method === 'initialize') return;
+    called = true;
+    logModern();
+  });
   return serveStdioEntry(
-    ({ era }) => {
-      const instance = server({ era });
-      if (era === 'modern') logger?.debug('stdio: the client uses protocol 2026-07-28');
+    (ctx) => {
+      era = ctx.era;
+      const instance = server({ era: ctx.era });
+      if (ctx.era === 'modern') logModern();
       else {
         instance.oninitialized = () =>
           logger?.debug(
@@ -89,11 +109,41 @@ export async function serveStdio(
       }
       return instance;
     },
-    {
-      ...(opts.transport ? { transport: opts.transport } : {}),
-      onerror: (err) => logger?.debug(`stdio: ${err.message}`),
-    },
+    { transport: wire, onerror: (err) => logger?.debug(`stdio: ${err.message}`) },
   );
+}
+
+/** The same transport, showing each incoming message to `seen` before the SDK handles it. */
+function observe(wire: Transport, seen: (message: JSONRPCMessage) => void): Transport {
+  return {
+    start: () => wire.start(),
+    send: (message, options) => wire.send(message, options),
+    close: () => wire.close(),
+    get onclose() {
+      return wire.onclose;
+    },
+    set onclose(handler) {
+      wire.onclose = handler;
+    },
+    get onerror() {
+      return wire.onerror;
+    },
+    set onerror(handler) {
+      wire.onerror = handler;
+    },
+    get onmessage() {
+      return wire.onmessage;
+    },
+    set onmessage(handler) {
+      wire.onmessage =
+        handler &&
+        (<T extends JSONRPCMessage>(message: T, extra?: MessageExtraInfo) => {
+          seen(message);
+          handler(message, extra);
+        });
+    },
+    setProtocolVersion: (version) => wire.setProtocolVersion?.(version),
+  };
 }
 
 /** OAuth 2.1 access tokens from an external authorization server (`http.oauth`). */
@@ -235,45 +285,33 @@ function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   });
 }
 
-/**
- * A copy of a request whose body was already read, which a handler can read again. Everything
- * else (method, URL, headers, socket, the OAuth result) is the original request's.
- */
-function replay(req: IncomingMessage, body: Buffer): IncomingMessage {
-  const copy = Readable.from(body.length > 0 ? [body] : [], { objectMode: false });
-  return Object.assign(copy, {
-    method: req.method,
-    url: req.url,
-    headers: req.headers,
-    rawHeaders: req.rawHeaders,
-    httpVersion: req.httpVersion,
-    socket: req.socket,
-    auth: (req as IncomingMessage & { auth?: AuthInfo }).auth,
-  }) as unknown as IncomingMessage;
+/** A request body as `route` read it: its JSON value, unless it was empty or not JSON. */
+type Body = { ok: true; value: unknown } | { ok: false };
+
+function parseBody(raw: Buffer | undefined): Body {
+  if (raw === undefined || raw.length === 0) return { ok: false };
+  try {
+    return { ok: true, value: JSON.parse(new TextDecoder().decode(raw)) };
+  } catch {
+    return { ok: false };
+  }
 }
 
 /**
  * Whether a request is 2025-era traffic, decided by the SDK's own classification (the one its
  * dual-era handler uses), so this routing never disagrees with the SDK.
  */
-async function isLegacy(req: IncomingMessage, body: Buffer | undefined): Promise<boolean> {
-  let parsed: unknown;
-  if (body !== undefined && body.length > 0) {
-    try {
-      parsed = JSON.parse(new TextDecoder().decode(body));
-    } catch {
-      // Not JSON: the SDK sends it to 2025-era serving too.
-      return true;
-    }
-    // JSON that is not a JSON-RPC message belongs to neither era: the 2025-era wiring refuses it
-    // as it always has (and, with sessions, before it can touch the session table).
-    const rpc =
-      Array.isArray(parsed) ||
-      isJSONRPCRequest(parsed) ||
-      isJSONRPCNotification(parsed) ||
-      isJSONRPCResponse(parsed);
-    if (!rpc) return true;
-  }
+async function isLegacy(req: IncomingMessage, body: Body): Promise<boolean> {
+  // No body, an empty one or one that is not JSON: the SDK sends these to 2025-era serving too.
+  if (!body.ok) return true;
+  // JSON that is not a JSON-RPC message belongs to neither era: the 2025-era wiring refuses it
+  // as it always has (and, with sessions, before it can touch the session table).
+  const rpc =
+    Array.isArray(body.value) ||
+    isJSONRPCRequest(body.value) ||
+    isJSONRPCNotification(body.value) ||
+    isJSONRPCResponse(body.value);
+  if (!rpc) return true;
   let probe: Request;
   try {
     const headers = new Headers();
@@ -290,7 +328,7 @@ async function isLegacy(req: IncomingMessage, body: Buffer | undefined): Promise
     // A request the Fetch API cannot represent (a TRACE, say) is not 2026-07-28 traffic.
     return true;
   }
-  return isLegacyRequest(probe, parsed, { maxRequestBodySize: MAX_BODY_BYTES });
+  return isLegacyRequest(probe, body.value, { maxRequestBodySize: MAX_BODY_BYTES });
 }
 
 interface Session {
@@ -352,6 +390,12 @@ export async function serveHttp(makeServer: ServerFactory, opts: HttpOptions): P
       ? originValidation([...localhostAllowedOrigins(), publicHost])
       : localhostOriginValidation()
     : undefined;
+  // Without a token or OAuth, nothing tells the MCP client apart from any other local process,
+  // so approvals cannot be trusted to come from it (see `markServedWithoutAuth`).
+  const build = (era: ProtocolEra): Server => {
+    const server = makeServer({ era });
+    return opts.token || oauth ? server : markServedWithoutAuth(server);
+  };
   const closeServer = (server: Server, transport: NodeStreamableHTTPServerTransport) => {
     void transport.close().catch(() => {});
     void server.close().catch(() => {});
@@ -400,7 +444,12 @@ export async function serveHttp(makeServer: ServerFactory, opts: HttpOptions): P
     return undefined;
   };
 
-  const handleSession = async (req: IncomingMessage, res: ServerResponse, auth?: AuthInfo) => {
+  const handleSession = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    auth: AuthInfo | undefined,
+    body: Body,
+  ) => {
     const owner = ownerOf(auth);
     const header = req.headers['mcp-session-id'];
     const id = Array.isArray(header) ? header[0] : header;
@@ -414,7 +463,7 @@ export async function serveHttp(makeServer: ServerFactory, opts: HttpOptions): P
         s.open--;
         s.lastSeen = Date.now();
       });
-      await s.transport.handleRequest(req, res);
+      await s.transport.handleRequest(req, res, body.ok ? body.value : undefined);
       return;
     }
 
@@ -422,18 +471,15 @@ export async function serveHttp(makeServer: ServerFactory, opts: HttpOptions): P
     // count against, or close, any session.
     const noSession = 'Bad Request: no valid Mcp-Session-Id. Send initialize to start a session.';
     if (req.method !== 'POST') return rpcError(res, 400, noSession);
-    let body: unknown;
-    try {
-      body = JSON.parse((await readBody(req, MAX_INIT_BODY_BYTES)).toString('utf8'));
-    } catch (err) {
-      if (err instanceof BodyTooLarge) return rpcError(res, 413, 'Request body too large.');
+    // `route` already refused a body over MAX_INIT_BODY_BYTES.
+    if (!body.ok) {
       return send(res, 400, {
         jsonrpc: '2.0',
         error: { code: -32700, message: 'Parse error' },
         id: null,
       });
     }
-    if (!isInitializeRequest(body)) return rpcError(res, 400, noSession);
+    if (!isInitializeRequest(body.value)) return rpcError(res, 400, noSession);
     const who = identityOf(auth);
     if (oauth && !who.client && !who.subject) {
       const err = new OAuthError(
@@ -444,7 +490,7 @@ export async function serveHttp(makeServer: ServerFactory, opts: HttpOptions): P
     }
     const full = makeRoom(owner);
     if (full) return rpcError(res, 503, full);
-    const server = makeServer({ era: 'legacy' });
+    const server = build('legacy');
     const transport: NodeStreamableHTTPServerTransport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
@@ -459,24 +505,26 @@ export async function serveHttp(makeServer: ServerFactory, opts: HttpOptions): P
       s.lastSeen = Date.now();
     });
     await server.connect(transport);
-    await transport.handleRequest(req, res, body);
+    await transport.handleRequest(req, res, body.value);
   };
 
-  const handleStateless = async (req: IncomingMessage, res: ServerResponse) => {
-    const server = makeServer({ era: 'legacy' });
+  const handleStateless = async (req: IncomingMessage, res: ServerResponse, body: Body) => {
+    const server = build('legacy');
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => closeServer(server, transport));
     await server.connect(transport);
-    await transport.handleRequest(req, res);
+    await transport.handleRequest(req, res, body.ok ? body.value : undefined);
   };
 
   // Protocol 2026-07-28: every request carries what it needs (client capabilities, protocol
   // version) and is served by a fresh server, sessions or not. 2025-era requests never reach
   // this handler ('reject'); they keep the wiring above. The SDK handler checks no Host, Origin
   // or token: everything in `handler` below runs first.
-  const modern = createMcpHandler(() => makeServer({ era: 'modern' }), {
+  const modern = createMcpHandler(() => build('modern'), {
     legacy: 'reject',
     maxRequestBodySize: MAX_BODY_BYTES,
+    // subscriptions/listen streams (`--watch`) stay open like sessions, so the same limits apply.
+    maxSubscriptions: maxSessions,
     ...(opts.events ? { bus: opts.events } : {}),
     onerror: (err) => opts.logger.debug(`HTTP (protocol 2026-07-28): ${err.message}`),
   });
@@ -485,30 +533,71 @@ export async function serveHttp(makeServer: ServerFactory, opts: HttpOptions): P
     onerror: (err) => opts.logger.error(`HTTP request failed: ${err.message}`),
   });
 
+  // With OAuth, each user may hold at most `maxPerOwner` open subscriptions/listen streams, so one
+  // user cannot use up the handler's limit and lock everyone else out of list changes.
+  const listens = new Map<string, number>();
+  const holdListen = (owner: string | undefined, res: ServerResponse): boolean => {
+    if (owner === undefined) return true;
+    const open = listens.get(owner) ?? 0;
+    if (open >= maxPerOwner) return false;
+    listens.set(owner, open + 1);
+    res.on('close', () => {
+      const left = (listens.get(owner) ?? 1) - 1;
+      if (left > 0) listens.set(owner, left);
+      else listens.delete(owner);
+    });
+    return true;
+  };
+
   /** Send each request to the wiring for its protocol era. */
   const route = async (req: IncomingMessage, res: ServerResponse, auth?: AuthInfo) => {
-    let body: Buffer | undefined;
+    let raw: Buffer | undefined;
     if (req.method !== 'GET' && req.method !== 'HEAD') {
+      // With sessions, a request without a session id either starts one (2025 era) or is a
+      // 2026-07-28 request: the limit for starting a session applies, checked against
+      // Content-Length before anything is read.
+      const sessionless = opts.sessions === true && !req.headers['mcp-session-id'];
       try {
-        body = await readBody(req, MAX_BODY_BYTES);
+        raw = await readBody(req, sessionless ? MAX_INIT_BODY_BYTES : MAX_BODY_BYTES);
       } catch (err) {
         if (!(err instanceof BodyTooLarge)) throw err;
         return rpcError(
           res,
           413,
-          `Payload Too Large: Request body must not exceed ${MAX_BODY_BYTES} bytes`,
+          sessionless
+            ? 'Request body too large.'
+            : `Payload Too Large: Request body must not exceed ${MAX_BODY_BYTES} bytes`,
         );
       }
     }
-    // Handlers read the body again from a copy, exactly as they would have from the socket.
-    const fresh = () => (body === undefined ? req : replay(req, body));
+    // Parsed once here. Handlers get the value; they never read the socket again.
+    const body = parseBody(raw);
     const legacy = await isLegacy(req, body);
     const version = req.headers['mcp-protocol-version'];
     opts.logger.debug(
       `HTTP ${req.method ?? 'GET'}: ${legacy ? '2025-era' : 'protocol 2026-07-28'} request${typeof version === 'string' ? ` (MCP-Protocol-Version: ${version})` : ''}`,
     );
-    if (!legacy) return serveModern(fresh(), res);
-    return opts.sessions ? handleSession(fresh(), res, auth) : handleStateless(fresh(), res);
+    // `isLegacy` only answers false for a body that parsed.
+    if (!legacy && body.ok) {
+      const { value } = body;
+      if (isJSONRPCRequest(value) && value.method === 'subscriptions/listen') {
+        if (!holdListen(ownerOf(auth), res)) {
+          return send(res, 200, {
+            jsonrpc: '2.0',
+            id: value.id,
+            error: {
+              code: -32603,
+              message: `Subscription limit reached for this user (at most ${maxPerOwner} open streams).`,
+            },
+          });
+        }
+      }
+      return serveModern(req, res, value);
+    }
+    // A body that is empty or not JSON has no value to hand over: the SDK transport then finds
+    // nothing left to read and answers with its own parse error, after its own Accept and
+    // Content-Type checks, exactly as when it read the socket itself.
+    return opts.sessions ? handleSession(req, res, auth, body) : handleStateless(req, res, body);
   };
 
   const handler = async (req: IncomingMessage, res: ServerResponse) => {

@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { ApprovalRound, CallContext, ToolResult } from '../types.js';
+import type { ApprovalRound, CallContext, ToolDefinition, ToolResult } from '../types.js';
+import type { AuditOutcome } from './guardrails.js';
 
 /** JSON.stringify with sorted keys, so equal objects hash equally. */
 export function stableStringify(value: unknown): string {
@@ -20,25 +21,26 @@ interface Pending {
   expiresAt: number;
 }
 
-interface Reasons {
-  unknown: string;
-  expired: string;
-  mismatch: string;
-}
+/** Why an id was refused. */
+export type RefusalCode = 'unknown' | 'used' | 'expired' | 'mismatch';
+
+export type Consumed = { ok: true } | { ok: false; code: RefusalCode; reason: string };
 
 /**
  * Random ids that can be used once. Each id is bound to one operation and a hash of what it
- * was issued for, and expires after a TTL.
+ * was issued for, and expires after a TTL. A used id is remembered until it would have
+ * expired, so a replay is told apart from an id that never existed.
  */
 export class OneTimeIds {
   private readonly pending = new Map<string, Pending>();
+  private readonly spent = new Map<string, number>();
 
   constructor(
     readonly ttlMs: number,
     private readonly now: () => number,
     private readonly prefix: string,
     private readonly bytes: number,
-    private readonly reasons: Reasons,
+    private readonly reasons: Record<RefusalCode, string>,
   ) {}
 
   issue(id: string, binding: unknown): { token: string; expiresAt: number } {
@@ -50,17 +52,19 @@ export class OneTimeIds {
   }
 
   /** Check an id and use it up, whatever the outcome: a failed attempt burns it too. */
-  consume(
-    token: string,
-    id: string,
-    binding: unknown,
-  ): { ok: true } | { ok: false; reason: string } {
+  consume(token: string, id: string, binding: unknown): Consumed {
     const entry = this.pending.get(token);
-    if (!entry) return { ok: false, reason: this.reasons.unknown };
+    if (!entry) {
+      const code = this.spent.has(token) ? 'used' : 'unknown';
+      return { ok: false, code, reason: this.reasons[code] };
+    }
     this.pending.delete(token);
-    if (entry.expiresAt < this.now()) return { ok: false, reason: this.reasons.expired };
+    this.spent.set(token, entry.expiresAt);
+    if (entry.expiresAt < this.now()) {
+      return { ok: false, code: 'expired', reason: this.reasons.expired };
+    }
     if (entry.fingerprint !== fingerprint(id, binding)) {
-      return { ok: false, reason: this.reasons.mismatch };
+      return { ok: false, code: 'mismatch', reason: this.reasons.mismatch };
     }
     return { ok: true };
   }
@@ -68,6 +72,7 @@ export class OneTimeIds {
   private sweep(): void {
     const t = this.now();
     for (const [k, v] of this.pending) if (v.expiresAt < t) this.pending.delete(k);
+    for (const [k, expiresAt] of this.spent) if (expiresAt < t) this.spent.delete(k);
   }
 }
 
@@ -90,12 +95,14 @@ export class ConfirmationStore {
   ) {
     this.tokens = new OneTimeIds(ttlMs, now, 'confirm_', 12, {
       unknown: 'Unknown or already used confirmation token.',
+      used: 'Unknown or already used confirmation token.',
       expired: 'Confirmation token expired.',
       mismatch: 'Confirmation token was issued for a different operation or different arguments.',
     });
     // 256 random bits: the id travels through the client, so it must not be guessable.
     this.approvals = new OneTimeIds(ttlMs, now, 'approval_', 32, {
-      unknown: 'Unknown or already used approval.',
+      unknown: 'Unknown approval.',
+      used: 'This approval was already used.',
       expired: 'The approval expired.',
       mismatch:
         'The approval was given for a different operation, different arguments or a different user.',
@@ -107,8 +114,14 @@ export class ConfirmationStore {
   }
 
   consume(token: string, id: string, args: unknown): { ok: true } | { ok: false; reason: string } {
-    return this.tokens.consume(token, id, args);
+    const check = this.tokens.consume(token, id, args);
+    return check.ok ? check : { ok: false, reason: check.reason };
   }
+}
+
+/** Whether any of these tools can ask for a human decision (they take a `confirm` token). */
+export function asksForConfirmation(tools: ToolDefinition[]): boolean {
+  return tools.some((t) => Object.hasOwn(t.inputSchema.properties ?? {}, 'confirm'));
 }
 
 export type ConfirmationMethod = 'auto' | 'elicitation' | 'token';
@@ -125,16 +138,38 @@ export interface ConfirmRequest {
   ctx: CallContext | undefined;
 }
 
-export type ConfirmOutcome = { proceed: true } | { proceed: false; result: ToolResult };
+/** What to do with the call, and, when it stops here, what the audit log records. */
+export type ConfirmOutcome =
+  { proceed: true } | { proceed: false; result: ToolResult; audit: AuditOutcome; reason?: string };
 
 const text = (t: string, isError = false): ToolResult => ({
   content: [{ type: 'text', text: t }],
   ...(isError ? { isError: true } : {}),
 });
 
-const notApproved = (id: string): ConfirmOutcome => ({
+type Refusal = Extract<ConfirmOutcome, { proceed: false }>;
+
+const notApproved = (id: string): Refusal => ({
   proceed: false,
   result: text(`The user did not approve "${id}". Nothing was changed.`, true),
+  audit: 'declined',
+});
+
+const cannotElicit = (id: string, unauthenticated = false): Refusal => ({
+  proceed: false,
+  result: text(
+    unauthenticated
+      ? `"${id}" needs human confirmation but this MCP client does not support elicitation over ` +
+          'this connection: apitame serves HTTP without authentication, so any local process that ' +
+          'can reach it could answer the approval form itself. Set APITAME_HTTP_TOKEN or ' +
+          'http.oauth and give the credentials only to the MCP client, serve over stdio, or set ' +
+          'confirmation.method to "auto" or "token" in apitame.config.yaml.'
+      : `"${id}" needs human confirmation but this MCP client does not support elicitation. ` +
+          'Set confirmation.method to "auto" or "token" in apitame.config.yaml.',
+    true,
+  ),
+  audit: 'declined',
+  ...(unauthenticated ? { reason: 'unauthenticated HTTP' } : {}),
 });
 
 /**
@@ -150,11 +185,22 @@ function approvalRound(
   round: ApprovalRound,
   message: string,
 ): ConfirmOutcome | undefined {
+  // Under `elicitation` the answer must come from the client the human uses. Without
+  // authentication on HTTP, nothing tells that client apart from any other local process.
+  if (round.anyoneCanAnswer && req.method === 'elicitation') {
+    return cannotElicit(req.id, true);
+  }
   const binding = { args: req.args, caller: req.ctx?.caller ?? null };
   if (round.state !== undefined) {
     const check = req.store.approvals.consume(round.state, req.id, binding);
-    if (!check.ok)
-      return { proceed: false, result: text(`${check.reason} Nothing was changed.`, true) };
+    if (!check.ok) {
+      return {
+        proceed: false,
+        result: text(`${check.reason} Nothing was changed.`, true),
+        audit: 'approval-refused',
+        reason: check.code,
+      };
+    }
     return round.answer === 'accept' ? { proceed: true } : notApproved(req.id);
   }
   if (!round.canAsk) return undefined;
@@ -165,6 +211,7 @@ function approvalRound(
       ...text(`Waiting for the user to approve "${req.id}". Nothing has been changed yet.`),
       inputRequired: { message, requestState: token },
     },
+    audit: 'confirmation-requested',
   };
 }
 
@@ -193,22 +240,17 @@ export async function confirmOrChallenge(req: ConfirmRequest): Promise<ConfirmOu
         : 'unsupported';
     if (outcome === 'accept') return { proceed: true };
     if (outcome === 'decline' || outcome === 'cancel') return notApproved(req.id);
-    if (req.method === 'elicitation') {
-      return {
-        proceed: false,
-        result: text(
-          `"${req.id}" needs human confirmation but this MCP client does not support elicitation. ` +
-            'Set confirmation.method to "auto" or "token" in apitame.config.yaml.',
-          true,
-        ),
-      };
-    }
+    if (req.method === 'elicitation') return cannotElicit(req.id);
   }
 
   if (req.confirmToken) {
     const check = req.store.consume(req.confirmToken, req.id, req.args);
     if (check.ok) return { proceed: true };
-    return { proceed: false, result: text(`${check.reason} Nothing was changed.`, true) };
+    return {
+      proceed: false,
+      result: text(`${check.reason} Nothing was changed.`, true),
+      audit: 'declined',
+    };
   }
 
   const { token } = req.store.issue(req.id, req.args);
@@ -225,5 +267,6 @@ export async function confirmOrChallenge(req: ConfirmRequest): Promise<ConfirmOu
         `with exactly the same arguments plus "confirm": "${token}". The token works once and expires in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
       ].join('\n'),
     ),
+    audit: 'confirmation-requested',
   };
 }

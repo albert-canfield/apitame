@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import { unauthenticatedHttpWarning } from '../../src/cli/commands/serve.js';
 import {
+  asksForConfirmation,
   ConfirmationStore,
   confirmOrChallenge,
   stableStringify,
 } from '../../src/safety/confirm.js';
 import { decide, matchesAny } from '../../src/safety/policy.js';
 import { REDACTED, Redactor } from '../../src/safety/redact.js';
-import type { ApprovalRound } from '../../src/types.js';
+import type { ApprovalRound, ToolDefinition } from '../../src/types.js';
 
 describe('policy.decide', () => {
   const readOnly = { mode: 'read-only' as const, writes: { allow: ['*'], confirm: [] } };
@@ -229,6 +231,7 @@ describe('approvals (protocol 2026-07-28)', () => {
     now += 6_000;
     expect(store.approvals.consume(token, 'x', {})).toEqual({
       ok: false,
+      code: 'expired',
       reason: 'The approval expired.',
     });
   });
@@ -254,7 +257,11 @@ describe('approvals (protocol 2026-07-28)', () => {
     expect((await ask(store, { canAsk: true, state, answer: 'accept' })).proceed).toBe(true);
     const again = await ask(store, { canAsk: true, state, answer: 'accept' });
     expect(again.proceed).toBe(false);
-    if (!again.proceed) expect(again.result.content[0]!.text).toMatch(/already used approval/);
+    if (!again.proceed) {
+      expect(again.result.content[0]!.text).toMatch(/This approval was already used/);
+      expect(again.audit).toBe('approval-refused');
+      expect(again.reason).toBe('used');
+    }
   });
 
   it('refuses and burns the id when the human did not approve', async () => {
@@ -269,7 +276,8 @@ describe('approvals (protocol 2026-07-28)', () => {
       }
       expect(store.approvals.consume(state, base.id, { args: base.args, caller: null })).toEqual({
         ok: false,
-        reason: 'Unknown or already used approval.',
+        code: 'used',
+        reason: 'This approval was already used.',
       });
     }
   });
@@ -329,6 +337,30 @@ describe('approvals (protocol 2026-07-28)', () => {
       expect(out.result.inputRequired).toBeUndefined();
       expect(out.result.content[0]!.text).toMatch(/CONFIRMATION REQUIRED/);
     }
+  });
+});
+
+describe('serve over HTTP without authentication', () => {
+  const tool = (properties: Record<string, unknown>): ToolDefinition => ({
+    name: 't',
+    description: 't',
+    inputSchema: { type: 'object', properties },
+  });
+  const URL = 'http://127.0.0.1:3333/mcp';
+
+  it('warns when some operation asks for a human decision', () => {
+    const warning = unauthenticatedHttpWarning([tool({ confirm: {} })], 'auto', URL);
+    expect(warning).toContain(`any local process that can reach ${URL}`);
+    expect(warning).toContain('Set APITAME_HTTP_TOKEN or http.oauth');
+    expect(warning).not.toContain('are refused');
+    expect(unauthenticatedHttpWarning([tool({ confirm: {} })], 'elicitation', URL)).toContain(
+      'approvals from clients on protocol 2026-07-28 are refused',
+    );
+  });
+
+  it('stays quiet when nothing asks for confirmation', () => {
+    expect(unauthenticatedHttpWarning([tool({ dryRun: {} })], 'auto', URL)).toBeUndefined();
+    expect(asksForConfirmation([tool({ api_confirm: {} })])).toBe(false);
   });
 });
 

@@ -311,7 +311,7 @@ describe('CLI: serve over HTTP with OAuth', () => {
 describe('CLI: serve for protocol 2026-07-28 clients', () => {
   const t = tempDir('apitame-cli-mrtr-');
   let mock: MockServer;
-  const writeConfig = (operations: string[]) =>
+  const writeConfig = (operations: string[], extra: string[] = []) =>
     writeFileSync(
       join(t.dir, 'apitame.config.yaml'),
       [
@@ -320,9 +320,36 @@ describe('CLI: serve for protocol 2026-07-28 clients', () => {
         'mode: read-write',
         'writes: { allow: [deletePet] }',
         `tools: [{ name: pet, operations: [${operations.join(', ')}] }]`,
+        ...extra,
         '',
       ].join('\n'),
     );
+  /** `serve --transport http` on a free port, once it says it is serving. */
+  const serveHttpCli = async (args: string[] = []) => {
+    const port = await freePort();
+    const child = spawn(
+      process.execPath,
+      [...NODE_ARGS, 'serve', '--transport', 'http', '--port', String(port), ...args],
+      { cwd: t.dir, env: { ...process.env, NO_COLOR: '1', APITAME_LOG_LEVEL: 'debug' } },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`no startup line:\n${stderr}`)), 30_000);
+      child.stderr.on('data', () => {
+        if (/serving .*\/mcp/.test(stderr)) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      child.on('exit', (code) => reject(new Error(`exited with ${code}:\n${stderr}`)));
+    });
+    return {
+      url: new URL(`http://127.0.0.1:${port}/mcp`),
+      log: () => stderr,
+      stop: () => child.kill(),
+    };
+  };
   beforeAll(async () => {
     copyFileSync(PETSTORE, join(t.dir, 'openapi.yaml'));
     mock = await startMockServer(extractOperations((await loadSpec(PETSTORE)).doc));
@@ -401,31 +428,14 @@ describe('CLI: serve for protocol 2026-07-28 clients', () => {
 
   it('serves stateless HTTP and tells clients about reloads with --watch', async () => {
     writeConfig(['getPetById', 'deletePet']);
-    const port = await freePort();
-    const child = spawn(
-      process.execPath,
-      [...NODE_ARGS, 'serve', '--transport', 'http', '--port', String(port), '--watch'],
-      { cwd: t.dir, env: { ...process.env, NO_COLOR: '1', APITAME_LOG_LEVEL: 'debug' } },
-    );
-    let stderr = '';
-    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+    const server = await serveHttpCli(['--watch']);
     try {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`no startup line:\n${stderr}`)), 30_000);
-        child.stderr.on('data', () => {
-          if (/serving .*\/mcp/.test(stderr)) {
-            clearTimeout(timer);
-            resolve();
-          }
-        });
-        child.on('exit', (code) => reject(new Error(`exited with ${code}:\n${stderr}`)));
-      });
+      // Nothing asks for a token here, so any local process could answer the approvals.
+      expect(server.log()).toContain('warn: HTTP without authentication: any local process');
       let changed!: () => void;
       const heard = new Promise<void>((r) => (changed = r));
       const { client, prompts } = modern(() => changed());
-      await client.connect(
-        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)),
-      );
+      await client.connect(new StreamableHTTPClientTransport(server.url));
       try {
         const before = deletes();
         const res = await client.callTool({
@@ -435,16 +445,43 @@ describe('CLI: serve for protocol 2026-07-28 clients', () => {
         expect(res.isError).toBeFalsy();
         expect(prompts).toHaveLength(1);
         expect(deletes()).toBe(before + 1);
-        expect(stderr).toContain('debug: HTTP POST: protocol 2026-07-28 request');
+        expect(server.log()).toContain('debug: HTTP POST: protocol 2026-07-28 request');
 
         await subscribed(client);
         writeConfig(['getPetById', 'findPetsByStatus', 'deletePet']);
-        await within(heard, () => stderr);
+        await within(heard, server.log);
       } finally {
         await client.close();
       }
     } finally {
-      child.kill();
+      server.stop();
+    }
+  });
+
+  it('under confirmation.method: elicitation, refuses approvals over HTTP without authentication', async () => {
+    writeConfig(['getPetById', 'deletePet'], ['confirmation: { method: elicitation }']);
+    const server = await serveHttpCli();
+    try {
+      expect(server.log()).toContain(
+        'Under confirmation.method: elicitation, approvals from clients on protocol 2026-07-28 are refused',
+      );
+      const { client, prompts } = modern();
+      await client.connect(new StreamableHTTPClientTransport(server.url));
+      try {
+        const before = deletes();
+        const res = await client.callTool({
+          name: 'pet',
+          arguments: { operation: 'deletePet', params: { petId: 9 } },
+        });
+        expect(res.isError).toBe(true);
+        expect(JSON.stringify(res.content)).toContain('HTTP without authentication');
+        expect(prompts).toHaveLength(0);
+        expect(deletes()).toBe(before);
+      } finally {
+        await client.close();
+      }
+    } finally {
+      server.stop();
     }
   });
 });

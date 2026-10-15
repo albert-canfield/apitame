@@ -68,7 +68,7 @@ Confirmation is enforced by the server, not requested politely in a description.
 MCP clients speak one of two protocol eras, and apitame serves both on every transport. Over stdio the client's first message decides for the whole connection; over HTTP each request says which era it belongs to. `--log-level debug` logs the era of each stdio connection and HTTP request.
 
 - **2025-era clients** (protocol 2025-11-25 and earlier, started with `initialize`). apitame sends the form in the middle of the tool call (`elicitation/create`) and waits up to 5 minutes for the answer. This needs a connection that stays open: stdio (how Claude Code, Codex, Cursor, VS Code and Gemini CLI run apitame) or HTTP with `serve --transport http --sessions`. Over the default stateless HTTP transport these clients get the token flow.
-- **Clients on protocol 2026-07-28.** This version has no requests from server to client. Instead, the first call returns the form as an input-required result together with a one-time approval id (`requestState`). The client shows the form, then calls the tool again with the same arguments, the answer and the approval id (multi round-trip input). The call runs only if the id is known, unused and unexpired, was issued for the same operation, the same arguments and the same OAuth client and user, and the human checked the box. Anything else (a decline, a cancel, an unchecked box, other arguments, an id that was changed, used before or expired) is refused with nothing sent, and the id is used up. An answer sent back without an approval id never runs anything: the human is asked again. Because the question and the answer travel in two ordinary requests, this works over every transport, stateless HTTP included, and `--sessions` makes no difference.
+- **Clients on protocol 2026-07-28.** This version has no requests from server to client. Instead, the first call returns the form as an input-required result together with a one-time approval id (`requestState`). The client shows the form, then calls the tool again with the same arguments, the answer and the approval id (multi round-trip input). The call runs only if the id is known, unused and unexpired, was issued for the same operation (through whichever tool), the same arguments and the same OAuth client and user, and the box came back checked. An answer sent back without an approval id never runs anything: the human is asked again. Because the question and the answer travel in two ordinary requests, this works over every transport, stateless HTTP included, and `--sessions` makes no difference.
 
 | Transport | 2025-era clients | 2026-07-28 clients |
 | --- | --- | --- |
@@ -78,11 +78,27 @@ MCP clients speak one of two protocol eras, and apitame serves both on every tra
 
 A 2026-07-28 client that does not declare form elicitation gets the token flow under `auto` and a refusal under `elicitation`, exactly like a 2025-era client without elicitation.
 
-Approval ids are random (256 bits), expire after `confirmation.ttlSeconds` like tokens, and are kept in a store of their own: an approval id never works as a `confirm` token, and a token never works as an approval id. They are not signed. Approvals in flight live in the memory of the apitame process that asked, like confirm tokens: behind a load balancer the second round must reach the same process (otherwise it is refused as unknown, with nothing sent), and a restart or a `--watch` reload forgets them. The write rate limit is checked before the human is asked, in both eras. A second round that arrives while the write limit is exhausted is refused before its approval id is looked at, so that id stays valid until it expires and can still be used once.
+What happens to an approval id on the second round:
 
-Elicitation trusts the client application, in both eras: the answer comes from the client, which is responsible for showing the form to the human rather than to the agent.
+- **Used up, with nothing sent**: an answer that is not an approval (a decline, a cancel, an unchecked box, or anything other than `approve: true`), other arguments, another operation or another OAuth user, and an id that expired. Using the same id again is refused too.
+- **Not looked at, so it stays usable once until it expires**: a second round that stops before the approval is checked. That includes a dry run (`"dryRun": true` shows the request and sends nothing), invalid arguments, an operation that is blocked, and a call refused by the write rate limit. Nothing is sent in any of these cases.
 
-Be clear about the limit of the token flow: an agent that ignores its instructions could send the token back without asking. The token flow guarantees that the human-readable preview reaches the conversation and that the second call is identical to what was previewed. If you need a hard guarantee that a human approved, use a client with elicitation support and set `confirmation.method: elicitation`, or keep your client's per-call approval on for write tools (apitame marks them with `destructiveHint` and `readOnlyHint` annotations).
+Approval ids are random (256 bits), expire after `confirmation.ttlSeconds` like tokens, and are kept in a store of their own: an approval id never works as a `confirm` token, and a token never works as an approval id. They are not signed. Approvals in flight live in the memory of the apitame process that asked, like confirm tokens: behind a load balancer the second round must reach the same process (otherwise it is refused as unknown, with nothing sent), and a restart or a `--watch` reload forgets them.
+
+The write rate limit is checked before the human is asked, in both eras, so a call that is already over the limit never asks and never uses up an approval. The check does not reserve a slot. When calls run at the same time, the limit can fill up while the human answers (for SQL write queries, also while apitame counts the rows the preview shows): the approved call is then refused by the rate limit after all, nothing is sent, and the approval is spent.
+
+#### What an approval proves
+
+Elicitation proves that the MCP client answered, not that a human did. The client application is meant to show the form to the human and never to the agent, and apitame cannot check that it did. Anything that can talk to apitame directly can answer the form itself, in both protocol eras: on protocol 2026-07-28 that takes two ordinary requests.
+
+So an approval means something only when the agent cannot reach apitame on its own:
+
+- **stdio**: the client starts apitame and is the only one connected to it. This is how Claude Code, Codex, Cursor, VS Code and Gemini CLI run it.
+- **HTTP with authentication**: `APITAME_HTTP_TOKEN` or an OAuth client whose credentials the client holds and the agent does not, on a port the agent's sandbox cannot reach.
+
+Over HTTP without authentication, any local process that can reach the port, an agent's shell included, can call the tools and approve destructive operations itself. apitame logs a warning at startup when it serves HTTP without authentication and some operation asks for confirmation. Under `confirmation.method: elicitation`, it also refuses approvals from 2026-07-28 clients there (answering as for a client that cannot elicit, and saying why). 2025-era clients over HTTP with `--sessions` and no authentication are still asked; the warning applies to them too.
+
+The token flow guarantees less still: an agent that ignores its instructions can send the token back without asking anyone. It guarantees that the human-readable preview reaches the conversation and that the second call is identical to what was previewed. When a human decision matters, serve over stdio or authenticated HTTP, use a client that supports elicitation, set `confirmation.method: elicitation`, and consider keeping your client's own per-call approval on for write tools (apitame marks them with `destructiveHint` and `readOnlyHint` annotations).
 
 ### Dry run
 
@@ -176,7 +192,8 @@ With a file set, apitame appends one JSON object per line:
 {"time":"2026-10-14T01:30:00.000Z","server":"github","tool":"issues","operation":"issues/update","access":"write","outcome":"sent","status":200,"durationMs":312,"args":{"owner":"octocat","repo":"hello-world","issue_number":12,"body":{"state":"closed"}}}
 ```
 
-- `include: writes` records every write attempt, whatever happened to it: `blocked`, `dry-run`, `confirmation-requested`, `declined`, `rate-limited`, `sent` or `error`. Refused SQL queries are always recorded, because a refused DELETE is worth knowing about.
+- `include: writes` records every write attempt, whatever happened to it: `blocked`, `dry-run`, `confirmation-requested`, `declined`, `approval-refused`, `rate-limited`, `sent` or `error`. Refused SQL queries are always recorded, because a refused DELETE is worth knowing about.
+- `declined` means the human did not approve, or that apitame could not ask under `confirmation.method: elicitation` (with the reason `unauthenticated HTTP` when that is because HTTP runs without authentication). `approval-refused` means a 2026-07-28 approval id was refused, whatever the answer said, with the `reason`: `unknown` (never issued, or changed), `used` (sent again), `expired`, or `mismatch` (other arguments, another operation or another user). A forged or replayed approval therefore never looks like a human decision.
 - `include: all` records reads too.
 - Arguments go through the redactor and are capped at 2,000 characters. The file is created with owner-only permissions (`0600`).
 - Over HTTP with `http.oauth`, each entry also names the token's client and subject (`"client"`, `"subject"`), each when the token carries it, so you can tell which user's agent made the call.
@@ -207,6 +224,9 @@ The test suite checks that a bearer token echoed back by an API, OAuth client se
 - The two cannot be combined: one shared token next to per-user tokens would quietly weaken the per-user setup, so apitame refuses to start with both.
 - With `--sessions`, session ids are random UUIDs and only identify a conversation: the Host, Origin and token checks still apply to every request. With OAuth, a session also belongs to the client and subject of the token that started it, so a session id is useless with another user's token, and a token that names neither cannot start one. Unknown ids get a 404, and idle sessions are closed.
 - Only an `initialize` request can start a session, and that is checked before the session table is touched: anything else without a session id gets a 400. With OAuth, each user (client and subject) holds at most 10 sessions, and room is only ever made among that user's own idle sessions, so one user cannot close or crowd out anyone else's.
+- Request bodies are read once, up to 4 MB. With `--sessions`, a request without a session id (one that starts a session, and every 2026-07-28 request) may carry at most 1 MB, refused from its `Content-Length` before anything is read.
+- `subscriptions/listen` streams, which 2026-07-28 clients keep open to hear about list changes, are limited like sessions: at most 100 open at once, and with OAuth at most 10 per user, so one user cannot lock everyone else out.
+- Without authentication (possible on loopback only), any local process that can reach the port can call the tools and answer approval prompts itself. See [What an approval proves](#what-an-approval-proves).
 
 ## What apitame does not protect against
 

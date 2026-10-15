@@ -156,7 +156,9 @@ The HTTP transport serves both MCP protocol eras on the same URL (see [safety.md
 npx apitame serve --transport http --sessions
 ```
 
-Sessions without requests or open streams are closed after 30 minutes, and at most 100 are kept (the oldest idle one makes room). A client whose session was closed gets a 404 and starts a new one. Requests from 2026-07-28 clients never open or use a session, with or without `--sessions`. With `--watch`, 2025-era clients are told about tool list changes on their session, and 2026-07-28 clients on their `subscriptions/listen` stream. `--log-level debug` logs which protocol each request uses.
+Sessions without requests or open streams are closed after 30 minutes, and at most 100 are kept (the oldest idle one makes room). A client whose session was closed gets a 404 and starts a new one. Requests from 2026-07-28 clients never open or use a session, with or without `--sessions`; with `--sessions` their bodies are limited to 1 MB, like requests that start a session.
+
+Without `APITAME_HTTP_TOKEN` or `http.oauth`, any process on the machine that can reach the port, an agent's own shell included, can call the tools and answer approval prompts as if it were the client. apitame warns about this at startup when some operation asks for confirmation, and under `confirmation.method: elicitation` it refuses approvals from 2026-07-28 clients on such a server. Set a token (and give it only to the MCP client) whenever the agent runs on the same machine with a shell. With `--watch`, 2025-era clients are told about tool list changes on their session, and 2026-07-28 clients on their `subscriptions/listen` stream. `--log-level debug` logs which protocol each request uses.
 
 ### OAuth
 
@@ -211,4 +213,4 @@ npx apitame add-to claude-code --command "node /path/to/apitame/dist/cli.js"
 
 ## Elicitation and annotations
 
-Destructive operations use MCP elicitation when the client supports it, so the approval prompt comes from the client, not from the agent. 2025-era clients get the prompt in the middle of the call; clients on protocol 2026-07-28 get it as the result of a first call and send the answer with a second one, which also works over stateless HTTP. Tools also carry `readOnlyHint`, `destructiveHint` and `openWorldHint` annotations, which some clients use to decide when to ask for permission or to run read-only tools in parallel.
+Destructive operations use MCP elicitation when the client supports it, so the approval prompt comes from the client, not from the agent. 2025-era clients get the prompt in the middle of the call; clients on protocol 2026-07-28 get it as the result of a first call and send the answer with a second one, which also works over stateless HTTP. An approval proves that the MCP client answered, not that a human did: it only means something when the agent cannot reach apitame itself, that is over stdio, or over HTTP with `APITAME_HTTP_TOKEN` or OAuth credentials that only the client holds, on a port the agent's sandbox cannot reach (see [safety.md](safety.md#what-an-approval-proves)). Tools also carry `readOnlyHint`, `destructiveHint` and `openWorldHint` annotations, which some clients use to decide when to ask for permission or to run read-only tools in parallel.
