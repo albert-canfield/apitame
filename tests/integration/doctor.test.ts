@@ -83,11 +83,13 @@ describe('apitame doctor', () => {
     });
     try {
       const f = await runDoctor({ offline: true });
-      expect(find(f, 'Config').map((x) => x.status)).toEqual(['ok', 'warn', 'warn']);
-      expect(find(f, 'Config')[1]!.detail).toMatch(
-        /byScope\.mcp:read\.tools: no tool matches "stores" \(typo\?\)/,
-      );
-      expect(find(f, 'Config')[2]!.detail).toMatch(/"deletePet" grants nothing/);
+      const config = find(f, 'Config');
+      expect(config[0]!.status).toBe('ok');
+      expect(config.slice(1).map((x) => x.status)).toEqual(['warn', 'warn', 'warn']);
+      const details = config.map((x) => x.detail).join('\n');
+      expect(details).toMatch(/byScope\.mcp:read\.tools: no tool matches "stores" \(typo\?\)/);
+      expect(details).toMatch(/byScope\.mcp:read: adds nothing to permissions\.default/);
+      expect(details).toMatch(/"deletePet" grants nothing/);
       // Nothing else is held back: the rest of the checks still run.
       expect(statusOf(f, 'Skills')).toHaveLength(1);
     } finally {

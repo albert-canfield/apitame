@@ -9,8 +9,9 @@ import {
   checkPermissions,
   toolAllowed,
   type CallerPermissions,
+  type Reach,
 } from '../safety/permissions.js';
-import { decide, type Decision } from '../safety/policy.js';
+import { decide, matchesAny, type Decision } from '../safety/policy.js';
 import { REDACTED, Redactor } from '../safety/redact.js';
 import { WriteRules } from '../safety/rules.js';
 import { loadSpec, resolveBaseUrl, type LoadedSpec } from '../sources/openapi/load.js';
@@ -66,11 +67,17 @@ interface BuiltTool {
 interface ToolView {
   list: BuiltTool[];
   byName: Map<string, BuiltTool>;
+  /**
+   * The operations this caller can reach at all: those of the groups it sees, and, when it sees
+   * call_operation, those in no group. Undefined without permissions: every operation.
+   */
+  surface?: Set<string>;
 }
 
-const viewOf = (list: BuiltTool[]): ToolView => ({
+const viewOf = (list: BuiltTool[], surface?: Set<string>): ToolView => ({
   list,
   byName: new Map(list.map((t) => [t.def.name, t])),
+  ...(surface ? { surface } : {}),
 });
 
 /** Tool lists kept for callers with different permissions. Each is rebuilt when evicted. */
@@ -121,6 +128,10 @@ export class OpenApiRuntime implements Runtime {
   readonly rules: WriteRules;
 
   private readonly groups: ToolGroupConfig[];
+  /** The configured groups each operation belongs to. */
+  private readonly groupsOf = new Map<string, string[]>();
+  /** Groups the server config lists as a single-operation tool: they keep that shape per caller. */
+  private readonly singleOps: Set<string>;
   private readonly tools: BuiltTool[];
   private readonly toolByName: Map<string, BuiltTool>;
   /** Tool lists for OAuth callers whose permissions narrow the server config, by permission set. */
@@ -190,8 +201,14 @@ export class OpenApiRuntime implements Runtime {
     }
 
     this.groups = this.resolveGroups();
+    for (const g of this.groups)
+      for (const id of g.operations)
+        this.groupsOf.set(id, [...(this.groupsOf.get(id) ?? []), g.name]);
     this.tools = this.buildTools();
     this.toolByName = new Map(this.tools.map((t) => [t.def.name, t]));
+    this.singleOps = new Set(
+      this.tools.filter((t) => t.kind === 'operation').map((t) => t.def.name),
+    );
     this.warnings.push(
       ...checkPermissions(config, {
         tools: [
@@ -200,8 +217,25 @@ export class OpenApiRuntime implements Runtime {
         ],
         operations: this.operations.map((o) => ({ id: o.id, write: o.access !== 'read' })),
         noun: 'operation',
+        reach: this.reach,
       }),
     );
+  }
+
+  /**
+   * Whether tools matching these patterns reach an operation: a group that holds it, or
+   * call_operation for an operation in no group. call_operation never reaches an operation of a
+   * group, so hiding the group hides its operations.
+   */
+  private readonly reach: Reach = (tools, id) => {
+    if (tools === undefined) return true;
+    const groups = this.groupsOf.get(id);
+    if (groups) return groups.some((g) => matchesAny(g, tools));
+    return this.config.longTail.enabled && matchesAny(CALL, tools);
+  };
+
+  private permissionsOf(who: CallerContext | undefined): CallerPermissions | undefined {
+    return callerPermissions(this.config, who, this.reach);
   }
 
   /** The server config, narrowed by an OAuth caller's permissions when there are any. */
@@ -235,7 +269,12 @@ export class OpenApiRuntime implements Runtime {
     if (!perm) return { list: this.tools, byName: this.toolByName };
     let view = this.views.get(perm.key);
     if (!view) {
-      view = viewOf(this.buildTools(perm).filter((t) => toolAllowed(t.def.name, perm)));
+      const surface = new Set<string>();
+      for (const o of this.operations) if (this.reach(perm.tools, o.id)) surface.add(o.id);
+      view = viewOf(
+        this.buildTools(perm, surface).filter((t) => toolAllowed(t.def.name, perm)),
+        surface,
+      );
       if (this.views.size >= MAX_VIEWS) this.views.delete(this.views.keys().next().value ?? '');
       this.views.set(perm.key, view);
     }
@@ -289,14 +328,15 @@ export class OpenApiRuntime implements Runtime {
     return groups;
   }
 
-  private buildTools(perm?: CallerPermissions): BuiltTool[] {
+  private buildTools(perm?: CallerPermissions, surface?: Set<string>): BuiltTool[] {
     const tools: BuiltTool[] = [];
     for (const g of this.groups) {
       const ops = g.operations.map((id) => this.byId.get(id)!).filter((o) => this.exposed(o, perm));
       if (ops.length === 0) continue;
       const title = g.name.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
 
-      if (ops.length === 1) {
+      // A caller sees a group in the shape the server config gives it, whatever it may use.
+      if (perm ? this.singleOps.has(g.name) : ops.length === 1) {
         const op = ops[0]!;
         const description = [
           g.description,
@@ -386,7 +426,7 @@ export class OpenApiRuntime implements Runtime {
         def: {
           name: SEARCH,
           description:
-            `Search all ${this.operations.length} operations of the ${this.name} API, including ones not listed as tools. ` +
+            `Search all ${surface?.size ?? this.operations.length} operations of the ${this.name} API, including ones not listed as tools. ` +
             `Returns ids, parameters and whether each can be called. Use with ${CALL}.`,
           inputSchema: {
             type: 'object',
@@ -404,7 +444,9 @@ export class OpenApiRuntime implements Runtime {
         },
         summary: { name: SEARCH, kind: 'search', access: 'read', operations: [] },
       });
-      const callable = this.operations.filter((o) => this.exposed(o, perm));
+      const callable = this.operations.filter(
+        (o) => this.exposed(o, perm) && (!surface || surface.has(o.id)),
+      );
       const writes = this.writesEnabled(perm);
       tools.push({
         kind: 'call',
@@ -456,7 +498,7 @@ export class OpenApiRuntime implements Runtime {
   }
 
   listTools(who?: CallerContext): ToolDefinition[] {
-    return this.toolsFor(callerPermissions(this.config, who)).list.map((t) => t.def);
+    return this.toolsFor(this.permissionsOf(who)).list.map((t) => t.def);
   }
 
   summarizeTools(): ToolSummary[] {
@@ -478,7 +520,7 @@ export class OpenApiRuntime implements Runtime {
     ctx?: CallContext,
   ): Promise<ToolResult> {
     // A tool the caller may not use is unknown to it, exactly like one that does not exist.
-    const tool = this.toolsFor(callerPermissions(this.config, ctx)).byName.get(name);
+    const tool = this.toolsFor(this.permissionsOf(ctx)).byName.get(name);
     if (!tool) return errorResult(`Unknown tool "${name}".`);
     const limited = this.guardrails.checkCall(ctx?.caller) ?? this.guardrails.checkTool(name);
     if (limited) return errorResult(limited);
@@ -534,7 +576,9 @@ export class OpenApiRuntime implements Runtime {
         const id = String(rest.operationId ?? '');
         const op =
           this.byId.get(id) ?? this.operations.find((o) => o.id.toLowerCase() === id.toLowerCase());
-        if (!op)
+        // An operation of a group the caller cannot see is unknown to it.
+        const surface = this.toolsFor(this.permissionsOf(ctx)).surface;
+        if (!op || (surface && !surface.has(op.id)))
           return errorResult(`Unknown operationId "${id}". Use ${SEARCH} to find valid ids.`);
         return this.execute(op, asObject(rest.params), parseFlags(control), ctx, tool.def.name);
       }
@@ -542,8 +586,8 @@ export class OpenApiRuntime implements Runtime {
   }
 
   private search(query: string, limit: number, ctx?: CallContext): ToolResult {
-    const perm = callerPermissions(this.config, ctx);
-    const visible = this.toolsFor(perm).list;
+    const perm = this.permissionsOf(ctx);
+    const { list: visible, surface } = this.toolsFor(perm);
     const words = query
       .toLowerCase()
       .replace(/([a-z])([A-Z])/g, '$1 $2')
@@ -553,9 +597,9 @@ export class OpenApiRuntime implements Runtime {
     for (const t of visible)
       if (t.kind === 'group' || t.kind === 'operation')
         for (const o of t.ops) groupOf.set(o.id, t.def.name);
-    const callable = new Set(visible.find((t) => t.kind === 'call')?.ops.map((o) => o.id));
 
     const scored = this.operations
+      .filter((op) => !surface || surface.has(op.id))
       .map((op) => {
         const id = op.id.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
         const hay =
@@ -579,13 +623,12 @@ export class OpenApiRuntime implements Runtime {
     const results = scored.map(({ op }, i) => {
       const d = this.decision(op, perm);
       const rules = this.rules.describe(op.id);
+      // Only operations the caller can reach are searched, so an allowed one is available.
       const status = op.unsupported
         ? `unsupported: ${op.unsupported}`
-        : !d.allowed
-          ? `blocked: ${d.reason}`
-          : groupOf.has(op.id) || callable.has(op.id)
-            ? 'available'
-            : 'blocked: it is in no tool your access token can use.';
+        : d.allowed
+          ? 'available'
+          : `blocked: ${d.reason}`;
       return {
         operationId: op.id,
         method: op.method.toUpperCase(),
@@ -610,7 +653,7 @@ export class OpenApiRuntime implements Runtime {
     ctx: CallContext | undefined,
     tool: string,
   ): Promise<ToolResult> {
-    const perm = callerPermissions(this.config, ctx);
+    const perm = this.permissionsOf(ctx);
     const audit = (outcome: AuditOutcome, extra: Partial<AuditEntry> = {}) =>
       this.guardrails.record({
         tool,

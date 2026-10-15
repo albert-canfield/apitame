@@ -192,7 +192,7 @@ A request without a valid token gets a 401 whose `WWW-Authenticate` header point
 
 #### Different permissions per user
 
-Required scopes decide who may connect. To give users or clients different tools and writes, map scopes and client ids to permissions. They can only narrow the server config:
+Required scopes decide who may connect. To give users or clients different tools and writes, set what every caller gets (`default`) and what scopes and client ids add to it. Permissions can only narrow the server config:
 
 ```yaml
 mode: read-write
@@ -206,14 +206,14 @@ http:
     resource: https://mcp.example.com/mcp
     scopes: [mcp:tools]
     permissions:
+      default: { mode: read-only, tools: [issues, search_operations] }  # every caller
       byScope:
-        mcp:read: { mode: read-only }                     # every write hidden and refused
-        mcp:write: { writes: [createIssue, updateIssue] } # also needs writes.allow
+        mcp:write: { tools: [issues], writes: [createIssue, updateIssue] }  # also needs writes.allow
       byClient:
         release-bot: { tools: [issues], writes: [closeIssue] }
 ```
 
-A caller gets everything its matching entries allow together; a caller that no entry matches gets read-only access (or `permissions.default`). Each caller's `tools/list` shows only what it may use, a refused write names the reason without naming anyone else's permissions, and the audit log records which entries applied. Permissions follow `--watch` reloads. MCP clients request the scopes in `scopes`, so the authorization server decides which other scopes reach a user's token: set it up to add them (by role or group), or use `byClient` for service accounts. The full rules are in [safety.md](safety.md#per-user-permissions).
+Every caller gets `default` (read-only with every tool when unset), and each matching entry adds to it, so `default` must be the least any caller should get. A write runs only when one entry both grants it and reaches it through its own `tools`. Each caller's `tools/list` shows only what it may use, a refused write names the reason without naming anyone else's permissions, and the audit log records which entries applied. Permissions follow `--watch` reloads. MCP clients request the scopes in `scopes`, so the authorization server decides which other scopes reach a user's token: set it up to add them (by role or group), or use `byClient` for service accounts. The full rules are in [safety.md](safety.md#per-user-permissions).
 
 Which authorization servers work: any that issues JWT access tokens. Best is one that puts the resource URL in `aud`, because then a token can only be meant for this server: Keycloak (with an audience mapper), Auth0 (an API whose identifier is the resource URL), or an Okta custom authorization server created for apitame with the resource URL as its audience. If the audience is something else (Microsoft Entra ID puts its Application ID URI or client id there), list it in `audiences`, together with `scopes` or `clients`: such an audience is often shared by other apps, and apitame refuses `audiences` without one of them. Do not point apitame at an audience that every app on the authorization server uses, such as Okta's default `api://default`, without `clients`. Servers that only issue opaque tokens, which need token introspection, are not supported yet.
 

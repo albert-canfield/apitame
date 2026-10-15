@@ -209,7 +209,7 @@ The rules are checked after the parameters are validated and coerced, and before
 
 ## Per-user permissions
 
-Over HTTP with `http.oauth`, each user can get a different part of the server. `http.oauth.permissions` maps token scopes and client ids to what a caller may do:
+Over HTTP with `http.oauth`, each user can get a different part of the server. `http.oauth.permissions` gives every OAuth caller a baseline (`default`) and lets token scopes and client ids add to it:
 
 ```yaml
 mode: read-write
@@ -221,38 +221,40 @@ http:
     resource: https://mcp.example.com/mcp
     scopes: [mcp:tools]
     permissions:
+      # Every OAuth caller: read issues, and operations in no group, nothing else.
+      # Read-only with every tool when unset.
+      default: { mode: read-only, tools: [issues, search_operations, call_operation] }
       byScope:
-        mcp:read: { mode: read-only }
-        mcp:write: { writes: [issues/create, issues/update] }
+        mcp:write: { tools: [issues], writes: [issues/create, issues/update] }
       byClient:
-        triage-bot: { tools: [issues, search_operations], writes: [issues/lock] }
-      # default: { mode: read-only }   # for callers that no entry matches; read-only when unset
+        triage-bot: { tools: [issues], writes: [issues/lock] }
 ```
 
-Each entry can set:
+Each entry, `default` included, can set:
 
 | Field | Meaning |
 | --- | --- |
-| `mode` | `read-only`: no writes for this caller, whatever the server allows. |
-| `writes` | Writes this caller may run, as operation ids, named queries or `*` patterns. A write must also be in `writes.allow`. |
-| `tools` | Tools this caller sees, as names or `*` patterns. The others do not exist for it. |
-
-A field that is not set narrows nothing: `{}` gives the full server config, and an entry without `writes` allows every write in `writes.allow` unless it is read-only.
+| `mode` | `read-only`: this entry grants no writes. |
+| `writes` | Writes this entry grants, as operation ids, named queries or `*` patterns. Unset: every write in `writes.allow`, unless `mode` is read-only. |
+| `tools` | Tools this entry shows, as names or `*` patterns. Unset: every tool. |
 
 How apitame works out what a caller may do:
 
-1. Every entry that matches one of the token's scopes (`byScope`) or its client (`byClient`, the client the audit log records) applies, and the caller gets everything any of them allows: all their writes together, and all their tools together (every tool if one of them does not set `tools`).
-2. A caller that no entry matches gets `default`, or read-only access when `default` is not set.
-3. The result only narrows the server config. A write runs only if `mode` is `read-write`, the write is in `writes.allow` and it is in the caller's writes. So `writes: ["*"]` means every write in `writes.allow` and nothing more, and `mode: read-write` on a read-only server stays read-only. Confirmation rules do not change: a destructive write the caller may run still asks the human.
+1. Every OAuth caller gets `default`. When `default` is not set, that is read-only access with every tool.
+2. Every entry that matches one of the token's scopes (`byScope`) or its client (`byClient`, the client the audit log records) adds to it. Entries can only add: a caller never gets less than `default`, so a token cannot gain access by leaving a scope out. Make `default` the least you want any caller to have, and grant more in entries. An entry that adds nothing to `default` (a `mode: read-only` entry next to a wider `default`, say) has no effect, and apitame warns about it.
+3. Entries add one by one, not field by field. A tool is shown if one of the caller's entries (`default` included) shows it. A write runs only if one single entry both grants it in `writes` and reaches the operation through one of its own `tools`: a group that holds the operation, or `call_operation` for an operation in no group. So an entry that shows every tool but grants no writes and an entry that grants every write in the `issues` tool never combine into a write in another tool. apitame warns about a `writes` pattern that no tool of its own entry reaches.
+4. The result only narrows the server config. A write runs only if `mode` is `read-write` and the write is in `writes.allow` as well. So `writes: ["*"]` means every write in `writes.allow` that the entry's tools reach, and nothing more, and a read-only server stays read-only. Confirmation rules do not change: a destructive write the caller may run still asks the human.
 
 The check is part of the single policy decision (`decide` in `src/safety/policy.ts`), so tool lists, grouped tools, `search_operations`, `call_operation`, SQL named queries and confirmations all agree:
 
-- `tools/list` shows each caller only what it may use, over stateless HTTP, with `--sessions` and on protocol 2026-07-28 alike, worked out on every request from the token it carries. A grouped tool lists only the caller's operations, and `call_operation` describes only what the caller can run.
-- A tool outside the caller's `tools` is answered like a tool that does not exist. A write outside its permissions is refused before anything is sent and before anyone is asked. The reason names only the caller's own matching entries, never anyone else's:
+- `tools/list` shows each caller only what it may use, over stateless HTTP, with `--sessions` and on protocol 2026-07-28 alike, worked out on every request from the token it carries. A grouped tool lists only the caller's operations but keeps its shape (`operation` and `params`) even when one operation is left, and `call_operation` describes only what the caller can run.
+- A hidden tool is answered exactly like a tool that does not exist, SQL named queries included: nothing about its parameters or the caller's entries.
+- The operations of a group the caller cannot see are not reachable through `call_operation` and not listed by `search_operations` either: they answer like an unknown operation id. Operations in no group stay reachable through `call_operation` for callers who see it. So `tools` limits reads as well as writes.
+- A write the caller can see but may not run is refused before anything is sent and before anyone is asked. Through `call_operation` the reason names only the caller's own matching entries, never anyone else's:
 
   ```text
   Blocked: "issues/lock" is a write operation and your access token allows read-only access.
-  What a token may do depends on its scopes and client (scope mcp:read). If the user needs this, tell them: only whoever runs this server can grant it.
+  What a token may do depends on its scopes and client (only the default: no entry in http.oauth.permissions matches them). If the user needs this, tell them: only whoever runs this server can grant it.
   ```
 
 - [Argument rules](#argument-rules) come after permissions: a caller that may not use a write is refused as such, whatever its arguments, and rules still apply to every caller that may.
@@ -261,9 +263,13 @@ The check is part of the single policy decision (`decide` in `src/safety/policy.
 
 Over stdio, with `APITAME_HTTP_TOKEN` and over HTTP without authentication there is no OAuth caller, and the server config applies unchanged.
 
-A name in `tools` or `writes` that matches no tool or operation (a typo, or an operation a new version of the spec dropped), and a `writes` pattern that only matches operations outside `writes.allow`, grant nothing. They can only give a caller less, never more, so they are warnings, not errors, as for `writes.rules`: `serve` logs them at startup and on every `--watch` reload, `doctor` reports them under Config, and `inspect` lists them. Mistakes in the shape of the config are still errors: a wrong type, `mode: read-only` together with `writes`, or a scope written directly under `permissions` instead of under `byScope`. Changes to `permissions` apply on a `--watch` reload without a restart, and connected clients are told that the tool list changed.
+The server instructions sent when a client connects and the skills served as MCP resources describe the server config, not the caller's part of it: a caller can read there about tools it does not see, although it cannot call them. Instructions and skills per caller are left for later.
 
-Which scopes a token carries is up to the authorization server. MCP clients ask for the scopes apitame advertises, which are the required `http.oauth.scopes`, so a permission scope only reaches a token when the authorization server adds it for that user or client, or when the client is set up to request it. `byClient` needs nothing beyond the client id, which suits service accounts and single-purpose clients. Entries add up, so a `byClient` entry cannot take away what a scope grants: to keep a client read-only whatever its users may do, have the authorization server issue no write scope to it.
+Names in `tools` or `writes` that match no tool or operation (a typo, or an operation a new version of the spec dropped), `writes` patterns that grant nothing (outside `writes.allow`, or out of reach of the entry's own tools) and entries that add nothing to `default` can only give a caller less, never more. So they are warnings, not errors, as for `writes.rules`: `serve` logs them at startup and on every `--watch` reload, `doctor` reports them under Config, and `inspect` lists them. Mistakes in the shape of the config are still errors: a wrong type, `mode: read-only` together with `writes`, or a scope written directly under `permissions` instead of under `byScope`.
+
+Changes to `permissions` apply on a `--watch` reload without a restart, and connected clients are told that the tool list changed. A call that is already waiting for a human approval on a 2025-era connection when a reload narrows the permissions finishes on the runtime it started on; the next call uses the new permissions. A reload that removes or changes the rest of `http.oauth` is refused while apitame checks OAuth tokens: the transport keeps the settings it started with, and without `http.oauth` the reloaded config would serve OAuth callers without their permissions. apitame keeps serving the previous config and logs that a restart is needed.
+
+Which scopes a token carries is up to the authorization server. MCP clients ask for the scopes apitame advertises, which are the required `http.oauth.scopes`, so a permission scope only reaches a token when the authorization server adds it for that user or client, or when the client is set up to request it. `byClient` needs nothing beyond the client id, which suits service accounts and single-purpose clients. Since entries only add, a `byClient` entry cannot take away what a scope grants: to keep a client read-only whatever its users may do, have the authorization server issue no write scope to it.
 
 ## Rate limits
 
@@ -316,7 +322,7 @@ With a file set, apitame appends one JSON object per line:
 - `declined` means the human did not approve, or that apitame could not ask under `confirmation.method: elicitation` (with the reason `unauthenticated HTTP` when that is because HTTP runs without authentication). `approval-refused` means a 2026-07-28 approval id was refused, whatever the answer said, with the `reason`: `unknown` (never issued, or changed), `used` (sent again), `expired`, or `mismatch` (other arguments, another operation or another user). A forged or replayed approval therefore never looks like a human decision.
 - `include: all` records reads too.
 - Arguments go through the redactor and are capped at 2,000 characters. The file is created with owner-only permissions (`0600`).
-- Over HTTP with `http.oauth`, each entry also names the token's client and subject (`"client"`, `"subject"`), each when the token carries it, so you can tell which user's agent made the call. With `http.oauth.permissions`, `"permissions"` lists the entries that applied to that user, such as `["byScope.mcp:write"]`, `["byClient.triage-bot"]` or `["default"]`.
+- Over HTTP with `http.oauth`, each entry also names the token's client and subject (`"client"`, `"subject"`), each when the token carries it, so you can tell which user's agent made the call. With `http.oauth.permissions`, `"permissions"` lists the entries that applied to that user: `default` first, then the matching ones, such as `["default", "byScope.mcp:write"]` or `["default"]`.
 - If the file cannot be written, apitame logs one error and keeps serving; tool calls never fail because of the audit log.
 
 ## Secrets
@@ -354,7 +360,7 @@ The test suite checks that a bearer token echoed back by an API, OAuth client se
 - **DuckDB functions apitame does not know yet.** DuckDB runs some functions that change the engine even on a read-only database with a locked configuration (`enable_logging(storage = 'stdout')` prints to standard output, the MCP channel over stdio; `enable_peg_parser()` switches the parser). The known ones are refused by name in the lexer and the parser, table functions must be on a reviewed list, a fresh instance per call limits any change to one call, and the process's output never reaches the MCP channel, but a scalar function added by a future DuckDB release with such an effect would only be caught once it is added to the list. The driver is pinned to the tested release in client configs for this reason.
 - **Prompt injection in data.** apitame does not filter what an API or table returns. If a record says "ignore previous instructions", the agent sees it. The safety layers make sure such instructions cannot trigger writes you did not allow.
 - **Side effects of reads.** Some APIs change state on GET (counters, "mark as read"). apitame classifies by HTTP method; mark such operations with `writes.destructive` or `x-apitame-access`.
-- **One set of credentials for every user.** With `http.oauth`, apitame calls the API or database with the credentials from the config, whoever the user is. [Per-user permissions](#per-user-permissions) decide inside apitame which tools and writes each user gets, but the API sees one client, so its own per-user rules and logs do not apply. Reads are only limited per user through `tools`. Over stdio, with `APITAME_HTTP_TOKEN` and without authentication there are no users to tell apart, so everyone gets the server config.
+- **One set of credentials for every user.** With `http.oauth`, apitame calls the API or database with the credentials from the config, whoever the user is. [Per-user permissions](#per-user-permissions) decide inside apitame which tools and writes each user gets, but the API sees one client, so its own per-user rules and logs do not apply. Reads are only limited per user through `tools` (a hidden group takes its operations out of `call_operation` and `search_operations` too). Over stdio, with `APITAME_HTTP_TOKEN` and without authentication there are no users to tell apart, so everyone gets the server config.
 - **A client that auto-approves and an agent that self-confirms.** See the token flow note above. Use elicitation or client-side approval when it matters.
 - **Your config file.** Whoever can edit `apitame.config.yaml` can allow anything. Review changes to it like code.
 - **The spec.** The OpenAPI document decides which operations exist and can mark them with `x-apitame-access` (for example `read` on an endpoint that deletes). A spec loaded from a URL is trusted like the config: point `source.spec` at a URL you control or pin to a version, or keep a reviewed copy next to the config.

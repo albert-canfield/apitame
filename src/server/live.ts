@@ -29,6 +29,7 @@ export class LiveRuntime {
   private listeners: Array<(r: { toolsChanged: boolean; skillsChanged: boolean }) => void> = [];
   private dotenvKeys: string[] = [];
   private reloading: Promise<boolean> | undefined;
+  private checks: Array<(next: LoadedConfig) => string | undefined> = [];
 
   private constructor(
     private readonly configPath: string,
@@ -52,6 +53,14 @@ export class LiveRuntime {
     return live;
   }
 
+  /**
+   * Refuse a reload when `check` returns a reason: the previous config keeps being served and
+   * the reason is logged as the error.
+   */
+  refuseReloadIf(check: (next: LoadedConfig) => string | undefined): void {
+    this.checks.push(check);
+  }
+
   /** Called after every successful reload. */
   onReload(listener: (r: { toolsChanged: boolean; skillsChanged: boolean }) => void): void {
     this.listeners.push(listener);
@@ -73,6 +82,10 @@ export class LiveRuntime {
     let keys: string[] = [];
     try {
       const loaded = loadConfig(this.configPath);
+      for (const check of this.checks) {
+        const refused = check(loaded);
+        if (refused) throw new Error(refused);
+      }
       keys = loadDotEnv(loaded.dir);
       const runtime = await createRuntime(loaded, { redactor, logger, dotenv: false });
       const skills = loadSkills(resolve(loaded.dir, loaded.config.skills.dir), skipped(logger));
