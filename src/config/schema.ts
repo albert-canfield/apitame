@@ -18,17 +18,56 @@ const envRef = (field: string) =>
  * cannot silently turn a setting off. `hints` suggests where a misplaced key belongs.
  */
 const unknownKeys =
-  (hints: Record<string, string> = {}) =>
+  (hints: Record<string, string> = {}, otherwise?: string) =>
   (issue: { code?: string; keys?: string[] }) => {
     if (issue.code !== 'unrecognized_keys' || !issue.keys) return undefined;
     return issue.keys
-      .map((k) => `Unknown key "${k}"${hints[k] ? ` (${hints[k]})` : ''}`)
+      .map((k) => {
+        const hint = Object.hasOwn(hints, k) ? hints[k] : otherwise;
+        return `Unknown key "${k}"${hint ? ` (${hint})` : ''}`;
+      })
       .join('; ');
   };
 
 /** Why `http.oauth.audiences` needs `scopes` or `clients` next to it. */
 export const AUDIENCES_NEED_A_FILTER =
   'audiences accepts tokens that do not name this server, and such an audience is often shared by every app on the authorization server (for example api://default on Okta). Also set scopes or clients, so that only tokens meant for apitame are accepted.';
+
+/**
+ * What one entry of `http.oauth.permissions` lets a caller do. Every field narrows the server
+ * config; a field that is not set does not narrow it.
+ */
+export const PermissionSchema = z
+  .strictObject(
+    {
+      /** `read-only`: no writes for this caller, whatever the server allows. */
+      mode: z.enum(['read-only', 'read-write']).optional(),
+      /** Writes this caller may run, as ids or `*` patterns. Also needs `writes.allow`. */
+      writes: z.array(z.string().min(1)).optional(),
+      /** Tools this caller sees, as names or `*` patterns. */
+      tools: z.array(z.string().min(1)).optional(),
+    },
+    { error: unknownKeys({ allow: 'did you mean writes?', operations: 'did you mean writes?' }) },
+  )
+  .refine((p) => !(p.mode === 'read-only' && p.writes && p.writes.length > 0), {
+    message: 'writes has no effect with mode: read-only. Remove one of them.',
+  });
+
+/** Per-caller permissions for OAuth callers, by token scope and by client id. */
+export const PermissionsSchema = z.strictObject(
+  {
+    byScope: z.record(z.string().min(1), PermissionSchema).default({}),
+    byClient: z.record(z.string().min(1), PermissionSchema).default({}),
+    /** For callers that no entry matches. Unset: read-only. */
+    default: PermissionSchema.optional(),
+  },
+  {
+    error: unknownKeys(
+      { scopes: 'did you mean byScope?', clients: 'did you mean byClient?' },
+      'put scopes under byScope and client ids under byClient',
+    ),
+  },
+);
 
 const toolName = z
   .string()
@@ -245,6 +284,18 @@ export const ConfigSchema = z
           maxWritesPerMinute: z.number().int().min(0).max(100_000).default(20),
           /** Calls per minute for individual tools, on top of the server-wide limits. */
           perTool: z.record(z.string(), z.number().int().min(1).max(100_000)).default({}),
+          /** Limits for each OAuth caller (client and subject), on top of the server-wide ones. */
+          perCaller: z
+            .strictObject(
+              {
+                /** Tool calls per minute for one caller. 0 means no per-caller limit. */
+                maxCallsPerMinute: z.number().int().min(0).max(100_000).default(0),
+                /** Writes per minute for one caller. 0 means no per-caller limit. */
+                maxWritesPerMinute: z.number().int().min(0).max(100_000).default(0),
+              },
+              { error: unknownKeys() },
+            )
+            .prefault({}),
         })
         .prefault({}),
       audit: z
@@ -333,6 +384,8 @@ export const ConfigSchema = z
                   /** Require the RFC 9068 token type (`typ: at+jwt`) in the token header. */
                   requireAccessTokenType: z.boolean().default(false),
                   jwksUri: z.string().url().optional(),
+                  /** What each caller may do, by token scope or client. Only narrows the config. */
+                  permissions: PermissionsSchema.optional(),
                 },
                 {
                   error: unknownKeys({
@@ -340,6 +393,7 @@ export const ConfigSchema = z
                     audience: 'did you mean audiences?',
                     client: 'did you mean clients?',
                     jwks_uri: 'did you mean jwksUri?',
+                    permission: 'did you mean permissions?',
                   }),
                 },
               )
@@ -414,3 +468,5 @@ export type AuthConfig = z.infer<typeof AuthSchema>;
 export type SourceConfig = z.infer<typeof SourceSchema>;
 export type ToolGroupConfig = z.infer<typeof ToolGroupSchema>;
 export type NamedQueryConfig = z.infer<typeof NamedQuerySchema>;
+export type PermissionConfig = z.infer<typeof PermissionSchema>;
+export type PermissionsConfig = z.infer<typeof PermissionsSchema>;

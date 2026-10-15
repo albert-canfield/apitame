@@ -76,8 +76,12 @@ export class LiveRuntime {
       keys = loadDotEnv(loaded.dir);
       const runtime = await createRuntime(loaded, { redactor, logger, dotenv: false });
       const skills = loadSkills(resolve(loaded.dir, loaded.config.skills.dir), skipped(logger));
+      // Per-caller permissions change what each OAuth caller sees, even when the server's own
+      // list stays the same.
+      const permissions = (l: LoadedConfig) => JSON.stringify(l.config.http.oauth?.permissions);
       const toolsChanged =
-        JSON.stringify(runtime.listTools()) !== JSON.stringify(this.runtime.listTools());
+        JSON.stringify(runtime.listTools()) !== JSON.stringify(this.runtime.listTools()) ||
+        permissions(loaded) !== permissions(this.loaded);
       const skillsChanged =
         JSON.stringify(skills.map((s) => [s.name, s.files.map((f) => f.bytes.length)])) !==
         JSON.stringify(this.skills.map((s) => [s.name, s.files.map((f) => f.bytes.length)]));

@@ -190,6 +190,31 @@ All the keys are described in [configuration.md](configuration.md#http). On ever
 
 A request without a valid token gets a 401 whose `WWW-Authenticate` header points to `https://mcp.example.com/.well-known/oauth-protected-resource/mcp`. That document (RFC 9728) is public and names the authorization server, so MCP clients that support OAuth start the sign-in on their own. Clients register with the authorization server (dynamic client registration, a client ID metadata document, or a client created there by hand), never with apitame.
 
+#### Different permissions per user
+
+Required scopes decide who may connect. To give users or clients different tools and writes, map scopes and client ids to permissions. They can only narrow the server config:
+
+```yaml
+mode: read-write
+writes:
+  allow: [createIssue, updateIssue, closeIssue]
+limits:
+  perCaller: { maxCallsPerMinute: 60, maxWritesPerMinute: 10 }   # each user's own budget
+http:
+  oauth:
+    issuer: https://login.example.com/realms/tools
+    resource: https://mcp.example.com/mcp
+    scopes: [mcp:tools]
+    permissions:
+      byScope:
+        mcp:read: { mode: read-only }                     # every write hidden and refused
+        mcp:write: { writes: [createIssue, updateIssue] } # also needs writes.allow
+      byClient:
+        release-bot: { tools: [issues], writes: [closeIssue] }
+```
+
+A caller gets everything its matching entries allow together; a caller that no entry matches gets read-only access (or `permissions.default`). Each caller's `tools/list` shows only what it may use, a refused write names the reason without naming anyone else's permissions, and the audit log records which entries applied. Permissions follow `--watch` reloads. MCP clients request the scopes in `scopes`, so the authorization server decides which other scopes reach a user's token: set it up to add them (by role or group), or use `byClient` for service accounts. The full rules are in [safety.md](safety.md#per-user-permissions).
+
 Which authorization servers work: any that issues JWT access tokens. Best is one that puts the resource URL in `aud`, because then a token can only be meant for this server: Keycloak (with an audience mapper), Auth0 (an API whose identifier is the resource URL), or an Okta custom authorization server created for apitame with the resource URL as its audience. If the audience is something else (Microsoft Entra ID puts its Application ID URI or client id there), list it in `audiences`, together with `scopes` or `clients`: such an audience is often shared by other apps, and apitame refuses `audiences` without one of them. Do not point apitame at an audience that every app on the authorization server uses, such as Okta's default `api://default`, without `clients`. Servers that only issue opaque tokens, which need token introspection, are not supported yet.
 
 Good to know:
@@ -198,11 +223,11 @@ Good to know:
 - With `scopes` empty, apitame logs a warning at startup: any token the authorization server issues for this audience is then accepted.
 - At startup apitame loads the signing keys and logs how many it found. If the authorization server cannot be reached, it logs the error and keeps running; tokens are refused until the keys load, which it tries again when requests arrive. It fetches the keys again when a token names an unknown key (at most once a minute), so key rotation needs no restart. Known keys are refreshed every hour in the background; a slow or unreachable authorization server never holds up requests whose key is already known.
 - The issuer's metadata and keys are fetched without following redirects, and each document may be at most 1 MB, so `issuer` and `jwksUri` must be the final URLs.
-- Changes to `http.oauth` need a restart. With `--watch`, apitame warns when `http.oauth` was added, removed or changed since it started.
+- Changes to `http.oauth` need a restart, except `permissions`, which apply on a `--watch` reload. With `--watch`, apitame warns when the rest of `http.oauth` was added, removed or changed since it started.
 - Revoking a token at the authorization server takes effect when the token expires: apitame checks tokens locally and does not ask the server about each one. Keep access tokens short-lived. When the token that opened a stream expires, apitame closes the stream, and the client has to come back with a fresh token.
 - If apitame listens on `127.0.0.1` behind a reverse proxy on the same machine, the Host check also accepts the host name of `resource`, and the Origin check its origin.
 - apitame reads the client from `client_id`, `azp`, `cid` or `appid` (the first one present) and the user from `sub`, and keeps them apart. With `--sessions`, a session belongs to that client and user: another token cannot use its id, each user can hold at most 10 sessions, and making room only ever closes that user's own idle sessions. A token that names neither a client nor a user cannot start a session. The audit log records both (`client`, `subject`).
-- Rate limits are per server, not per user (see [safety.md](safety.md#rate-limits)).
+- Rate limits are per server unless you set `limits.perCaller`, which gives each user (client and subject) a budget of their own on top (see [safety.md](safety.md#rate-limits)).
 - `--log-level debug` logs why a token was refused. The 401 body says it too.
 
 ## Pinning and local builds

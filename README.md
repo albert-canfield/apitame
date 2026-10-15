@@ -159,7 +159,7 @@ Or: `codex mcp add github -- npx -y apitame@0.2 serve --config /abs/path/apitame
 
 </details>
 
-Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp` (destructive actions are approved in the client: right away for clients on MCP protocol 2026-07-28, with `--sessions` for older clients). To share it with a team, `http.oauth` lets your identity provider sign each user in and apitame check their access tokens. More in [docs/clients.md](docs/clients.md).
+Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp` (destructive actions are approved in the client: right away for clients on MCP protocol 2026-07-28, with `--sessions` for older clients). To share it with a team, `http.oauth` lets your identity provider sign each user in and apitame check their access tokens, and `http.oauth.permissions` gives each scope or client its own tools and writes. More in [docs/clients.md](docs/clients.md).
 
 ## What the agent sees
 
@@ -207,7 +207,7 @@ apitame assumes the agent will eventually call the wrong thing, and makes that b
 | Secrets | Credentials come only from environment variables (inline secrets in the config are refused) and are redacted from results, errors, logs and previews, even when an API echoes them back. |
 | HTTP transport | Loopback only by default, with Host and Origin checks. Listening on another interface requires a bearer token, or OAuth access tokens from your identity provider. |
 | Outgoing requests | Path parameters cannot be `.` or `..`; credentials never follow a redirect to another host; files are passed inline, never as local paths, and uploads are capped. |
-| Rate limits | By default 120 calls and 20 writes per minute, so a looping agent cannot hammer an API or database. |
+| Rate limits | By default 120 calls and 20 writes per minute, so a looping agent cannot hammer an API or database. With OAuth, each user can also get a budget of their own. |
 | Audit log | Optional JSON Lines record of every write attempt (blocked, dry run, confirmed, sent) and every refused query, with secrets redacted. |
 
 For SQL, every free-form query passes four independent layers:

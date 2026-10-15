@@ -67,7 +67,15 @@ export interface CallContext {
   signal?: AbortSignal;
   /** Who made the call, when the HTTP transport checked an OAuth access token. Audited. */
   caller?: { client?: string; subject?: string };
+  /**
+   * The scopes of that access token. With `caller`, they select the caller's permissions
+   * (`http.oauth.permissions`). Not audited: the audit log names the entries that applied.
+   */
+  scopes?: string[];
 }
+
+/** Who is asking, for the tools a caller may see. Without `caller`, the server config applies. */
+export type CallerContext = Pick<CallContext, 'caller' | 'scopes'>;
 
 /** Summary row used by `inspect` and the generators. */
 export interface ToolSummary {
@@ -84,7 +92,8 @@ export interface Runtime {
   readonly mode: 'read-only' | 'read-write';
   /** Server instructions sent during the MCP handshake. */
   instructions(): string;
-  listTools(): ToolDefinition[];
+  /** The tools to list. With an OAuth caller, only the ones that caller may use. */
+  listTools(who?: CallerContext): ToolDefinition[];
   summarizeTools(): ToolSummary[];
   callTool(name: string, args: Record<string, unknown>, ctx?: CallContext): Promise<ToolResult>;
   close(): Promise<void>;

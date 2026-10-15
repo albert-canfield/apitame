@@ -4,6 +4,12 @@ import type { Config, ToolGroupConfig } from '../config/schema.js';
 import { Logger } from '../log.js';
 import { ConfirmationStore, confirmOrChallenge } from '../safety/confirm.js';
 import { Guardrails, type AuditEntry, type AuditOutcome } from '../safety/guardrails.js';
+import {
+  callerPermissions,
+  checkPermissions,
+  toolAllowed,
+  type CallerPermissions,
+} from '../safety/permissions.js';
 import { decide, type Decision } from '../safety/policy.js';
 import { REDACTED, Redactor } from '../safety/redact.js';
 import { WriteRules } from '../safety/rules.js';
@@ -18,6 +24,7 @@ import { truncate } from '../sources/openapi/schema.js';
 import type {
   Access,
   CallContext,
+  CallerContext,
   JsonSchema,
   Runtime,
   ToolAnnotations,
@@ -54,6 +61,20 @@ interface BuiltTool {
   /** Single-operation tools: API parameters exposed under another name (`api_confirm` -> `confirm`). */
   renamed?: Record<string, string>;
 }
+
+/** The tools one caller sees, by name too. */
+interface ToolView {
+  list: BuiltTool[];
+  byName: Map<string, BuiltTool>;
+}
+
+const viewOf = (list: BuiltTool[]): ToolView => ({
+  list,
+  byName: new Map(list.map((t) => [t.def.name, t])),
+});
+
+/** Tool lists kept for callers with different permissions. Each is rebuilt when evicted. */
+const MAX_VIEWS = 32;
 
 /** Arguments that steer apitame itself rather than the API. */
 const CONTROL_ARGS = ['dryRun', 'confirm', 'fields'] as const;
@@ -99,8 +120,11 @@ export class OpenApiRuntime implements Runtime {
   /** `writes.rules`, checked before any write is previewed, confirmed or sent. */
   readonly rules: WriteRules;
 
+  private readonly groups: ToolGroupConfig[];
   private readonly tools: BuiltTool[];
   private readonly toolByName: Map<string, BuiltTool>;
+  /** Tool lists for OAuth callers whose permissions narrow the server config, by permission set. */
+  private readonly views = new Map<string, ToolView>();
   private readonly validator = new ArgValidator();
   private readonly confirmations: ConfirmationStore;
   private readonly guardrails: Guardrails;
@@ -165,20 +189,32 @@ export class OpenApiRuntime implements Runtime {
       this.warnings.push((err as Error).message);
     }
 
+    this.groups = this.resolveGroups();
     this.tools = this.buildTools();
     this.toolByName = new Map(this.tools.map((t) => [t.def.name, t]));
+    this.warnings.push(
+      ...checkPermissions(config, {
+        tools: [
+          ...config.tools.map((g) => g.name),
+          ...(config.longTail.enabled ? [SEARCH, CALL] : []),
+        ],
+        operations: this.operations.map((o) => ({ id: o.id, write: o.access !== 'read' })),
+        noun: 'operation',
+      }),
+    );
   }
 
-  private policy() {
-    return { mode: this.config.mode, writes: this.config.writes };
+  /** The server config, narrowed by an OAuth caller's permissions when there are any. */
+  private policy(perm?: CallerPermissions) {
+    return { mode: this.config.mode, writes: this.config.writes, caller: perm };
   }
 
-  private decision(op: Operation): Decision {
-    return decide(op.id, op.access, this.policy());
+  private decision(op: Operation, perm?: CallerPermissions): Decision {
+    return decide(op.id, op.access, this.policy(perm));
   }
 
-  private exposed(op: Operation): boolean {
-    return !op.unsupported && this.decision(op).allowed;
+  private exposed(op: Operation, perm?: CallerPermissions): boolean {
+    return !op.unsupported && this.decision(op, perm).allowed;
   }
 
   /** The argument rules of a write, as one line for its tool description. */
@@ -187,11 +223,26 @@ export class OpenApiRuntime implements Runtime {
     return text ? `Rules: ${text}.` : '';
   }
 
-  private writesEnabled(): boolean {
-    return this.operations.some((o) => o.access !== 'read' && this.exposed(o));
+  private writesEnabled(perm?: CallerPermissions): boolean {
+    return this.operations.some((o) => o.access !== 'read' && this.exposed(o, perm));
   }
 
-  private safetyProps(ops: Operation[]): Record<string, JsonSchema> {
+  /**
+   * The tools a caller sees: the server's own list without permissions, else a list built for
+   * the caller's permission set (only operations and tools it may use) and kept for reuse.
+   */
+  private toolsFor(perm: CallerPermissions | undefined): ToolView {
+    if (!perm) return { list: this.tools, byName: this.toolByName };
+    let view = this.views.get(perm.key);
+    if (!view) {
+      view = viewOf(this.buildTools(perm).filter((t) => toolAllowed(t.def.name, perm)));
+      if (this.views.size >= MAX_VIEWS) this.views.delete(this.views.keys().next().value ?? '');
+      this.views.set(perm.key, view);
+    }
+    return view;
+  }
+
+  private safetyProps(ops: Operation[], perm?: CallerPermissions): Record<string, JsonSchema> {
     const props: Record<string, JsonSchema> = {};
     // Explained once in the server instructions, so no per-tool description.
     if (ops.some((o) => o.response)) props.fields = { type: 'array', items: { type: 'string' } };
@@ -203,7 +254,7 @@ export class OpenApiRuntime implements Runtime {
     }
     if (
       ops.some((o) => {
-        const d = this.decision(o);
+        const d = this.decision(o, perm);
         return d.allowed && d.needsConfirmation;
       })
     ) {
@@ -238,10 +289,10 @@ export class OpenApiRuntime implements Runtime {
     return groups;
   }
 
-  private buildTools(): BuiltTool[] {
+  private buildTools(perm?: CallerPermissions): BuiltTool[] {
     const tools: BuiltTool[] = [];
-    for (const g of this.resolveGroups()) {
-      const ops = g.operations.map((id) => this.byId.get(id)!).filter((o) => this.exposed(o));
+    for (const g of this.groups) {
+      const ops = g.operations.map((id) => this.byId.get(id)!).filter((o) => this.exposed(o, perm));
       if (ops.length === 0) continue;
       const title = g.name.replace(/_/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
 
@@ -249,7 +300,7 @@ export class OpenApiRuntime implements Runtime {
         const op = ops[0]!;
         const description = [
           g.description,
-          `${operationTitle(op)} (${op.method.toUpperCase()} ${op.path})${tag(op, this.decision(op))}`,
+          `${operationTitle(op)} (${op.method.toUpperCase()} ${op.path})${tag(op, this.decision(op, perm))}`,
           this.rulesLine(op),
         ]
           .filter(Boolean)
@@ -257,7 +308,7 @@ export class OpenApiRuntime implements Runtime {
         // dryRun and confirm keep their meaning. An API parameter with the same name is
         // exposed as api_<name>, so an agent can never send a "dry run" to the API for real.
         // An API's own `fields` wins over field selection: the API trims server-side.
-        const controls = this.safetyProps(ops);
+        const controls = this.safetyProps(ops, perm);
         const reserved = (k: string) => k in controls && k !== 'fields';
         const renamed: Record<string, string> = {};
         const props: Record<string, JsonSchema> = {};
@@ -292,7 +343,7 @@ export class OpenApiRuntime implements Runtime {
 
       const lines = ops.map((op) => {
         const rules = this.rulesLine(op);
-        return `- ${signature(op)}${tag(op, this.decision(op))}: ${operationTitle(op)}${rules ? `\n  ${rules}` : ''}`;
+        return `- ${signature(op)}${tag(op, this.decision(op, perm))}: ${operationTitle(op)}${rules ? `\n  ${rules}` : ''}`;
       });
       const description = [
         g.description,
@@ -312,7 +363,7 @@ export class OpenApiRuntime implements Runtime {
             properties: {
               operation: { type: 'string', enum: ops.map((o) => o.id) },
               params: { type: 'object', description: 'Arguments for the chosen operation.' },
-              ...this.safetyProps(ops),
+              ...this.safetyProps(ops, perm),
             },
             required: ['operation'],
             additionalProperties: false,
@@ -353,8 +404,8 @@ export class OpenApiRuntime implements Runtime {
         },
         summary: { name: SEARCH, kind: 'search', access: 'read', operations: [] },
       });
-      const callable = this.operations.filter((o) => this.exposed(o));
-      const writes = this.writesEnabled();
+      const callable = this.operations.filter((o) => this.exposed(o, perm));
+      const writes = this.writesEnabled(perm);
       tools.push({
         kind: 'call',
         ops: callable,
@@ -370,7 +421,7 @@ export class OpenApiRuntime implements Runtime {
             properties: {
               operationId: { type: 'string' },
               params: { type: 'object', description: 'Arguments, as listed by search_operations.' },
-              ...this.safetyProps(callable),
+              ...this.safetyProps(callable, perm),
             },
             required: ['operationId'],
             additionalProperties: false,
@@ -404,8 +455,8 @@ export class OpenApiRuntime implements Runtime {
     return parts.filter(Boolean).join(' ');
   }
 
-  listTools(): ToolDefinition[] {
-    return this.tools.map((t) => t.def);
+  listTools(who?: CallerContext): ToolDefinition[] {
+    return this.toolsFor(callerPermissions(this.config, who)).list.map((t) => t.def);
   }
 
   summarizeTools(): ToolSummary[] {
@@ -426,9 +477,10 @@ export class OpenApiRuntime implements Runtime {
     args: Record<string, unknown>,
     ctx?: CallContext,
   ): Promise<ToolResult> {
-    const tool = this.toolByName.get(name);
+    // A tool the caller may not use is unknown to it, exactly like one that does not exist.
+    const tool = this.toolsFor(callerPermissions(this.config, ctx)).byName.get(name);
     if (!tool) return errorResult(`Unknown tool "${name}".`);
-    const limited = this.guardrails.checkCall() ?? this.guardrails.checkTool(name);
+    const limited = this.guardrails.checkCall(ctx?.caller) ?? this.guardrails.checkTool(name);
     if (limited) return errorResult(limited);
     try {
       return await this.dispatch(tool, args ?? {}, ctx);
@@ -447,7 +499,7 @@ export class OpenApiRuntime implements Runtime {
 
     switch (tool.kind) {
       case 'search':
-        return this.search(String(args.query ?? ''), Number(args.limit ?? 8));
+        return this.search(String(args.query ?? ''), Number(args.limit ?? 8), ctx);
       case 'operation': {
         const op = tool.ops[0]!;
         const own = (op.inputSchema.properties ?? {}) as Record<string, unknown>;
@@ -489,16 +541,19 @@ export class OpenApiRuntime implements Runtime {
     }
   }
 
-  private search(query: string, limit: number): ToolResult {
+  private search(query: string, limit: number, ctx?: CallContext): ToolResult {
+    const perm = callerPermissions(this.config, ctx);
+    const visible = this.toolsFor(perm).list;
     const words = query
       .toLowerCase()
       .replace(/([a-z])([A-Z])/g, '$1 $2')
       .split(/[^a-z0-9]+/)
       .filter((w) => w.length > 1);
     const groupOf = new Map<string, string>();
-    for (const t of this.tools)
+    for (const t of visible)
       if (t.kind === 'group' || t.kind === 'operation')
         for (const o of t.ops) groupOf.set(o.id, t.def.name);
+    const callable = new Set(visible.find((t) => t.kind === 'call')?.ops.map((o) => o.id));
 
     const scored = this.operations
       .map((op) => {
@@ -522,13 +577,15 @@ export class OpenApiRuntime implements Runtime {
       .slice(0, Math.min(Math.max(1, limit || 8), 25));
 
     const results = scored.map(({ op }, i) => {
-      const d = this.decision(op);
+      const d = this.decision(op, perm);
       const rules = this.rules.describe(op.id);
       const status = op.unsupported
         ? `unsupported: ${op.unsupported}`
-        : d.allowed
-          ? 'available'
-          : `blocked: ${d.reason}`;
+        : !d.allowed
+          ? `blocked: ${d.reason}`
+          : groupOf.has(op.id) || callable.has(op.id)
+            ? 'available'
+            : 'blocked: it is in no tool your access token can use.';
       return {
         operationId: op.id,
         method: op.method.toUpperCase(),
@@ -553,6 +610,7 @@ export class OpenApiRuntime implements Runtime {
     ctx: CallContext | undefined,
     tool: string,
   ): Promise<ToolResult> {
+    const perm = callerPermissions(this.config, ctx);
     const audit = (outcome: AuditOutcome, extra: Partial<AuditEntry> = {}) =>
       this.guardrails.record({
         tool,
@@ -561,11 +619,12 @@ export class OpenApiRuntime implements Runtime {
         outcome,
         args: params,
         caller: ctx?.caller,
+        ...(perm ? { permissions: perm.applied } : {}),
         ...extra,
       });
     if (op.unsupported) return errorResult(`"${op.id}" cannot be called: ${op.unsupported}.`);
 
-    const decision = this.decision(op);
+    const decision = this.decision(op, perm);
     if (!decision.allowed) {
       audit('blocked', { reason: decision.reason });
       return errorResult(`Blocked: ${decision.reason}\n${decision.hint}`);
@@ -628,7 +687,7 @@ export class OpenApiRuntime implements Runtime {
     }
 
     // Checked before asking: a call that would be rate-limited must not use up a human approval.
-    const limitedBefore = op.access !== 'read' ? this.guardrails.peekWrite() : undefined;
+    const limitedBefore = op.access !== 'read' ? this.guardrails.peekWrite(ctx?.caller) : undefined;
     if (limitedBefore) {
       audit('rate-limited');
       return errorResult(limitedBefore);
@@ -651,7 +710,7 @@ export class OpenApiRuntime implements Runtime {
     }
 
     if (op.access !== 'read') {
-      const limited = this.guardrails.checkWrite();
+      const limited = this.guardrails.checkWrite(ctx?.caller);
       if (limited) {
         audit('rate-limited');
         return errorResult(limited);

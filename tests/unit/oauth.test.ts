@@ -575,6 +575,13 @@ describe('JwtVerifier: token types and identity', () => {
     expect(oauthChange(undefined, cfg)).toMatch(/was added; restart/);
     expect(oauthChange(cfg, undefined)).toMatch(/was removed; restart/);
     expect(oauthChange(cfg, { ...cfg, scopes: [] })).toMatch(/changed; restart/);
+    // Permissions apply on reload, so changing only them needs no restart.
+    const permissions = { byScope: { 'mcp:read': { mode: 'read-only' } }, byClient: {} };
+    expect(oauthChange(cfg, { ...cfg, permissions })).toBeUndefined();
+    expect(oauthChange({ ...cfg, permissions }, cfg)).toBeUndefined();
+    expect(oauthChange({ ...cfg, permissions }, { ...cfg, permissions, scopes: [] })).toMatch(
+      /changed; restart/,
+    );
   });
 });
 

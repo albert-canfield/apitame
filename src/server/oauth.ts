@@ -523,9 +523,14 @@ export function oauthWarnings(opts: OAuthOptions): string[] {
     : [];
 }
 
-/** What a `--watch` reload should say when `http.oauth` differs from what the server started with. */
+/**
+ * What a `--watch` reload should say when `http.oauth` differs from what the server started with.
+ * `permissions` is left out: the runtime applies it, so a reload picks it up.
+ */
 export function oauthChange(before: unknown, after: unknown): string | undefined {
-  if (JSON.stringify(before ?? null) === JSON.stringify(after ?? null)) return undefined;
+  const withoutPermissions = (v: unknown) =>
+    JSON.stringify(v && typeof v === 'object' ? { ...v, permissions: undefined } : (v ?? null));
+  if (withoutPermissions(before) === withoutPermissions(after)) return undefined;
   const what = before === undefined ? 'was added' : after === undefined ? 'was removed' : 'changed';
   return `http.oauth ${what}; restart apitame to apply it.`;
 }

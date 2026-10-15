@@ -66,6 +66,39 @@ describe('apitame doctor', () => {
     }
   });
 
+  it('fails on per-caller permissions that name a tool that does not exist', async () => {
+    const oauth = (permissions: unknown) => ({
+      mode: 'read-write',
+      writes: { allow: ['addPet'] },
+      http: {
+        oauth: {
+          issuer: 'https://login.example.com',
+          resource: 'https://mcp.example.com/mcp',
+          scopes: ['mcp:tools'],
+          permissions,
+        },
+      },
+    });
+    let t = petstoreProject(oauth({ byScope: { 'mcp:read': { tools: ['stores'] } } }));
+    try {
+      const f = await runDoctor({ offline: true });
+      expect(statusOf(f, 'Config')).toEqual(['ok', 'fail']);
+      expect(find(f, 'Config')[1]!.detail).toMatch(
+        /byScope\.mcp:read\.tools: no tool matches "stores"/,
+      );
+    } finally {
+      t.cleanup();
+    }
+    t = petstoreProject(oauth({ byScope: { 'mcp:write': { writes: ['deletePet'] } } }));
+    try {
+      const f = await runDoctor({ offline: true });
+      expect(find(f, 'Config').map((x) => x.status)).toEqual(['ok', 'warn']);
+      expect(find(f, 'Config')[1]!.detail).toMatch(/"deletePet" grants nothing/);
+    } finally {
+      t.cleanup();
+    }
+  });
+
   it('is happy with a complete setup', async () => {
     const t = petstoreProject();
     try {
