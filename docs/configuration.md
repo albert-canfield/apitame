@@ -301,6 +301,11 @@ http:
     requireAccessTokenType: true
     # clients: [mcp-desktop, mcp-web]
     # jwksUri: https://login.example.com/realms/tools/protocol/openid-connect/certs
+    # verify: auto                  # jwt, introspection or auto (see below)
+    # introspection:                # for opaque tokens (RFC 7662)
+    #   url: https://login.example.com/realms/tools/protocol/openid-connect/token/introspect
+    #   clientId: apitame
+    #   clientSecret: ${INTROSPECTION_CLIENT_SECRET}
     permissions:
       default: { mode: read-only, tools: [issues, search_operations] }   # every OAuth caller
       byScope:
@@ -318,11 +323,18 @@ http:
 | `oauth.clients` | list | `[]` | When set, only tokens issued to these clients are accepted (the `client_id`, `azp`, `cid` or `appid` claim). |
 | `oauth.requireAccessTokenType` | boolean | `false` | Accept only tokens whose header says `typ: at+jwt` (RFC 9068). Turn it on when your authorization server sets it. ID and refresh tokens are refused either way. |
 | `oauth.jwksUri` | URL | discovered | Where the signing keys are, when the issuer publishes no RFC 8414 or OpenID Connect metadata. |
+| `oauth.verify` | `jwt`, `introspection` or `auto` | see description | How tokens are checked. `jwt`: JWTs locally against the keys, other tokens refused. `introspection`: every token by asking the authorization server. `auto`: JWTs locally, every other token by introspection. Default: `introspection` when `introspection` is set, `jwt` otherwise. |
+| `oauth.introspection.url` | URL | required | The authorization server's token introspection endpoint (RFC 7662). Must be the final URL, without credentials in it. |
+| `oauth.introspection.clientId` | string | required | apitame's client id at the authorization server. May use `${VAR}`. |
+| `oauth.introspection.clientSecret` | `${VAR}` | required | That client's secret. Must come from an environment variable; registered with the redactor. |
+| `oauth.introspection.clientAuthMethod` | `client_secret_basic` or `client_secret_post` | `client_secret_basic` | How the client credentials are sent: HTTP Basic, or in the form body. |
+| `oauth.introspection.cacheSeconds` | 0 to 300 | `60` | How long an active answer is reused, never past the token's expiry. A revoked token is refused within this time. `0` asks on every request. Refusals are never cached. |
+| `oauth.introspection.maxCallsPerMinute` | 1 to 100000 | `600` | Most introspection requests in any minute. Past it, new tokens are refused with a 500 until the minute passes; tokens already checked keep working. |
 | `oauth.permissions.default` | entry | read-only | What every OAuth caller gets. Unset: read-only access with every tool. Entries can only add to it. |
 | `oauth.permissions.byScope` | map | `{}` | What callers whose token carries the scope (the key) get on top of `default`. |
 | `oauth.permissions.byClient` | map | `{}` | What callers whose token was issued to the client (the key; `client_id`, `azp`, `cid` or `appid`) get on top of `default`. |
 
-URLs must use `https`, except on loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) for local testing. Metadata and keys are fetched without following redirects, so `issuer` and `jwksUri` must be final URLs. `http.oauth` cannot be combined with `APITAME_HTTP_TOKEN`, and changes to it need a restart, except `permissions`, which apply on a `--watch` reload. While apitame checks OAuth tokens, a reload that removes or changes the rest of `http.oauth` is refused and the previous config keeps being served. See [clients.md](clients.md#oauth) for the full picture.
+URLs must use `https`, except on loopback hosts (`localhost`, `127.0.0.1`, `[::1]`) for local testing. Metadata, keys and introspection answers are fetched without following redirects, so `issuer`, `jwksUri` and `introspection.url` must be final URLs. Settings that cannot work together are errors: `verify: introspection` or `auto` without `introspection`, `verify: jwt` with `introspection` (it would never be used), and `jwksUri` or `requireAccessTokenType` when every token is introspected (they only apply to JWTs checked locally). `http.oauth` cannot be combined with `APITAME_HTTP_TOKEN`, and changes to it need a restart, except `permissions`, which apply on a `--watch` reload. While apitame checks OAuth tokens, a reload that removes or changes the rest of `http.oauth` is refused and the previous config keeps being served. See [clients.md](clients.md#oauth) for the full picture.
 
 ### `http.oauth.permissions`
 

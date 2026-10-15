@@ -164,7 +164,7 @@ Without `APITAME_HTTP_TOKEN` or `http.oauth`, any process on the machine that ca
 
 ### OAuth
 
-Instead of one shared token, apitame can accept OAuth 2.1 access tokens issued by your own authorization server (your identity provider). apitame is only the resource server: it never issues tokens, shows a login page or registers clients. Clients learn from apitame which authorization server to use, sign the user in there, and send the access token with every request. apitame checks each token locally against the authorization server's published keys.
+Instead of one shared token, apitame can accept OAuth 2.1 access tokens issued by your own authorization server (your identity provider). apitame is only the resource server: it never issues tokens, shows a login page or registers clients. Clients learn from apitame which authorization server to use, sign the user in there, and send the access token with every request. apitame checks each token locally against the authorization server's published keys, or asks the authorization server about it ([token introspection](#opaque-tokens-token-introspection), for opaque tokens).
 
 ```yaml
 # apitame.config.yaml
@@ -180,7 +180,7 @@ http:
 npx apitame serve --transport http --host 0.0.0.0
 ```
 
-All the keys are described in [configuration.md](configuration.md#http). On every request to `/mcp`, apitame checks that:
+All the keys are described in [configuration.md](configuration.md#http). On every request to `/mcp`, apitame checks that (for opaque tokens, see [token introspection](#opaque-tokens-token-introspection)):
 
 - the token is a JWT signed by one of the authorization server's keys (RS, PS, ES or EdDSA algorithms; `none` and shared-secret HMAC are refused). The keys come from the JWKS named in the server's metadata (RFC 8414 or OpenID Connect discovery), or from `jwksUri`;
 - `iss` is `issuer`, `aud` contains `resource` (or one of `audiences`), and `exp` has not passed;
@@ -215,7 +215,7 @@ http:
 
 Every caller gets `default` (read-only with every tool when unset), and each matching entry adds to it, so `default` must be the least any caller should get. A write runs only when one entry both grants it and reaches it through its own `tools`. Each caller's `tools/list` shows only what it may use, a refused write names the reason without naming anyone else's permissions, and the audit log records which entries applied. Permissions follow `--watch` reloads. MCP clients request the scopes in `scopes`, so the authorization server decides which other scopes reach a user's token: set it up to add them (by role or group), or use `byClient` for service accounts. The full rules are in [safety.md](safety.md#per-user-permissions).
 
-Which authorization servers work: any that issues JWT access tokens. Best is one that puts the resource URL in `aud`, because then a token can only be meant for this server: Keycloak (with an audience mapper), Auth0 (an API whose identifier is the resource URL), or an Okta custom authorization server created for apitame with the resource URL as its audience. If the audience is something else (Microsoft Entra ID puts its Application ID URI or client id there), list it in `audiences`, together with `scopes` or `clients`: such an audience is often shared by other apps, and apitame refuses `audiences` without one of them. Do not point apitame at an audience that every app on the authorization server uses, such as Okta's default `api://default`, without `clients`. Servers that only issue opaque tokens, which need token introspection, are not supported yet.
+Which authorization servers work: any that issues JWT access tokens, and any that offers token introspection (see below) for the opaque ones. Best is one that puts the resource URL in `aud`, because then a token can only be meant for this server: Keycloak (with an audience mapper), Auth0 (an API whose identifier is the resource URL), or an Okta custom authorization server created for apitame with the resource URL as its audience. If the audience is something else (Microsoft Entra ID puts its Application ID URI or client id there), list it in `audiences`, together with `scopes` or `clients`: such an audience is often shared by other apps, and apitame refuses `audiences` without one of them. Do not point apitame at an audience that every app on the authorization server uses, such as Okta's default `api://default`, without `clients`.
 
 Good to know:
 
@@ -224,11 +224,52 @@ Good to know:
 - At startup apitame loads the signing keys and logs how many it found. If the authorization server cannot be reached, it logs the error and keeps running; tokens are refused until the keys load, which it tries again when requests arrive. It fetches the keys again when a token names an unknown key (at most once a minute), so key rotation needs no restart. Known keys are refreshed every hour in the background; a slow or unreachable authorization server never holds up requests whose key is already known.
 - The issuer's metadata and keys are fetched without following redirects, and each document may be at most 1 MB, so `issuer` and `jwksUri` must be the final URLs.
 - Changes to `http.oauth` need a restart, except `permissions`, which apply on a `--watch` reload. With `--watch`, apitame warns when the rest of `http.oauth` was added, removed or changed since it started.
-- Revoking a token at the authorization server takes effect when the token expires: apitame checks tokens locally and does not ask the server about each one. Keep access tokens short-lived. When the token that opened a stream expires, apitame closes the stream, and the client has to come back with a fresh token.
+- With JWTs checked locally, revoking a token at the authorization server takes effect when the token expires: apitame does not ask the server about each one. Keep access tokens short-lived, or use token introspection, which notices a revocation within `cacheSeconds`. When the token that opened a stream expires, apitame closes the stream, and the client has to come back with a fresh token.
 - If apitame listens on `127.0.0.1` behind a reverse proxy on the same machine, the Host check also accepts the host name of `resource`, and the Origin check its origin.
 - apitame reads the client from `client_id`, `azp`, `cid` or `appid` (the first one present) and the user from `sub`, and keeps them apart. With `--sessions`, a session belongs to that client and user: another token cannot use its id, each user can hold at most 10 sessions, and making room only ever closes that user's own idle sessions. A token that names neither a client nor a user cannot start a session. The audit log records both (`client`, `subject`).
 - Rate limits are per server unless you set `limits.perCaller`, which gives each user (client and subject) a budget of their own on top (see [safety.md](safety.md#rate-limits)).
 - `--log-level debug` logs why a token was refused. The 401 body says it too.
+
+#### Opaque tokens: token introspection
+
+Some authorization servers issue opaque access tokens: random strings that only the server itself can read. apitame checks those with token introspection (RFC 7662): it sends the token to the server's introspection endpoint, authenticated as a client of that server, and the server answers whether the token is active and what it allows. Register apitame as a confidential client there (a client id and secret), then:
+
+```yaml
+http:
+  oauth:
+    issuer: https://auth.example.com
+    resource: https://mcp.example.com/mcp
+    scopes: [mcp:tools]
+    introspection:
+      url: https://auth.example.com/oauth/introspect
+      clientId: ${INTROSPECTION_CLIENT_ID}
+      clientSecret: ${INTROSPECTION_CLIENT_SECRET}   # always from the environment
+    # verify: auto   # check JWTs locally and introspect only the other tokens
+```
+
+`http.oauth.verify` says which tokens are introspected:
+
+| `verify` | JWTs | Other tokens |
+| --- | --- | --- |
+| `jwt` (the default without `introspection`) | checked locally | refused |
+| `introspection` (the default with `introspection`) | introspected | introspected |
+| `auto` | checked locally | introspected |
+
+`introspection` suits servers whose tokens are all opaque, and also JWT issuers when revocation must take effect quickly. `auto` suits servers that issue both kinds: a token shaped like a JWT (three parts, the first a JSON header) is checked against the keys as above and never sent to the server, so a forged one costs nothing. A JWT that the keys cannot check (one signed with a shared secret, say) is refused under `auto`; use `introspection` for those.
+
+An introspected token passes the same checks as a JWT: the answer must say `active: true`; `aud` must contain `resource` (or one of `audiences`); `iss`, when the answer has one, must be `issuer`; `exp` is required and must not have passed (a token that never expires is refused, as for JWTs); `nbf` and `iat` get the same minute of clock skew; the required `scopes` come from `scope`; the client from `client_id` (or `azp`, `cid`, `appid`) and the user from `sub`, so `clients`, permissions, sessions, rate limits and the audit log work as with JWTs. Refresh and ID tokens are refused (a `token_type` such as `refresh_token`, a `token_use` such as `refresh_token` or `id`, Keycloak's `typ`), and so are tokens bound to a client key or certificate (`token_type: DPoP` or a `cnf` member), whose proof apitame cannot check.
+
+How apitame asks:
+
+- A `POST` with `token=...&token_type_hint=access_token`, and the client credentials as HTTP Basic (`clientAuthMethod: client_secret_basic`, the default) or in the form body (`client_secret_post`). `https` only, except on loopback; no redirects; a 5 second timeout; at most 1 MB in the answer.
+- An active answer is reused for `cacheSeconds` (60 by default, at most 300, and never past the token's `exp`), so a client's requests do not each cost a round trip. A revoked token is therefore refused within `cacheSeconds`; with `cacheSeconds: 0` it is refused at once, and every request asks. Refusals are never cached. The cache keeps the SHA-256 of each token, never the token, and at most 10,000 answers.
+- Requests that arrive together with the same new token share one introspection.
+- At most `maxCallsPerMinute` introspections (600 by default) in any minute, so a flood of made-up tokens cannot turn apitame into an amplifier against your authorization server. Past the limit, new tokens get a 500 and the log says why (once a minute); tokens already checked keep working.
+- If the endpoint cannot be reached, times out, answers with another status than 200, or answers something that is not an introspection response, the token is refused with a 500 (a server problem, not a bad token, so clients do not sign the user in again), and the error is logged. Nothing is let through.
+- At startup apitame asks about a random token that nobody issued, and logs whether the endpoint accepted its credentials. If it did not, apitame keeps running and logs the error; tokens that need introspection are refused until the endpoint works.
+- The client secret must come from an environment variable and is hidden from logs and errors, like every other secret. `apitame doctor` reports a missing one.
+
+Which authorization servers offer it: Keycloak (`/realms/<realm>/protocol/openid-connect/token/introspect`, with a confidential client), Okta custom authorization servers (`/oauth2/<authorizationServerId>/v1/introspect`), Zitadel (`/oauth/v2/introspect`, with an API application that uses Basic authentication; Zitadel can issue opaque access tokens), and other servers that publish an `introspection_endpoint` in their metadata and accept a client secret there. Some do not: Google and GitHub issue opaque tokens but have no RFC 7662 endpoint (GitHub's "Check a token" API and Google's tokeninfo are their own formats), so apitame cannot check their tokens. Auth0 and Microsoft Entra ID have no introspection endpoint either, but issue JWT access tokens for your own APIs, which `verify: jwt` checks.
 
 ## Pinning and local builds
 

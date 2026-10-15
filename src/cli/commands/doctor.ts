@@ -63,13 +63,17 @@ function checkDotEnv(
 
 function checkEnv(loaded: LoadedConfig, add: (s: Status, check: string, detail: string) => void) {
   const { auth, source } = loaded.config;
-  const names = [...new Set([JSON.stringify(auth), JSON.stringify(source)].flatMap(envRefs))];
+  // Token introspection credentials (http.oauth.introspection) come from the environment too.
+  const introspection = loaded.config.http.oauth?.introspection ?? {};
+  const names = [
+    ...new Set([auth, source, introspection].map((x) => JSON.stringify(x)).flatMap(envRefs)),
+  ];
   if (names.length === 0) return;
   // Variables with a ${NAME:-default} fallback are optional.
   const optional = new Set(
-    [...JSON.stringify([auth, source]).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*):-/g)].map(
-      (m) => m[1],
-    ),
+    [
+      ...JSON.stringify([auth, source, introspection]).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*):-/g),
+    ].map((m) => m[1]),
   );
   const missing = names.filter((n) => !process.env[n] && !optional.has(n));
   if (missing.length > 0) {

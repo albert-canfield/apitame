@@ -5,7 +5,8 @@ import { asksForConfirmation, type ConfirmationMethod } from '../../safety/confi
 import { Redactor } from '../../safety/redact.js';
 import { LiveRuntime } from '../../server/live.js';
 import { createMcpServer } from '../../server/mcp.js';
-import { JwtVerifier, oauthChange, oauthReloadRefusal, oauthWarnings } from '../../server/oauth.js';
+import { createOAuthVerifiers } from '../../server/introspection.js';
+import { oauthChange, oauthReloadRefusal, oauthWarnings } from '../../server/oauth.js';
 import { serveHttp, serveStdio } from '../../server/transport.js';
 import type { ToolDefinition } from '../../types.js';
 
@@ -137,7 +138,10 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
   // Read once: the verifier and the metadata document are built at startup, so changes to
   // http.oauth need a restart (a --watch reload says so).
   const oauthConfig = live.loaded.config.http.oauth;
-  const verifier = oauthConfig && new JwtVerifier(oauthConfig);
+  // Introspection credentials are resolved (and registered with the redactor) here, once.
+  const oauth =
+    oauthConfig &&
+    createOAuthVerifiers(oauthConfig, { redactor, warn: (message) => logger.warn(message) });
   guardOAuthReloads(live, oauthConfig);
   if (oauthConfig) for (const w of oauthWarnings(oauthConfig)) logger.warn(w);
   const unauthenticatedHttp = !token && !oauthConfig;
@@ -173,18 +177,32 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
     events,
     onServerClosed: (s) => servers.delete(s),
     ...(token ? { token } : {}),
-    ...(oauthConfig && verifier
-      ? { oauth: { verifier, options: oauthConfig, name: rt.name } }
+    ...(oauthConfig && oauth
+      ? { oauth: { verifier: oauth.verifier, options: oauthConfig, name: rt.name } }
       : {}),
   });
-  if (oauthConfig && verifier) {
+  if (oauthConfig && oauth?.jwt) {
     try {
-      const keys = await verifier.warmUp();
+      const keys = await oauth.jwt.warmUp();
       logger.info(`OAuth: ${keys} signing key${keys === 1 ? '' : 's'} from ${oauthConfig.issuer}`);
     } catch (err) {
       // Keep serving: the keys are fetched again when tokens arrive (at most every few seconds).
       logger.error(
-        `OAuth: could not load the signing keys of ${oauthConfig.issuer}: ${(err as Error).message} Tokens are refused until the keys load; apitame tries again when requests arrive.`,
+        `OAuth: could not load the signing keys of ${oauthConfig.issuer}: ${(err as Error).message} ${oauth.introspection ? 'JWT access tokens' : 'Tokens'} are refused until the keys load; apitame tries again when requests arrive.`,
+      );
+    }
+  }
+  const introspectionUrl = oauthConfig?.introspection?.url;
+  if (oauth?.introspection && introspectionUrl) {
+    try {
+      await oauth.introspection.warmUp();
+      logger.info(
+        `OAuth: token introspection at ${introspectionUrl} accepts apitame's credentials`,
+      );
+    } catch (err) {
+      // Keep serving: every new token is introspected anyway, so it works once the server does.
+      logger.error(
+        `OAuth: token introspection does not work yet: ${(err as Error).message} Tokens that need introspection are refused until it does.`,
       );
     }
   }
@@ -192,6 +210,7 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
     sessions ? 'sessions' : '',
     token ? 'bearer token required' : '',
     oauthConfig ? `OAuth from ${oauthConfig.issuer}` : '',
+    oauth && oauth.mode !== 'jwt' ? `verify: ${oauth.mode}` : '',
   ].filter(Boolean);
   logger.info(`serving ${summary} at ${url}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}`);
 }
