@@ -5,8 +5,9 @@ import { AUDIENCES_NEED_A_FILTER } from '../config/schema.js';
 /**
  * OAuth 2.1 resource server support for the HTTP transport: apitame accepts
  * JWT access tokens (RFC 9068) issued by an external authorization server and
- * checks them locally against the server's published keys (JWKS). apitame
- * never issues tokens itself.
+ * checks them locally against the server's published keys (JWKS). Opaque
+ * tokens are checked by token introspection instead (`introspection.ts`).
+ * apitame never issues tokens itself.
  */
 export interface OAuthOptions {
   /** Authorization server issuer, exactly as it appears in the tokens' `iss` claim. */
@@ -66,8 +67,8 @@ const CLIENT_CLAIMS = ['client_id', 'azp', 'cid', 'appid'];
 
 /** Clock skew tolerated for `nbf` and `iat`. `exp` is strict, as the SDK's bearer check is. */
 const LEEWAY_S = 60;
-/** Tokens larger than this are refused before any parsing. */
-const MAX_TOKEN_CHARS = 16_384;
+/** Tokens larger than this are refused before any parsing (or any introspection request). */
+export const MAX_TOKEN_CHARS = 16_384;
 /** RSA keys shorter than this are ignored (RFC 7518 requires 2048 bits). */
 const MIN_RSA_BITS = 2048;
 /** The key set is fetched again at most this often, whatever the tokens say. */
@@ -81,7 +82,7 @@ const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES = 1_000_000;
 const BASE64URL = /^[A-Za-z0-9_-]*$/;
 
-const invalid = (message: string) => new OAuthError(OAuthErrorCode.InvalidToken, message);
+export const invalid = (message: string) => new OAuthError(OAuthErrorCode.InvalidToken, message);
 
 /**
  * A value from a token or a remote document, safe to put in an error message or a log line:
@@ -159,13 +160,13 @@ export function metadataUrls(issuer: string): string[] {
 }
 
 /** Why a fetch failed, in a few words (fetch hides the reason, such as a redirect, in `cause`). */
-function reason(err: unknown): string {
+export function reason(err: unknown): string {
   const e = err as Error & { cause?: { message?: string } };
   return e.cause?.message ? `${e.message}: ${e.cause.message}` : e.message;
 }
 
-/** Read a response body up to `limit` bytes. */
-async function readCapped(res: Response, url: string): Promise<string> {
+/** Read a response body up to 1 MB. */
+export async function readCapped(res: Response, url: string): Promise<string> {
   const tooLarge = () => new Error(`${url} sent more than ${MAX_BODY_BYTES / 1_000_000} MB.`);
   if (Number(res.headers.get('content-length')) > MAX_BODY_BYTES) throw tooLarge();
   if (!res.body) return '';
@@ -185,6 +186,124 @@ async function readCapped(res: Response, url: string): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/** What every verifier checks a token's claims against (see {@link accessTokenInfo}). */
+export interface ClaimRules {
+  issuer: string;
+  /** Accepted `aud` values, as {@link comparable} spells them. */
+  accepted: Set<string>;
+  clients: string[];
+  resource: string;
+}
+
+/**
+ * Check `http.oauth` the same way for every verifier: secure URLs, and `audiences` only next to
+ * `scopes` or `clients`. Returns the rules claims are checked against.
+ */
+export function claimRules(opts: OAuthOptions): ClaimRules {
+  const issuer = assertSecureUrl(opts.issuer, 'http.oauth.issuer');
+  if (issuer.search || issuer.hash) {
+    throw new Error(`http.oauth.issuer must not have a query or fragment: ${opts.issuer}`);
+  }
+  if (assertSecureUrl(opts.resource, 'http.oauth.resource').hash) {
+    throw new Error(`http.oauth.resource must not have a fragment: ${opts.resource}`);
+  }
+  const clients = opts.clients ?? [];
+  if (opts.audiences.length > 0 && opts.scopes.length === 0 && clients.length === 0) {
+    throw new Error(`http.oauth.${AUDIENCES_NEED_A_FILTER}`);
+  }
+  return {
+    issuer: opts.issuer,
+    accepted: new Set([comparable(opts.resource), ...opts.audiences.map(comparable)]),
+    clients,
+    resource: opts.resource,
+  };
+}
+
+/**
+ * The checks every access token passes once it is known to come from the authorization server
+ * (a valid signature, or the server's own introspection answer): issuer, audience, that it is an
+ * access token, expiry, not-before, issued-at and `clients`. Returns what sessions, the audit
+ * log, per-user permissions and rate limits read.
+ *
+ * `iss` is required unless `issuerOptional` is set: RFC 7662 lets an introspection answer leave
+ * it out, since the answer comes from the authorization server itself. When present, it must
+ * match.
+ */
+export function accessTokenInfo(
+  token: string,
+  claims: Record<string, unknown>,
+  rules: ClaimRules,
+  nowS: number,
+  issuerOptional = false,
+): AuthInfo {
+  if (claims.iss !== rules.issuer && !(issuerOptional && claims.iss === undefined))
+    throw invalid('The token was issued by another server.');
+  const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (!aud.some((a) => typeof a === 'string' && rules.accepted.has(comparable(a)))) {
+    throw invalid('The token is not meant for this server (audience).');
+  }
+  // An ID token or a refresh token from the same server is not an access token, even when its
+  // audience happens to be accepted.
+  const payloadType = typeof claims.typ === 'string' ? claims.typ.toLowerCase() : undefined;
+  if (
+    ID_TOKEN_CLAIMS.some((c) => claims[c] !== undefined) ||
+    (payloadType && OTHER_TOKEN_TYPES.has(payloadType))
+  ) {
+    throw invalid('The token is an ID or refresh token, not an access token.');
+  }
+  const exp = numericDate(claims, 'exp');
+  if (exp === undefined) throw invalid('The token has no expiry.');
+  if (exp <= nowS) throw invalid('The token has expired.');
+  const nbf = numericDate(claims, 'nbf');
+  if (nbf !== undefined && nbf - LEEWAY_S > nowS) throw invalid('The token is not valid yet.');
+  const iat = numericDate(claims, 'iat');
+  if (iat !== undefined && iat - LEEWAY_S > nowS)
+    throw invalid('The token was issued in the future.');
+
+  const scopes =
+    typeof claims.scope === 'string'
+      ? claims.scope.split(' ').filter(Boolean)
+      : Array.isArray(claims.scp)
+        ? claims.scp.filter((x): x is string => typeof x === 'string')
+        : typeof claims.scp === 'string'
+          ? claims.scp.split(' ').filter(Boolean)
+          : [];
+  const identity: TokenIdentity = {};
+  const client = CLIENT_CLAIMS.map((c) => claims[c]).find(
+    (x): x is string => typeof x === 'string' && x !== '',
+  );
+  if (client) identity.client = client;
+  if (typeof claims.sub === 'string' && claims.sub !== '') identity.subject = claims.sub;
+  if (rules.clients.length > 0 && !(client && rules.clients.includes(client))) {
+    throw invalid('The token was issued to a client that http.oauth.clients does not list.');
+  }
+  return {
+    token,
+    // Required by the SDK type; apitame itself reads the client from `extra`.
+    clientId: client ?? '',
+    scopes,
+    expiresAt: exp,
+    // Checked above against the accepted audiences; reported as this server's URL.
+    resource: new URL(rules.resource),
+    extra: { ...identity },
+  };
+}
+
+/**
+ * Whether a token is shaped like a signed JWT: three segments, the first a JSON object. Under
+ * `verify: auto` such tokens are checked locally and everything else is introspected.
+ */
+export function looksLikeJwt(token: string): boolean {
+  const parts = token.split('.');
+  if (parts.length !== 3 || !parts[0] || !BASE64URL.test(parts[0])) return false;
+  try {
+    decodeSegment(parts[0], 'header');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Checks JWT access tokens against an authorization server's published keys. */
 export class JwtVerifier {
   /** Published keys by key id. A key id may appear more than once (for example sig and enc). */
@@ -198,28 +317,16 @@ export class JwtVerifier {
   private loading: Promise<void> | undefined;
   private lastError: unknown;
   private jwksUri: string | undefined;
-  private readonly accepted: Set<string>;
-  private readonly clients: string[];
+  private readonly rules: ClaimRules;
 
   constructor(
     private readonly opts: OAuthOptions,
     private readonly fetchImpl: FetchLike = fetch,
     private readonly now: () => number = Date.now,
   ) {
-    const issuer = assertSecureUrl(opts.issuer, 'http.oauth.issuer');
-    if (issuer.search || issuer.hash) {
-      throw new Error(`http.oauth.issuer must not have a query or fragment: ${opts.issuer}`);
-    }
-    if (assertSecureUrl(opts.resource, 'http.oauth.resource').hash) {
-      throw new Error(`http.oauth.resource must not have a fragment: ${opts.resource}`);
-    }
+    this.rules = claimRules(opts);
     if (opts.jwksUri) assertSecureUrl(opts.jwksUri, 'http.oauth.jwksUri');
-    this.clients = opts.clients ?? [];
-    if (opts.audiences.length > 0 && opts.scopes.length === 0 && this.clients.length === 0) {
-      throw new Error(`http.oauth.${AUDIENCES_NEED_A_FILTER}`);
-    }
     this.jwksUri = opts.jwksUri;
-    this.accepted = new Set([comparable(opts.resource), ...opts.audiences.map(comparable)]);
   }
 
   /** Fetch the key set now, so a misconfigured issuer shows up at startup. Returns the key count. */
@@ -258,57 +365,7 @@ export class JwtVerifier {
       throw invalid('The token signature is not valid.');
 
     const claims = decodeSegment(p, 'payload');
-    const nowS = Math.floor(this.now() / 1000);
-    if (claims.iss !== this.opts.issuer) throw invalid('The token was issued by another server.');
-    const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-    if (!aud.some((a) => typeof a === 'string' && this.accepted.has(comparable(a)))) {
-      throw invalid('The token is not meant for this server (audience).');
-    }
-    // An ID token or a refresh token signed by the same server is not an access token, even
-    // when its audience happens to be accepted.
-    const payloadType = typeof claims.typ === 'string' ? claims.typ.toLowerCase() : undefined;
-    if (
-      ID_TOKEN_CLAIMS.some((c) => claims[c] !== undefined) ||
-      (payloadType && OTHER_TOKEN_TYPES.has(payloadType))
-    ) {
-      throw invalid('The token is an ID or refresh token, not an access token.');
-    }
-    const exp = numericDate(claims, 'exp');
-    if (exp === undefined) throw invalid('The token has no expiry.');
-    if (exp <= nowS) throw invalid('The token has expired.');
-    const nbf = numericDate(claims, 'nbf');
-    if (nbf !== undefined && nbf - LEEWAY_S > nowS) throw invalid('The token is not valid yet.');
-    const iat = numericDate(claims, 'iat');
-    if (iat !== undefined && iat - LEEWAY_S > nowS)
-      throw invalid('The token was issued in the future.');
-
-    const scopes =
-      typeof claims.scope === 'string'
-        ? claims.scope.split(' ').filter(Boolean)
-        : Array.isArray(claims.scp)
-          ? claims.scp.filter((x): x is string => typeof x === 'string')
-          : typeof claims.scp === 'string'
-            ? claims.scp.split(' ').filter(Boolean)
-            : [];
-    const identity: TokenIdentity = {};
-    const client = CLIENT_CLAIMS.map((c) => claims[c]).find(
-      (x): x is string => typeof x === 'string' && x !== '',
-    );
-    if (client) identity.client = client;
-    if (typeof claims.sub === 'string' && claims.sub !== '') identity.subject = claims.sub;
-    if (this.clients.length > 0 && !(client && this.clients.includes(client))) {
-      throw invalid('The token was issued to a client that http.oauth.clients does not list.');
-    }
-    return {
-      token,
-      // Required by the SDK type; apitame itself reads the client from `extra`.
-      clientId: client ?? '',
-      scopes,
-      expiresAt: exp,
-      // Checked above against the accepted audiences; reported as this server's URL.
-      resource: new URL(this.opts.resource),
-      extra: { ...identity },
-    };
+    return accessTokenInfo(token, claims, this.rules, Math.floor(this.now() / 1000));
   }
 
   private checkHeaderType(typ: unknown): void {
@@ -505,7 +562,7 @@ function comparable(s: string): string {
   return s.replace(/#.*$/, '').replace(/\/$/, '');
 }
 
-/** The client and subject of a verified token (see {@link JwtVerifier.verifyAccessToken}). */
+/** The client and subject of a verified token (see {@link accessTokenInfo}). */
 export function identityOf(auth: AuthInfo | undefined): TokenIdentity {
   const extra = auth?.extra ?? {};
   return {

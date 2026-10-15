@@ -22,7 +22,7 @@ type FetchLike = typeof fetch;
  * environment value inside it: an API may echo back the bare token from
  * `SSWS ${OKTA_TOKEN}`, not only the full header value.
  */
-function resolveSecret(
+export function resolveSecret(
   template: string,
   field: string,
   redactor: Redactor,
@@ -100,6 +100,16 @@ export function createAuth(
   }
 }
 
+/**
+ * The `client_secret_basic` credentials of an OAuth client (RFC 6749 section 2.3.1): id and
+ * secret, each URL-encoded, joined by a colon, in base64.
+ */
+export function basicCredentials(clientId: string, clientSecret: string): string {
+  return Buffer.from(
+    `${encodeURIComponent(clientId)}:${encodeURIComponent(clientSecret)}`,
+  ).toString('base64');
+}
+
 type OAuth2Config = Extract<AuthConfig, { type: 'oauth2' }>;
 
 /** OAuth2 client credentials grant with an in-memory token cache. */
@@ -121,11 +131,7 @@ class ClientCredentials implements AuthProvider {
     this.clientId = resolveEnv(cfg.clientId, 'auth.clientId', env);
     this.clientSecret = resolveSecret(cfg.clientSecret, 'auth.clientSecret', redactor, env);
     this.tokenUrl = resolveEnv(cfg.tokenUrl, 'auth.tokenUrl', env);
-    redactor.addSecret(
-      Buffer.from(
-        `${encodeURIComponent(this.clientId)}:${encodeURIComponent(this.clientSecret)}`,
-      ).toString('base64'),
-    );
+    redactor.addSecret(basicCredentials(this.clientId, this.clientSecret));
   }
 
   async apply(req: OutgoingRequest, opts?: { forceRefresh?: boolean }): Promise<void> {
@@ -151,10 +157,7 @@ class ClientCredentials implements AuthProvider {
       Accept: 'application/json',
     };
     if (this.cfg.clientAuthMethod === 'client_secret_basic') {
-      const basic = Buffer.from(
-        `${encodeURIComponent(this.clientId)}:${encodeURIComponent(this.clientSecret)}`,
-      ).toString('base64');
-      headers['Authorization'] = `Basic ${basic}`;
+      headers['Authorization'] = `Basic ${basicCredentials(this.clientId, this.clientSecret)}`;
     } else {
       body.set('client_id', this.clientId);
       body.set('client_secret', this.clientSecret);

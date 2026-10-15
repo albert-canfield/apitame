@@ -150,7 +150,9 @@ function observe(wire: Transport, seen: (message: JSONRPCMessage) => void): Tran
 export interface HttpOAuth {
   /**
    * Checks each token. Sessions and the audit log read who the token speaks for from
-   * `AuthInfo.extra.client` and `extra.subject`, as `JwtVerifier` reports them.
+   * `AuthInfo.extra.client` and `extra.subject`, as `JwtVerifier` and `IntrospectionVerifier`
+   * report them. A verifier that cannot reach a verdict (the introspection endpoint is down)
+   * throws something other than an `invalid_token` error: the request gets a 500, never access.
    */
   verifier: OAuthTokenVerifier;
   options: OAuthOptions;

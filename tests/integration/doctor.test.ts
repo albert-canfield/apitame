@@ -66,6 +66,33 @@ describe('apitame doctor', () => {
     }
   });
 
+  it('reports a token introspection secret missing from the environment', async () => {
+    const t = petstoreProject({
+      http: {
+        oauth: {
+          issuer: 'https://login.example.com',
+          resource: 'https://mcp.example.com/mcp',
+          scopes: ['mcp:tools'],
+          introspection: {
+            url: 'https://login.example.com/introspect',
+            clientId: '${DOCTOR_TEST_CLIENT_ID:-apitame}',
+            clientSecret: '${DOCTOR_TEST_INTROSPECTION_SECRET_UNSET}',
+          },
+        },
+      },
+    });
+    try {
+      const f = await runDoctor({ offline: true });
+      expect(statusOf(f, 'Environment')).toEqual(['fail']);
+      const detail = find(f, 'Environment')[0]!.detail;
+      expect(detail).toMatch(/missing DOCTOR_TEST_INTROSPECTION_SECRET_UNSET\./);
+      // A variable with a default is optional.
+      expect(detail).not.toMatch(/DOCTOR_TEST_CLIENT_ID/);
+    } finally {
+      t.cleanup();
+    }
+  });
+
   it('warns under Config about per-caller permissions that grant nothing', async () => {
     const t = petstoreProject({
       mode: 'read-write',

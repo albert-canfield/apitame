@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadDotEnv, MissingEnvError, resolveEnv } from '../../src/config/env.js';
 import { ConfigError, loadConfig, parseConfig } from '../../src/config/load.js';
+import { verifyMode } from '../../src/config/schema.js';
 import { ROOT, tempDir } from '../helpers.js';
 
 const minimal = { name: 'demo', source: { type: 'openapi', spec: './openapi.yaml' } };
@@ -143,6 +144,92 @@ describe('config schema', () => {
     expect(
       parseConfig({ ...minimal, http: { oauth: { ...oauth, clients: ['0oa1'] } } }),
     ).toBeTruthy();
+  });
+
+  it('reads http.oauth.introspection with defaults', () => {
+    const introspection = {
+      url: 'https://auth.example.com/oauth/introspect',
+      clientId: '${INTROSPECTION_CLIENT_ID}',
+      clientSecret: '${INTROSPECTION_CLIENT_SECRET}',
+    };
+    const oauth = { issuer: 'https://auth.example.com', resource: 'https://mcp.example.com/mcp' };
+    const cfg = parseConfig({ ...minimal, http: { oauth: { ...oauth, introspection } } });
+    expect(cfg.http.oauth?.introspection).toEqual({
+      ...introspection,
+      clientAuthMethod: 'client_secret_basic',
+      cacheSeconds: 60,
+      maxCallsPerMinute: 600,
+    });
+    expect(verifyMode(cfg.http.oauth!)).toBe('introspection');
+    expect(verifyMode(parseConfig({ ...minimal, http: { oauth } }).http.oauth!)).toBe('jwt');
+    // The client id may be literal; the secret must come from the environment.
+    expect(
+      parseConfig({
+        ...minimal,
+        http: { oauth: { ...oauth, introspection: { ...introspection, clientId: 'apitame' } } },
+      }).http.oauth?.introspection?.clientId,
+    ).toBe('apitame');
+    const bad = (extra: Record<string, unknown>) => () =>
+      parseConfig({
+        ...minimal,
+        http: { oauth: { ...oauth, introspection: { ...introspection, ...extra } } },
+      });
+    expect(bad({ clientSecret: 'inline-secret' })).toThrow(
+      /http\.oauth\.introspection\.clientSecret must come from an environment variable/,
+    );
+    expect(bad({ cacheSeconds: 301 })).toThrow(/cacheSeconds/);
+    expect(bad({ maxCallsPerMinute: 0 })).toThrow(/maxCallsPerMinute/);
+    expect(bad({ url: 'introspect' })).toThrow(/introspection\.url/);
+    expect(bad({ clientAuthMethod: 'private_key_jwt' })).toThrow(/clientAuthMethod/);
+    expect(bad({ authMethod: 'client_secret_post' })).toThrow(
+      /Unknown key "authMethod" \(did you mean clientAuthMethod\?\)/,
+    );
+    expect(bad({ endpoint: 'https://x' })).toThrow(/Unknown key "endpoint" \(did you mean url\?\)/);
+  });
+
+  it('refuses http.oauth.verify combinations that cannot work', () => {
+    const introspection = {
+      url: 'https://auth.example.com/oauth/introspect',
+      clientId: 'apitame',
+      clientSecret: '${SECRET}',
+    };
+    const oauth = (extra: Record<string, unknown>) => () =>
+      parseConfig({
+        ...minimal,
+        http: {
+          oauth: {
+            issuer: 'https://auth.example.com',
+            resource: 'https://mcp.example.com/mcp',
+            ...extra,
+          },
+        },
+      });
+    expect(oauth({ verify: 'introspection' })).toThrow(
+      /http\.oauth\.verify: introspection needs http\.oauth\.introspection/,
+    );
+    expect(oauth({ verify: 'auto' })).toThrow(/http\.oauth\.verify: auto needs/);
+    expect(oauth({ verify: 'jwt', introspection })).toThrow(
+      /http\.oauth\.introspection: is set, but verify: jwt never introspects/,
+    );
+    expect(oauth({ introspection, jwksUri: 'https://auth.example.com/jwks' })).toThrow(
+      /http\.oauth\.jwksUri: has no effect with verify: introspection/,
+    );
+    expect(oauth({ introspection, requireAccessTokenType: true })).toThrow(
+      /http\.oauth\.requireAccessTokenType: has no effect/,
+    );
+    expect(oauth({ verify: 'local' })).toThrow(/http\.oauth\.verify/);
+    expect(oauth({ mode: 'introspection' })).toThrow(
+      /Unknown key "mode" \(did you mean verify\?\)/,
+    );
+    // Each of these works.
+    for (const ok of [
+      { verify: 'jwt' },
+      { verify: 'auto', introspection, jwksUri: 'https://auth.example.com/jwks' },
+      { verify: 'auto', introspection, requireAccessTokenType: true },
+      { verify: 'introspection', introspection, requireAccessTokenType: false },
+    ]) {
+      expect(oauth(ok)()).toBeTruthy();
+    }
   });
 
   it('loads YAML from disk and reports a helpful error when missing', () => {

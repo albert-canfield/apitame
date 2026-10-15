@@ -18,7 +18,14 @@ import {
   ROOT,
   tempDir,
 } from '../helpers.js';
-import { claimsFor, FakeAuthServer, makeKey, signers, signJwt } from '../oauth-fixtures.js';
+import {
+  claimsFor,
+  FakeAuthServer,
+  INTROSPECTION_CLIENT,
+  makeKey,
+  signers,
+  signJwt,
+} from '../oauth-fixtures.js';
 
 const CLI = join(ROOT, 'src/cli.ts');
 // Run the TypeScript sources directly; resolve the tsx loader from the repo, not from the temp cwd.
@@ -313,6 +320,107 @@ describe('CLI: serve over HTTP with OAuth', () => {
     } finally {
       child.kill();
     }
+  });
+});
+
+describe('CLI: serve over HTTP with OAuth token introspection', () => {
+  const t = tempDir('apitame-cli-introspection-');
+  const resource = 'https://mcp.example.com/mcp';
+  let as: FakeAuthServer;
+  beforeAll(async () => {
+    as = await FakeAuthServer.start();
+    copyFileSync(PETSTORE, join(t.dir, 'openapi.yaml'));
+    writeFileSync(
+      join(t.dir, 'apitame.config.yaml'),
+      [
+        'name: petstore',
+        'source: { type: openapi, spec: ./openapi.yaml }',
+        'http:',
+        '  oauth:',
+        `    issuer: ${as.issuer}`,
+        `    resource: ${resource}`,
+        '    scopes: [mcp:tools]',
+        '    introspection:',
+        `      url: ${as.introspectionUrl}`,
+        '      clientId: ${INTROSPECTION_CLIENT_ID}',
+        '      clientSecret: ${INTROSPECTION_CLIENT_SECRET}',
+        '',
+      ].join('\n'),
+    );
+  });
+  afterAll(async () => {
+    await as.close();
+    t.cleanup();
+  });
+
+  it('checks the endpoint at startup, accepts opaque tokens and never logs the secret', async () => {
+    const port = await freePort();
+    const child = spawn(
+      process.execPath,
+      [...NODE_ARGS, 'serve', '--transport', 'http', '--port', String(port)],
+      {
+        cwd: t.dir,
+        env: {
+          ...process.env,
+          NO_COLOR: '1',
+          APITAME_LOG_LEVEL: 'debug',
+          APITAME_HTTP_TOKEN: '',
+          INTROSPECTION_CLIENT_ID: INTROSPECTION_CLIENT.id,
+          INTROSPECTION_CLIENT_SECRET: INTROSPECTION_CLIENT.secret,
+        },
+      },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`no startup line:\n${stderr}`)), 30_000);
+        child.stderr.on('data', () => {
+          if (/serving .*\/mcp/.test(stderr)) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+        child.on('exit', (code) => reject(new Error(`exited with ${code}:\n${stderr}`)));
+      });
+      expect(stderr).toContain(
+        `OAuth: token introspection at ${as.introspectionUrl} accepts apitame's credentials`,
+      );
+      expect(stderr).toContain(`(OAuth from ${as.issuer}, verify: introspection)`);
+      expect(stderr).not.toContain('signing key');
+
+      const token = as.issue(resource);
+      const client = new Client({ name: 'e2e-introspection', version: '1.0.0' });
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
+          requestInit: { headers: { Authorization: `Bearer ${token}` } },
+        }),
+      );
+      expect((await client.listTools()).tools.map((x) => x.name)).toContain('call_operation');
+      await client.close();
+      const refused = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer not-issued' },
+      });
+      expect(refused.status).toBe(401);
+      expect(as.introspections.length).toBeGreaterThanOrEqual(3);
+      expect(stderr).not.toContain(INTROSPECTION_CLIENT.secret);
+      expect(stderr).not.toContain(token);
+    } finally {
+      child.kill();
+    }
+  });
+
+  it('refuses to start when a credential is missing from the environment', () => {
+    const res = run(['serve', '--transport', 'http'], t.dir, {
+      APITAME_HTTP_TOKEN: '',
+      INTROSPECTION_CLIENT_ID: 'apitame-rs',
+      INTROSPECTION_CLIENT_SECRET: '',
+    });
+    expect(res.code).toBe(1);
+    expect(res.stderr).toMatch(
+      /Missing environment variable INTROSPECTION_CLIENT_SECRET \(used by http\.oauth\.introspection\.clientSecret\)/,
+    );
   });
 });
 

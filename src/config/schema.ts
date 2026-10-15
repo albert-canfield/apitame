@@ -53,6 +53,53 @@ export const PermissionSchema = z
     message: 'writes has no effect with mode: read-only. Remove one of them.',
   });
 
+/**
+ * OAuth 2.0 token introspection (RFC 7662): apitame asks the authorization server about each
+ * token it has not seen recently, authenticated as a client of that server.
+ */
+export const IntrospectionSchema = z.strictObject(
+  {
+    /** The authorization server's introspection endpoint. https, except on loopback hosts. */
+    url: z.string().url(),
+    /** apitame's client at the authorization server. May use ${VAR}. */
+    clientId: z.string().min(1),
+    clientSecret: envRef('http.oauth.introspection.clientSecret'),
+    clientAuthMethod: z
+      .enum(['client_secret_basic', 'client_secret_post'])
+      .default('client_secret_basic'),
+    /** How long an active answer is reused, at most until the token expires. 0: never. */
+    cacheSeconds: z.number().int().min(0).max(300).default(60),
+    /** Most introspection requests in any minute, so invalid tokens cannot flood the server. */
+    maxCallsPerMinute: z.number().int().min(1).max(100_000).default(600),
+  },
+  {
+    error: unknownKeys({
+      endpoint: 'did you mean url?',
+      introspectionEndpoint: 'did you mean url?',
+      introspection_endpoint: 'did you mean url?',
+      client_id: 'did you mean clientId?',
+      client_secret: 'did you mean clientSecret?',
+      authMethod: 'did you mean clientAuthMethod?',
+      cacheTtl: 'did you mean cacheSeconds?',
+      ttlSeconds: 'did you mean cacheSeconds?',
+    }),
+  },
+);
+
+/** How `http.oauth` checks access tokens. */
+export type VerifyMode = 'jwt' | 'introspection' | 'auto';
+
+/**
+ * `http.oauth.verify`, or its default: `introspection` when `http.oauth.introspection` is set,
+ * `jwt` otherwise.
+ */
+export function verifyMode(oauth: {
+  verify?: VerifyMode | undefined;
+  introspection?: unknown;
+}): VerifyMode {
+  return oauth.verify ?? (oauth.introspection ? 'introspection' : 'jwt');
+}
+
 /** Per-caller permissions for OAuth callers, by token scope and by client id. */
 export const PermissionsSchema = z.strictObject(
   {
@@ -384,6 +431,13 @@ export const ConfigSchema = z
                   /** Require the RFC 9068 token type (`typ: at+jwt`) in the token header. */
                   requireAccessTokenType: z.boolean().default(false),
                   jwksUri: z.string().url().optional(),
+                  /**
+                   * `jwt`: check JWTs locally. `introspection`: ask the authorization server
+                   * about every token. `auto`: JWTs locally, every other token by introspection.
+                   * Default: `introspection` when `introspection` is set, `jwt` otherwise.
+                   */
+                  verify: z.enum(['jwt', 'introspection', 'auto']).optional(),
+                  introspection: IntrospectionSchema.optional(),
                   /** What each caller may do, by token scope or client. Only narrows the config. */
                   permissions: PermissionsSchema.optional(),
                 },
@@ -394,6 +448,9 @@ export const ConfigSchema = z
                     client: 'did you mean clients?',
                     jwks_uri: 'did you mean jwksUri?',
                     permission: 'did you mean permissions?',
+                    mode: 'did you mean verify?',
+                    introspect: 'did you mean introspection?',
+                    introspection_endpoint: 'put it under introspection, as url',
                   }),
                 },
               )
@@ -424,6 +481,38 @@ export const ConfigSchema = z
         path: ['http', 'oauth', 'audiences'],
         message: AUDIENCES_NEED_A_FILTER,
       });
+    }
+    if (oauth) {
+      const verify = verifyMode(oauth);
+      const at = (key: string) => ['http', 'oauth', key];
+      if (verify !== 'jwt' && !oauth.introspection) {
+        ctx.addIssue({
+          code: 'custom',
+          path: at('verify'),
+          message: `${verify} needs http.oauth.introspection (url, clientId and clientSecret).`,
+        });
+      }
+      if (verify === 'jwt' && oauth.introspection) {
+        ctx.addIssue({
+          code: 'custom',
+          path: at('introspection'),
+          message:
+            'is set, but verify: jwt never introspects a token. Remove it, or set verify to introspection or auto.',
+        });
+      }
+      // Settings for local JWT checks do nothing when every token is introspected: refused, so
+      // nobody believes they apply.
+      if (verify === 'introspection') {
+        for (const key of ['jwksUri', 'requireAccessTokenType'] as const) {
+          if (!oauth[key]) continue;
+          ctx.addIssue({
+            code: 'custom',
+            path: at(key),
+            message:
+              'has no effect with verify: introspection, which checks no JWT locally. Remove it, or set verify: auto to check JWTs locally and introspect other tokens.',
+          });
+        }
+      }
     }
     const seen = new Set<string>();
     for (const t of cfg.tools) {
@@ -470,3 +559,5 @@ export type ToolGroupConfig = z.infer<typeof ToolGroupSchema>;
 export type NamedQueryConfig = z.infer<typeof NamedQuerySchema>;
 export type PermissionConfig = z.infer<typeof PermissionSchema>;
 export type PermissionsConfig = z.infer<typeof PermissionsSchema>;
+export type OAuthConfig = NonNullable<Config['http']['oauth']>;
+export type IntrospectionConfig = z.infer<typeof IntrospectionSchema>;

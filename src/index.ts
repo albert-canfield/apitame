@@ -16,6 +16,12 @@ export {
   type StdioOptions,
 } from './server/transport.js';
 export { JwtVerifier, type OAuthOptions } from './server/oauth.js';
+export {
+  AutoVerifier,
+  createOAuthVerifiers,
+  IntrospectionVerifier,
+  type IntrospectionSettings,
+} from './server/introspection.js';
 export { OpenApiRuntime, createOpenApiRuntime } from './server/openapi-runtime.js';
 export { SqlRuntime } from './server/sql-runtime.js';
 export {
