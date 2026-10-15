@@ -3,6 +3,7 @@ import type { LoadedConfig } from '../config/load.js';
 import { Logger } from '../log.js';
 import { Guardrails } from '../safety/guardrails.js';
 import { Redactor } from '../safety/redact.js';
+import { placeholderEnvironment, SecretResolver } from '../secrets/index.js';
 import { createOpenApiRuntime, type OpenApiRuntime } from './openapi-runtime.js';
 import type { SqlRuntime } from './sql-runtime.js';
 
@@ -14,6 +15,13 @@ export interface RuntimeOptions {
   baseUrlOverride?: string;
   /** Load .env next to the config file (default true). */
   dotenv?: boolean;
+  /**
+   * Secret manager references in `auth` and `source` (`${op://...}` and the like): read through
+   * their CLIs before anything is built, with this resolver or a new one (the default), or
+   * `placeholder` to put a placeholder in their place without running anything, for commands
+   * that never send credentials.
+   */
+  secrets?: SecretResolver | 'placeholder';
 }
 
 export type AnyRuntime = OpenApiRuntime | SqlRuntime;
@@ -23,11 +31,19 @@ export async function createRuntime(
   loaded: LoadedConfig,
   opts: RuntimeOptions = {},
 ): Promise<AnyRuntime> {
-  const env = opts.env ?? process.env;
-  if (opts.dotenv !== false) loadDotEnv(loaded.dir, env);
+  const base = opts.env ?? process.env;
+  if (opts.dotenv !== false) loadDotEnv(loaded.dir, base);
   const redactor = opts.redactor ?? new Redactor();
   const logger = opts.logger ?? new Logger(redactor);
   const { config } = loaded;
+  // All or nothing: a reference that cannot be read stops here, before anything is built.
+  const env =
+    opts.secrets === 'placeholder'
+      ? placeholderEnvironment(config, ['auth', 'source'], base)
+      : await (opts.secrets ?? new SecretResolver()).environment(config, ['auth', 'source'], {
+          redactor,
+          env: base,
+        });
 
   if (config.source.type === 'openapi') {
     return createOpenApiRuntime({

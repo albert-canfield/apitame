@@ -139,9 +139,17 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
   // http.oauth need a restart (a --watch reload says so).
   const oauthConfig = live.loaded.config.http.oauth;
   // Introspection credentials are resolved (and registered with the redactor) here, once.
+  // Secret manager references among them are read first, all or nothing.
+  const oauthEnv = oauthConfig?.introspection
+    ? await live.secrets.environment(live.loaded.config, ['introspection'], { redactor })
+    : undefined;
   const oauth =
     oauthConfig &&
-    createOAuthVerifiers(oauthConfig, { redactor, warn: (message) => logger.warn(message) });
+    createOAuthVerifiers(oauthConfig, {
+      redactor,
+      warn: (message) => logger.warn(message),
+      ...(oauthEnv ? { env: oauthEnv } : {}),
+    });
   guardOAuthReloads(live, oauthConfig);
   if (oauthConfig) for (const w of oauthWarnings(oauthConfig)) logger.warn(w);
   const unauthenticatedHttp = !token && !oauthConfig;

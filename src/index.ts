@@ -38,6 +38,12 @@ export { groupOperations } from './sources/openapi/grouping.js';
 export { generateOpenApiSkill, generateSqlSkill } from './generator/skills.js';
 export { decide, type Decision } from './safety/policy.js';
 export { Redactor } from './safety/redact.js';
+export {
+  SecretReferenceError,
+  SecretResolver,
+  type SecretResolverOptions,
+  type SecretScope,
+} from './secrets/index.js';
 export { estimateTokens, toolListCost } from './tokens/estimate.js';
 export { startMockServer } from './mock/server.js';
 export { VERSION } from './version.js';

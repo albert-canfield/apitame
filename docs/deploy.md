@@ -91,6 +91,15 @@ docker run ... -v apitame-audit:/audit ghcr.io/albert-canfield/apitame:0.4
 
 For a SQLite file, mount it read-only with the config (apitame opens it read-only anyway; `doctor` reports `the database file is read-only for this user`). Kubernetes works the same way: `readOnlyRootFilesystem: true`, an `emptyDir` on `/tmp`, `runAsNonRoot: true` (the image user is numeric), and `httpGet` probes on `/health` port 8080.
 
+### Secrets from a secret manager
+
+The image has no `op`, `aws` or `gcloud`, so `${op://...}`, `${aws-sm://...}` and `${gcp-sm://...}` references ([configuration.md](configuration.md#secret-managers)) stop it at startup with `op was not found on PATH`. Two ways to use a secret manager with it:
+
+- **Let the platform inject the value** (recommended), and reference it as an environment variable (`${STRIPE_API_KEY}`). The orchestrator reads the secret with its own identity and the container never holds secret manager credentials: ECS task definitions (`secrets` with `valueFrom` a Secrets Manager ARN), Kubernetes Secrets synced by the External Secrets Operator or the 1Password Kubernetes Operator, Cloud Run (`--set-secrets`), or `op run --env-file` around `docker compose up` on a single machine.
+- **Build an image that adds the CLI.** Start `FROM ghcr.io/albert-canfield/apitame:0.4`, switch to `USER root` to install the CLI from its vendor's instructions, and end with `USER 10001`. Give the CLI an identity at run time, never in the image: a task, pod or instance role for `aws`, an attached service account for `gcloud`, `OP_SERVICE_ACCOUNT_TOKEN` for `op`. The image user's home is `/nonexistent`, and the CLIs keep configuration and caches there, so set `HOME` to a writable folder (with `--read-only`, `HOME=/tmp` and the tmpfs on `/tmp`), or `CLOUDSDK_CONFIG` for gcloud.
+
+Either way the value is redacted from logs and errors like any other secret, and `doctor --host 0.0.0.0` in the container says whether each reference reads.
+
 ### Logs
 
 apitame logs to standard error, so `docker logs` and `docker compose logs` show them. Set `APITAME_LOG_LEVEL=debug` to see why a token was refused or which MCP protocol version each request uses. Secrets from the environment are redacted from logs. The audit log is a separate JSON Lines file (see [safety.md](safety.md#audit-log)).

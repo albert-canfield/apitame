@@ -33,7 +33,7 @@ DuckDB's driver (`@duckdb/node-api`) is not installed with apitame. Run any comm
 | `--env-var <name>` | `DATABASE_URL` | Variable that holds the database URL. |
 | `--schema <names...>` | `public` | PostgreSQL schemas to expose. |
 | `-f, --force` | | Overwrite an existing config. |
-| `--skills-only` | | Regenerate skills from the existing config (for example after switching to read-write). |
+| `--skills-only` | | Regenerate skills from the existing config (for example after switching to read-write). For a database, secret manager references in the connection URL are read; for an OpenAPI source no secret manager is asked. |
 | `-c, --config <path>` | | Config to use with `--skills-only`. |
 
 ## `apitame serve`
@@ -59,7 +59,7 @@ APITAME_HTTP_TOKEN=... apitame serve --transport http --host 0.0.0.0
 
 Both MCP protocol eras are served on stdio and HTTP: 2025-era clients (which start with `initialize`) and clients on protocol 2026-07-28. The server exposes `tools/list` and `tools/call`. When the config has skills, it also declares the MCP Skills extension (`io.modelcontextprotocol/skills`) and answers `skills/list`, `skills/get`, `resources/list` and `resources/read` for `skill://` URIs. The HTTP server also answers `GET /health` with `{"ok":true}`, without authentication and without any detail about the server, for container health checks and load balancers (on loopback it checks the `Host` header, as for `/mcp`). With `http.oauth` it serves its protected resource metadata at `/.well-known/oauth-protected-resource`. To run it in a container or behind a reverse proxy, see [deploy.md](deploy.md).
 
-Missing credentials do not stop the server: it starts, logs a warning, and tool calls explain which variable is missing.
+Missing credentials do not stop the server: it starts, logs a warning, and tool calls explain which variable is missing. Secret manager references (`${op://...}`, `${aws-sm://...}`, `${gcp-sm://...}`) are different: they are read at startup, and one that cannot be read stops the server with a message that names the field and the reference ([configuration.md](configuration.md#secret-managers)).
 
 With `--watch`, editing the config takes effect without restarting the client: allow a write, save, and the new tool appears (clients that support `notifications/tools/list_changed`, such as Claude Code, refresh their tool list). A config that does not validate is reported in the log and the previous one keeps serving. Changed `.env` values are picked up too.
 
@@ -100,6 +100,8 @@ With [argument rules](configuration.md#writesrules), it lists them too, and warn
 | `--max-tokens <n>` | Exit with code 1 when the tool list costs more than `n` tokens. Use it in CI to stop the tool list from growing unnoticed. |
 
 Token counts are estimates. They are calibrated against a common BPE tokenizer and land slightly above it, because tokenizers differ between models.
+
+`inspect` sends nothing, so it never asks a secret manager: references (`${op://...}` and the like) read as a placeholder.
 
 ## `apitame diff <old-spec> [new-spec]`
 
@@ -270,6 +272,8 @@ For SQL sources it lists tables, describes each one, runs `SELECT * ... LIMIT 1`
 
 Exit code 1 when any check fails. Warnings (for example HTTP 404 for a sample id in `--live` mode) do not fail the run.
 
+Against the mock, secret manager references are not read (the mock accepts any credentials); with `--live` and for SQL sources they are read as `serve` reads them.
+
 ## `apitame doctor`
 
 Checks a setup end to end and says what to fix.
@@ -292,6 +296,7 @@ $ apitame doctor
 | Config | The config file validates; unknown operation ids and skipped named queries. |
 | .env | If present, that git ignores it (a committed `.env` leaks secrets). |
 | Environment | Every `${VAR}` the config needs is set (after loading `.env`). |
+| Secrets | Each secret manager reference (`${op://...}`, `${aws-sm://...}`, `${gcp-sm://...}`): its CLI is found, and it reads as `serve` reads it. The value is never printed, nor what a failing CLI said. With `--offline`, only the CLI is looked for. When one cannot be read, the API or database check is skipped. |
 | writes.* | Every allowlist or confirm pattern matches at least one operation (catches typos). |
 | writes.rules | Argument rules name operations, arguments and fields that exist, are not on reads (where they are ignored), and use operators that can match the field's type. |
 | API | Calls the first GET that needs no input, to test DNS, TLS and credentials. 401 and 403 are failures. |

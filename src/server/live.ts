@@ -4,6 +4,7 @@ import { loadDotEnv } from '../config/env.js';
 import { loadConfig, type LoadedConfig } from '../config/load.js';
 import type { Logger } from '../log.js';
 import type { Redactor } from '../safety/redact.js';
+import { SecretResolver } from '../secrets/index.js';
 import { isUrl } from '../sources/openapi/load.js';
 import { createRuntime, type AnyRuntime } from './runtime.js';
 import { loadSkills, type SkillEntry } from './skills.js';
@@ -37,18 +38,25 @@ export class LiveRuntime {
     public runtime: AnyRuntime,
     public skills: SkillEntry[],
     private readonly opts: LiveOptions,
+    /**
+     * Reads secret manager references once for the life of the server: a reload only reads the
+     * references it has not seen. `serve` also reads the introspection secret with it.
+     */
+    readonly secrets: SecretResolver,
   ) {}
 
   static async start(configPath: string, opts: LiveOptions): Promise<LiveRuntime> {
     const loaded = loadConfig(configPath);
     const keys = loadDotEnv(loaded.dir);
+    const secrets = new SecretResolver({ log: (message) => opts.logger.info(message) });
     const runtime = await createRuntime(loaded, {
       redactor: opts.redactor,
       logger: opts.logger,
       dotenv: false,
+      secrets,
     });
     const skills = loadSkills(resolve(loaded.dir, loaded.config.skills.dir), skipped(opts.logger));
-    const live = new LiveRuntime(loaded.path, loaded, runtime, skills, opts);
+    const live = new LiveRuntime(loaded.path, loaded, runtime, skills, opts, secrets);
     live.dotenvKeys = keys;
     return live;
   }
@@ -87,7 +95,12 @@ export class LiveRuntime {
         if (refused) throw new Error(refused);
       }
       keys = loadDotEnv(loaded.dir);
-      const runtime = await createRuntime(loaded, { redactor, logger, dotenv: false });
+      const runtime = await createRuntime(loaded, {
+        redactor,
+        logger,
+        dotenv: false,
+        secrets: this.secrets,
+      });
       const skills = loadSkills(resolve(loaded.dir, loaded.config.skills.dir), skipped(logger));
       // Per-caller permissions change what each OAuth caller sees, even when the server's own
       // list stays the same.

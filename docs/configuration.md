@@ -2,7 +2,7 @@
 
 apitame reads `apitame.config.yaml` from the current folder (or `--config <path>`, or the `APITAME_CONFIG` environment variable). `init` writes a commented version you can edit. Relative paths in the file resolve from the folder that holds it, and a `.env` file in that folder is loaded at startup without overriding variables that are already set.
 
-Values may reference environment variables as `${NAME}` or `${NAME:-default}`. Secret fields must use a reference, and a literal secret is a validation error: so is a default in a secret field (`${TOKEN:-hunter2}` is still a secret written in the config), and text next to references that all have an empty default (`hunter2${UNSET:-}`). Text around a real reference (`SSWS ${OKTA_TOKEN}`) is fine, and `${NAME:-}` alone stands for an empty value.
+Values may reference environment variables as `${NAME}` or `${NAME:-default}`, and secrets kept in 1Password, AWS Secrets Manager or Google Secret Manager as `${op://...}`, `${aws-sm://...}` or `${gcp-sm://...}` (see [Secret managers](#secret-managers)). Secret fields must use a reference, and a literal secret is a validation error: so is a default in a secret field (`${TOKEN:-hunter2}` is still a secret written in the config), and text next to references that all have an empty default (`hunter2${UNSET:-}`). Text around a real reference (`SSWS ${OKTA_TOKEN}`) is fine, and `${NAME:-}` alone stands for an empty value.
 
 Unknown keys at the top level and under `http` and `writes` (including inside each argument rule) are an error that names the key, so a typo (`scope:` for `scopes:`, `rule:` for `rules:`) or a block at the wrong level cannot silently turn a setting off.
 
@@ -25,6 +25,7 @@ Unknown keys at the top level and under `http` and `writes` (including inside ea
 | `sql` | object | see below | Named queries and table filters (SQL only). |
 | `skills` | object | `{dir: ./skills}` | Where generated skills live. |
 | `http` | object | `{}` | Settings for `serve --transport http`: OAuth access tokens. |
+| `secrets` | object | see below | How secret manager references are read: CLI paths, timeout, AWS region and profile. |
 
 ## `source`
 
@@ -109,6 +110,81 @@ auth:
   audience: https://api.example.com   # optional
   clientAuthMethod: client_secret_basic   # or client_secret_post
 ```
+
+## Secret managers
+
+Wherever a value may use `${VAR}`, it may also name a secret kept in a secret manager. apitame reads it through the secret manager's own command line tool when it starts:
+
+| Reference | Secret manager | Read with |
+| --- | --- | --- |
+| `${op://vault/item/field}`, `${op://vault/item/section/field}` | 1Password | `op` (1Password CLI 2) |
+| `${aws-sm://secret-name}`, `${aws-sm://secret-name#key}` | AWS Secrets Manager | `aws` (AWS CLI) |
+| `${gcp-sm://projects/PROJECT/secrets/SECRET}`, `.../versions/VERSION` | Google Secret Manager | `gcloud` (Google Cloud CLI) |
+
+```yaml
+auth:
+  type: bearer
+  token: ${op://Engineering/Stripe/api key}
+
+source:
+  type: postgres
+  url: ${aws-sm://prod/shop-db#url}                     # one key of a JSON secret
+
+http:
+  oauth:
+    introspection:
+      clientSecret: ${gcp-sm://projects/acme-tools/secrets/introspection}
+```
+
+References work in `auth` (`token`, `value`, `username`, `password`, `clientId`, `clientSecret`, `tokenUrl`), in `source.baseUrl`, `source.headers`, `source.url` and `source.path`, and in `http.oauth.introspection.clientId` and `clientSecret`. They follow the same rules as environment variables in secret fields: no default (there is no `:-` form), and text around them only next to a real reference (`postgres://app:${op://Engineering/Shop/password}@db.internal/shop` is fine). A value is inserted as it is, so a password inside a URL must be stored URL-encoded; or store the whole URL. Every value read is a secret: it is redacted from all output, like environment values (see [safety.md](safety.md#secret-managers)).
+
+**The forms**, checked when the config loads:
+
+- `op://vault/item/field`, or `op://vault/item/section/field` for a field in a section, as 1Password writes [secret references](https://developer.1password.com/docs/cli/secret-reference-syntax/). Names may hold letters, digits, spaces, `-`, `_` and `.`, and do not start with `-`; for any other name, use its ID. Query parameters (`?attribute=`) are not supported.
+- `aws-sm://NAME` with the secret's name or ARN (letters, digits and `/_+=.@:-`, not starting with `-`). The current version (`AWSCURRENT`) is read. `#key` reads one key of a secret that holds a JSON object, as the console stores key and value pairs: `aws-sm://prod/shop-db#password`. Binary secrets (`SecretBinary`) are not supported.
+- `gcp-sm://projects/PROJECT/secrets/SECRET` reads the latest version; add `/versions/VERSION` for a version number or alias. `PROJECT` is the project id or number. Regional secrets (`locations/...`) are not supported.
+
+**When they are read.** `serve` reads every reference in `auth` and `source` at startup, at most four at a time (1Password references one at a time, so the 1Password app asks once), and the introspection secret when it serves HTTP with `http.oauth.introspection`. If one cannot be read (CLI missing, not signed in, no permission, not found, an empty value, a value with a line break, no answer within `secrets.timeoutSeconds`), apitame does not start and says which field and reference failed, without the value; it never starts with part of the config. Values are kept for the life of the process: a `--watch` reload reads only references it has not seen, and a rotated secret needs a restart. `test --live`, `test` on a database, `init --skills-only` on a database and `doctor` read them too. `inspect`, `test` against the mock, `init --skills-only` for an OpenAPI source and `diff` never ask a secret manager, since they send no credentials. `init` writes references only into comments, as suggestions, never a value.
+
+### `secrets`
+
+```yaml
+secrets:
+  timeoutSeconds: 15            # how long one CLI call may take, 1 to 300
+  op:
+    cli: op                     # default: found on PATH
+  aws:
+    cli: aws
+    region: eu-west-1           # optional: --region for every call
+    profile: apitame            # optional: --profile for every call
+  gcp:
+    cli: gcloud
+```
+
+`cli` is the program's name, found in an absolute folder of `PATH`, or the absolute path of the same program (`/opt/homebrew/bin/op`), for MCP clients that start apitame with a short `PATH` (desktop apps on macOS often do). It cannot name another program. `region` and `profile` are passed as `--region` and `--profile`; without them the AWS CLI uses `AWS_REGION`, `AWS_PROFILE` and its own configuration.
+
+The CLIs cannot ask questions: they run without a terminal and without input, so sign in before starting apitame. Each one gets only the environment it needs (see [safety.md](safety.md#secret-managers)):
+
+| CLI | Variables passed on |
+| --- | --- |
+| all | `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `LC_CTYPE`, `LC_MESSAGES`, `TZ`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR`, the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, in either case), `SSL_CERT_FILE`, `SSL_CERT_DIR`, and on Windows `SYSTEMROOT`, `WINDIR`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA` and `USERNAME` |
+| `op` | every `OP_*` variable (`OP_SERVICE_ACCOUNT_TOKEN`, `OP_ACCOUNT`, `OP_CONNECT_HOST`, `OP_CONNECT_TOKEN`, `OP_SESSION_*`) |
+| `aws` | every `AWS_*` variable (`AWS_PROFILE`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_CONTAINER_CREDENTIALS_*`), except `AWS_CLI_AUTO_PROMPT`; `AWS_PAGER` is set empty |
+| `gcloud` | every `CLOUDSDK_*` variable, `GCE_METADATA_HOST` and `GCE_METADATA_IP`; `CLOUDSDK_CORE_DISABLE_PROMPTS` is set to `1` |
+
+Variables in `.env` next to the config count, so `OP_SERVICE_ACCOUNT_TOKEN` or `AWS_PROFILE` can live there.
+
+### 1Password
+
+apitame runs `op read --no-newline <reference>`. On your own machine, the simplest sign-in is the 1Password app integration (Settings, Developer, Integrate with 1Password CLI): the app asks you to approve apitame's first read, then remembers it for a while. `eval $(op signin)` works only for programs started from that shell, since the session lives in an `OP_SESSION_*` variable. On a server or in CI, use a [service account](https://developer.1password.com/docs/service-accounts/) with read access to the vaults apitame needs, and set `OP_SERVICE_ACCOUNT_TOKEN`. If the app's approval takes longer than 15 seconds, raise `secrets.timeoutSeconds`.
+
+### AWS Secrets Manager
+
+apitame runs `aws secretsmanager get-secret-value --secret-id <name> --query SecretString --output json`, with `--region` and `--profile` when they are set, and reads `#key` from the answer itself. Credentials come from the AWS CLI's usual chain: a profile (`secrets.aws.profile` or `AWS_PROFILE`; run `aws sso login` first for an SSO profile), environment credentials, or the role of the machine, task or pod (EC2 instance profiles, ECS task roles, EKS IAM roles for service accounts or Pod Identity). The credentials need `secretsmanager:GetSecretValue` on the secret, and `kms:Decrypt` when it is encrypted with a customer managed key. A secret in another account needs its full ARN.
+
+### Google Secret Manager
+
+apitame runs `gcloud secrets versions access <version> --secret=<secret> --project=<project> --format=json --quiet` and decodes the payload itself, so the value arrives byte for byte. gcloud uses its own credentials: `gcloud auth login` for a person, a service account (`gcloud auth activate-service-account --key-file=key.json`, or `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=/path/key.json`), or the attached service account on Google Cloud (Compute Engine, GKE, Cloud Run) through the metadata server. Application Default Credentials (`gcloud auth application-default login`, `GOOGLE_APPLICATION_CREDENTIALS`) are for client libraries and are not used by gcloud itself; to use that file, point `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` at it. The account needs the Secret Manager Secret Accessor role (`roles/secretmanager.secretAccessor`). On Windows, gcloud is a batch file, which apitame cannot run without a shell: pass the value in an environment variable there.
 
 ## `limits`
 
@@ -327,7 +403,7 @@ http:
 | `oauth.verify` | `jwt`, `introspection` or `auto` | see description | How tokens are checked. `jwt`: JWTs locally against the keys, other tokens refused. `introspection`: every token by asking the authorization server. `auto`: JWTs locally, every other token by introspection. Default: `introspection` when `introspection` is set, `jwt` otherwise. |
 | `oauth.introspection.url` | URL | required | The authorization server's token introspection endpoint (RFC 7662). Must be the final URL, without credentials in it. Written as is: `${VAR}` is refused, since it would not be read. |
 | `oauth.introspection.clientId` | string | required | apitame's client id at the authorization server. May use `${VAR}`. |
-| `oauth.introspection.clientSecret` | `${VAR}` | required | That client's secret. Environment variable references only: no default and no text around them. Registered with the redactor. |
+| `oauth.introspection.clientSecret` | `${VAR}` | required | That client's secret. Environment variable or secret manager references only: no default and no text around them. Registered with the redactor. |
 | `oauth.introspection.clientAuthMethod` | `client_secret_basic` or `client_secret_post` | `client_secret_basic` | How the client credentials are sent: HTTP Basic, or in the form body. |
 | `oauth.introspection.cacheSeconds` | 0 to 300 | `60` | How long an active answer is reused, never past the token's expiry; after that the token is introspected again. A revoked token is refused within this time. `0` asks on every request. Refusals are never cached. |
 | `oauth.introspection.maxCallsPerMinute` | 1 to 100000 | `600` | Most introspections of new tokens in any minute; past it, new tokens are refused with a 500 until the minute passes. Tokens seen active before are checked again (once their cached answer is stale) within a second budget of the same size, which made-up tokens cannot use, so signed-in users keep working through a flood of them. Each active user costs about one re-check every `cacheSeconds`. |
