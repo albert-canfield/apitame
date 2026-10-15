@@ -1,4 +1,5 @@
-import type { SecretsConfig } from '../config/schema.js';
+import { fromDotEnv } from '../config/env.js';
+import { AWS_REGION, type SecretsConfig } from '../config/schema.js';
 import type { SecretProvider, SecretReference } from './reference.js';
 
 const WINDOWS = process.platform === 'win32';
@@ -15,8 +16,10 @@ export class SecretValueError extends Error {
 export interface Provider {
   /** For messages: `1Password CLI (op)`. */
   label: string;
-  /** Where its settings live under `secrets`. */
-  key: 'op' | 'aws' | 'gcp';
+  /** The program's name, looked up on PATH. */
+  cli: 'op' | 'aws' | 'gcloud';
+  /** The variable of the real environment that may give the program's absolute path instead. */
+  cliVariable: 'APITAME_OP_CLI' | 'APITAME_AWS_CLI' | 'APITAME_GCLOUD_CLI';
   /** How many calls may run at once. */
   concurrency: number;
   /** What to do when the CLI is not found. */
@@ -154,12 +157,13 @@ const GCP_RULES: Array<[RegExp, string]> = [
 export const PROVIDERS: Record<SecretProvider, Provider> = {
   op: {
     label: '1Password CLI (op)',
-    key: 'op',
+    cli: 'op',
+    cliVariable: 'APITAME_OP_CLI',
     // With the 1Password app integration, the first call asks the user to authorize and the
     // next ones reuse it: one call at a time asks once.
     concurrency: 1,
     install:
-      'Install the 1Password CLI (https://developer.1password.com/docs/cli/get-started/), or set secrets.op.cli to its absolute path',
+      'Install the 1Password CLI (https://developer.1password.com/docs/cli/get-started/), or set APITAME_OP_CLI to its absolute path in the environment that starts apitame',
     envPrefixes: ['OP_'],
     envNames: [],
     envFixed: {},
@@ -171,10 +175,11 @@ export const PROVIDERS: Record<SecretProvider, Provider> = {
   },
   'aws-sm': {
     label: 'AWS CLI (aws)',
-    key: 'aws',
+    cli: 'aws',
+    cliVariable: 'APITAME_AWS_CLI',
     concurrency: 4,
     install:
-      'Install the AWS CLI (https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), or set secrets.aws.cli to its absolute path',
+      'Install the AWS CLI (https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), or set APITAME_AWS_CLI to its absolute path in the environment that starts apitame',
     envPrefixes: ['AWS_'],
     envNames: [],
     // No pager (the CLI v2 pipes long output through less), and never the interactive prompt.
@@ -233,11 +238,12 @@ export const PROVIDERS: Record<SecretProvider, Provider> = {
   },
   'gcp-sm': {
     label: 'Google Cloud CLI (gcloud)',
-    key: 'gcp',
+    cli: 'gcloud',
+    cliVariable: 'APITAME_GCLOUD_CLI',
     concurrency: 4,
     install: WINDOWS
       ? 'On Windows gcloud is a batch file, which apitame cannot run without a shell: pass the value in an environment variable instead'
-      : 'Install the Google Cloud CLI (https://cloud.google.com/sdk/docs/install), or set secrets.gcp.cli to its absolute path',
+      : 'Install the Google Cloud CLI (https://cloud.google.com/sdk/docs/install), or set APITAME_GCLOUD_CLI to its absolute path in the environment that starts apitame',
     envPrefixes: ['CLOUDSDK_'],
     // Where the metadata server is, on Google Cloud and in emulators.
     envNames: ['GCE_METADATA_HOST', 'GCE_METADATA_IP'],
@@ -317,6 +323,26 @@ const COMMON_ENV = [
   'USERNAME',
 ];
 
+/**
+ * What `.env` may give a CLI: credentials, a profile of the user's own AWS configuration and a
+ * region. None of them can change which program runs or where the user's own credentials go.
+ * Everything else `.env` sets (`AWS_CONFIG_FILE` with a `credential_process`, `CLOUDSDK_PYTHON`,
+ * `HOME`, `OP_CONFIG_DIR`, `AWS_ENDPOINT_URL`) is dropped, because `.env` sits next to the config
+ * and may come with it.
+ */
+const FROM_DOT_ENV_ALLOWED: Record<string, (env: NodeJS.ProcessEnv) => boolean> = {
+  OP_SERVICE_ACCOUNT_TOKEN: () => true,
+  OP_CONNECT_TOKEN: () => true,
+  // A Connect host from .env with the user's own Connect token would send that token there.
+  OP_CONNECT_HOST: (env) => fromDotEnv(env, 'OP_CONNECT_TOKEN'),
+  AWS_ACCESS_KEY_ID: () => true,
+  AWS_SECRET_ACCESS_KEY: () => true,
+  AWS_SESSION_TOKEN: () => true,
+  AWS_PROFILE: () => true,
+  AWS_REGION: (env) => AWS_REGION.test(env.AWS_REGION ?? ''),
+  AWS_DEFAULT_REGION: (env) => AWS_REGION.test(env.AWS_DEFAULT_REGION ?? ''),
+};
+
 export function cliEnvironment(provider: Provider, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const named = new Set(
     [...COMMON_ENV, ...provider.envNames].map((n) => (WINDOWS ? n.toUpperCase() : n)),
@@ -327,24 +353,53 @@ export function cliEnvironment(provider: Provider, env: NodeJS.ProcessEnv): Node
     if (value === undefined) continue;
     const key = WINDOWS ? name.toUpperCase() : name;
     if (dropped.has(key)) continue;
-    if (named.has(key) || provider.envPrefixes.some((p) => key.startsWith(p))) out[name] = value;
+    if (!named.has(key) && !provider.envPrefixes.some((p) => key.startsWith(p))) continue;
+    if (
+      fromDotEnv(env, name) &&
+      !(Object.hasOwn(FROM_DOT_ENV_ALLOWED, key) && FROM_DOT_ENV_ALLOWED[key]?.(env))
+    )
+      continue;
+    out[name] = value;
   }
   return { ...out, ...provider.envFixed };
 }
 
+/** Values that are not text a credential can be: refused like control characters. */
+// eslint-disable-next-line no-control-regex
+const NOT_TEXT = /[\x00-\x08\x0A-\x1F\x7F-\x9F\u2028\u2029\uFEFF]/;
+
 /**
- * Refuse values that cannot be meant: empty, or with a line break or another control character
- * (which no header, URL or password field takes). Tabs are allowed.
+ * Refuse values that cannot be meant: empty or only spaces, or with a line break or another
+ * control character (C0, DEL, C1 such as U+0085, the Unicode line and paragraph separators, a
+ * byte order mark), which no header, URL or password field takes. Tabs are allowed inside.
  */
 export function checkValue(value: string): void {
   if (value === '') throw new SecretValueError('The value is empty.');
-  if (/[\r\n]$/.test(value) && !/[\r\n]/.test(value.replace(/\r?\n$/, ''))) {
+  if (/[\r\n]$/.test(value) && !/[\r\n]/.test(value.replace(/[\r\n]+$/, ''))) {
     throw new SecretValueError(
       'The value ends with a line break, which no credential has. Store it without one (printf, not echo).',
     );
   }
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x08\x0A-\x1F\x7F]/.test(value)) {
-    throw new SecretValueError('The value contains a line break or another control character.');
+  if (NOT_TEXT.test(value)) {
+    throw new SecretValueError(
+      'The value contains a line break or another control character (a byte order mark, a Unicode line separator).',
+    );
   }
+  if (value.trim() === '') throw new SecretValueError('The value is only spaces.');
+}
+
+/**
+ * The shortest value accepted for a secret field: the redactor ignores shorter values (they would
+ * mangle ordinary output), so a shorter secret could not be hidden.
+ */
+export const MIN_SECRET_LENGTH = 4;
+
+/** Fields whose value is a secret on its own, and so must be long enough to be hidden. */
+export function isSecretField(field: string): boolean {
+  return (
+    /^auth\.(token|value|password|clientSecret)$/.test(field) ||
+    field === 'http.oauth.introspection.clientSecret' ||
+    field.startsWith('source.headers.') ||
+    field === 'source.url'
+  );
 }

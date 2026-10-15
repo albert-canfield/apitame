@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -184,6 +184,68 @@ describe.skipIf(!POSIX)('secret manager CLIs, run for real', () => {
     expect(await gone([cli, child])).toEqual([]);
   });
 
+  /** A script that reads a reference with a CLI that never answers, and reports when it waits. */
+  function waiter(dir: string, pids: string, setup = '') {
+    const script = join(dir, 'waits.mjs');
+    writeFileSync(
+      script,
+      [
+        `const { runCli } = await import(${JSON.stringify(pathToFileURL(join(ROOT, 'src/secrets/cli.ts')).href)});`,
+        setup,
+        `runCli(${JSON.stringify(join(dir, 'op'))}, ['read'], { env: { PATH: ${JSON.stringify(dir)} }, timeoutMs: 60000, maxOutputBytes: 1000 }).catch(() => {});`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n'),
+    );
+    const child = spawn(
+      process.execPath,
+      ['--import', pathToFileURL(join(ROOT, 'node_modules/tsx/dist/loader.mjs')).href, script],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let out = '';
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()));
+    const ended = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((r) =>
+      child.on('close', (code, signal) => r({ code, signal })),
+    );
+    const started = (async () => {
+      for (let i = 0; i < 300 && !existsSync(pids); i++)
+        await new Promise((r) => setTimeout(r, 20));
+      return JSON.parse(readFileSync(pids, 'utf8')) as [number, number];
+    })();
+    return { child, ended, started, out: () => out };
+  }
+
+  it.each(['SIGINT', 'SIGTERM', 'SIGHUP'] as const)(
+    'stops a running CLI when apitame gets %s, then ends as the signal would',
+    async (signal) => {
+      const dir = bin();
+      const pids = join(dir, 'pids.json');
+      fakeCli(dir, 'op', hangs(pids));
+      const w = waiter(dir, pids);
+      const [cli, grandchild] = await w.started;
+      w.child.kill(signal);
+      // Nothing else handles the signal: apitame ends by it, as without a CLI running.
+      expect(await w.ended).toEqual({ code: null, signal });
+      expect(await gone([cli, grandchild])).toEqual([]);
+    },
+  );
+
+  it('stops a running CLI on a signal and leaves the shutdown to the handler that is there', async () => {
+    const dir = bin();
+    const pids = join(dir, 'pids.json');
+    fakeCli(dir, 'op', hangs(pids));
+    // As serve does: its own handler shuts down when a signal arrives.
+    const w = waiter(
+      dir,
+      pids,
+      "process.on('SIGTERM', () => { console.log('own handler'); setTimeout(() => process.exit(3), 50); });",
+    );
+    const [cli, grandchild] = await w.started;
+    w.child.kill('SIGTERM');
+    expect(await w.ended).toEqual({ code: 3, signal: null });
+    expect(w.out()).toContain('own handler');
+    expect(await gone([cli, grandchild])).toEqual([]);
+  });
+
   it('kills a CLI that prints more than 1 MB', async () => {
     const dir = bin();
     const pids = join(dir, 'pids.json');
@@ -219,18 +281,33 @@ describe.skipIf(!POSIX)('secret manager CLIs, run for real', () => {
     expect(err.message).not.toContain('fake-partial-secret-on-stdout');
   });
 
-  it('runs only an executable found in an absolute PATH folder, or the configured path', async () => {
+  it('runs only an executable found in an absolute PATH folder, or the one APITAME_OP_CLI names', async () => {
     const dir = bin();
     fakeCli(dir, 'op', prints('fake-op-value'));
-    const env = (PATH: string) => ({ ...parentEnv(dir), PATH });
-    // A relative PATH entry would pick up a program from wherever apitame runs.
-    expect(findExecutable('op', env('.'))).toBeUndefined();
+    const env = (PATH: string, extra: NodeJS.ProcessEnv = {}) => ({
+      ...parentEnv(dir),
+      PATH,
+      ...extra,
+    });
+    const cwd = process.cwd();
+    // Run from a folder that holds an executable op: a relative PATH entry would pick it up.
+    process.chdir(dir);
+    try {
+      for (const PATH of ['.', './', '', `.:bin`, `relative-${n}`]) {
+        expect(findExecutable('op', env(PATH))).toBeUndefined();
+        expect(
+          await read('op://vault/item/field', {}, env(PATH)).catch((e: Error) => e.message),
+        ).toMatch(/op was not found on PATH/);
+      }
+    } finally {
+      process.chdir(cwd);
+    }
     expect(findExecutable('op', env(`relative:${dir}`))).toBe(join(dir, 'op'));
     expect(findExecutable(join(dir, 'op'), env(''))).toBe(join(dir, 'op'));
     writeFileSync(join(dir, 'aws'), 'not executable');
     expect(findExecutable('aws', env(dir))).toBeUndefined();
     expect(
-      await read('op://vault/item/field', { secrets: { op: { cli: join(dir, 'op') } } }, env('')),
+      await read('op://vault/item/field', {}, env('', { APITAME_OP_CLI: join(dir, 'op') })),
     ).toBe('fake-op-value');
   });
 

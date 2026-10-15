@@ -40,7 +40,9 @@ export async function createRuntime(
   const env =
     opts.secrets === 'placeholder'
       ? placeholderEnvironment(config, ['auth', 'source'], base)
-      : await (opts.secrets ?? new SecretResolver()).environment(config, ['auth', 'source'], {
+      : await (
+          opts.secrets ?? new SecretResolver({ log: (message) => logger.info(message) })
+        ).environment(config, ['auth', 'source'], {
           redactor,
           env: base,
         });

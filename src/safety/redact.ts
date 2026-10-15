@@ -43,10 +43,13 @@ export class Redactor {
     if (!value || value.length < 4) return;
     // Also catch the encoded forms that end up in URLs: path segments and cookies use
     // encodeURIComponent, query strings use form encoding (space as +, and ! ' ( ) ~ escaped).
+    // And the form inside a JSON string (`"` and `\` escaped), which an API may echo in an error
+    // page that is not parsed as JSON.
     const forms = [
       value,
       encodeURIComponent(value),
       new URLSearchParams({ v: value }).toString().slice(2),
+      JSON.stringify(value).slice(1, -1),
     ];
     for (const f of forms) this.secrets.add(f);
     // Longest first so a secret that contains another is fully replaced.

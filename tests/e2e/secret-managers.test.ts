@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -15,7 +16,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { stringify } from 'yaml';
 import { PETSTORE, ROOT, startPostgresShop, tempDir } from '../helpers.js';
-import { fails, fakeCli, prints } from '../secret-fixtures.js';
+import { fails, fakeCli, gone, hangs, prints } from '../secret-fixtures.js';
 
 const CLI = join(ROOT, 'src/cli.ts');
 const TSX = pathToFileURL(join(ROOT, 'node_modules/tsx/dist/loader.mjs')).href;
@@ -113,7 +114,9 @@ describe.skipIf(!POSIX)('CLI: secret manager references', () => {
     expect(op.calls().map((c) => c.argv)).toEqual([
       ['read', '--no-newline', 'op://Dev Vault/Petstore/api token'],
     ]);
-    expect(stderr).toContain('read 1 secret reference with 1Password CLI (op)');
+    expect(stderr).toContain(
+      `read secret reference "\${op://Dev Vault/Petstore/api token}" for auth.token with ${join(bin, 'op')}`,
+    );
     expect(stderr).not.toContain(value);
   });
 
@@ -131,15 +134,74 @@ describe.skipIf(!POSIX)('CLI: secret manager references', () => {
 
   it('inspect, test against the mock and init --skills-only never ask the secret manager', () => {
     const op = fakeCli(bin, 'op', prints('fake-op-never-asked'));
-    writeConfig({ secrets: { op: { cli: join(bin, 'op') } } });
+    writeConfig();
     const before = op.calls().length;
-    expect(run(['inspect']).code).toBe(0);
-    const test = run(['test']);
+    const where = { APITAME_OP_CLI: join(bin, 'op') };
+    expect(run(['inspect'], where).code).toBe(0);
+    const test = run(['test'], where);
     expect(test.code, test.stdout + test.stderr).toBe(0);
-    const init = run(['init', '--skills-only']);
+    const init = run(['init', '--skills-only'], where);
     expect(init.code, init.stderr).toBe(0);
     expect(op.calls().length).toBe(before);
     expect(filesUnder(join(t.dir, 'skills'))).not.toContain('fake-op-never-asked');
+  });
+
+  it('test against the mock sends no credentials, and asks no OAuth2 token endpoint', async () => {
+    const op = fakeCli(bin, 'op', prints('fake-op-client-secret'));
+    const tokenRequests: string[] = [];
+    const tokens = createServer((req, res) => {
+      tokenRequests.push(String(req.url));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ access_token: 'fake-issued-token', expires_in: 3600 }));
+    });
+    await new Promise<void>((r) => tokens.listen(0, '127.0.0.1', r));
+    const tokenUrl = `http://127.0.0.1:${(tokens.address() as { port: number }).port}/token`;
+    try {
+      const before = op.calls().length;
+      for (const clientSecret of ['${op://Dev Vault/Petstore/client secret}', '${CLIENT_SECRET}']) {
+        writeConfig({
+          source: {
+            type: 'openapi',
+            spec: './openapi.yaml',
+            baseUrl: apiUrl,
+            headers: { 'X-Tenant': '${TENANT_KEY}' },
+          },
+          auth: { type: 'oauth2', tokenUrl, clientId: 'apitame', clientSecret },
+        });
+        const res = spawnSync(process.execPath, [...NODE_ARGS, 'test', '--json'], {
+          cwd: t.dir,
+          encoding: 'utf8',
+          env: env({
+            CLIENT_SECRET: 'fake-real-client-secret',
+            TENANT_KEY: 'fake-real-tenant-key',
+          }),
+          timeout: 60_000,
+        });
+        expect(res.status, res.stdout + res.stderr).toBe(0);
+        expect(res.stdout + res.stderr).not.toContain('fake-real-tenant-key');
+      }
+      expect(tokenRequests).toEqual([]);
+      expect(op.calls().length).toBe(before);
+    } finally {
+      await new Promise((r) => tokens.close(r));
+    }
+  });
+
+  it('serve stops a CLI that is still running when it gets SIGTERM during startup', async () => {
+    const pids = join(t.dir, 'serve-pids.json');
+    fakeCli(bin, 'op', hangs(pids));
+    writeConfig({ secrets: { timeoutSeconds: 60 } });
+    const child = spawn(process.execPath, [...NODE_ARGS, 'serve'], {
+      cwd: t.dir,
+      env: env(),
+      stdio: ['pipe', 'ignore', 'ignore'],
+    });
+    const ended = new Promise<NodeJS.Signals | null>((r) => child.on('close', (_c, sig) => r(sig)));
+    for (let i = 0; i < 300 && !existsSync(pids); i++) await new Promise((r) => setTimeout(r, 50));
+    const [cli, grandchild] = JSON.parse(readFileSync(pids, 'utf8')) as [number, number];
+    child.kill('SIGTERM');
+    expect(await ended).toBe('SIGTERM');
+    expect(await gone([cli, grandchild])).toEqual([]);
   });
 
   it('init --skills-only reads a database URL from 1Password and writes no part of it', async () => {

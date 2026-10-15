@@ -2,7 +2,7 @@
 
 apitame reads `apitame.config.yaml` from the current folder (or `--config <path>`, or the `APITAME_CONFIG` environment variable). `init` writes a commented version you can edit. Relative paths in the file resolve from the folder that holds it, and a `.env` file in that folder is loaded at startup without overriding variables that are already set.
 
-Values may reference environment variables as `${NAME}` or `${NAME:-default}`, and secrets kept in 1Password, AWS Secrets Manager or Google Secret Manager as `${op://...}`, `${aws-sm://...}` or `${gcp-sm://...}` (see [Secret managers](#secret-managers)). Secret fields must use a reference, and a literal secret is a validation error: so is a default in a secret field (`${TOKEN:-hunter2}` is still a secret written in the config), and text next to references that all have an empty default (`hunter2${UNSET:-}`). Text around a real reference (`SSWS ${OKTA_TOKEN}`) is fine, and `${NAME:-}` alone stands for an empty value.
+Values may reference environment variables as `${NAME}` or `${NAME:-default}`, and credential fields may name secrets kept in 1Password, AWS Secrets Manager or Google Secret Manager as `${op://...}`, `${aws-sm://...}` or `${gcp-sm://...}` (see [Secret managers](#secret-managers)). Secret fields must use a reference, and a literal secret is a validation error: so is a default in a secret field (`${TOKEN:-hunter2}` is still a secret written in the config), and text next to references that all have an empty default (`hunter2${UNSET:-}`). Text around a real reference (`SSWS ${OKTA_TOKEN}`) is fine, and `${NAME:-}` alone stands for an empty value.
 
 Unknown keys at the top level and under `http` and `writes` (including inside each argument rule) are an error that names the key, so a typo (`scope:` for `scopes:`, `rule:` for `rules:`) or a block at the wrong level cannot silently turn a setting off.
 
@@ -25,7 +25,7 @@ Unknown keys at the top level and under `http` and `writes` (including inside ea
 | `sql` | object | see below | Named queries and table filters (SQL only). |
 | `skills` | object | `{dir: ./skills}` | Where generated skills live. |
 | `http` | object | `{}` | Settings for `serve --transport http`: OAuth access tokens. |
-| `secrets` | object | see below | How secret manager references are read: CLI paths, timeout, AWS region and profile. |
+| `secrets` | object | see below | How secret manager references are read: timeout, AWS region and profile. |
 
 ## `source`
 
@@ -113,7 +113,7 @@ auth:
 
 ## Secret managers
 
-Wherever a value may use `${VAR}`, it may also name a secret kept in a secret manager. apitame reads it through the secret manager's own command line tool when it starts:
+Credential fields may name a secret kept in a secret manager instead of an environment variable. apitame reads it through the secret manager's own command line tool when it starts:
 
 | Reference | Secret manager | Read with |
 | --- | --- | --- |
@@ -136,47 +136,46 @@ http:
       clientSecret: ${gcp-sm://projects/acme-tools/secrets/introspection}
 ```
 
-References work in `auth` (`token`, `value`, `username`, `password`, `clientId`, `clientSecret`, `tokenUrl`), in `source.baseUrl`, `source.headers`, `source.url` and `source.path`, and in `http.oauth.introspection.clientId` and `clientSecret`. They follow the same rules as environment variables in secret fields: no default (there is no `:-` form), and text around them only next to a real reference (`postgres://app:${op://Engineering/Shop/password}@db.internal/shop` is fine). A value is inserted as it is, so a password inside a URL must be stored URL-encoded; or store the whole URL. Every value read is a secret: it is redacted from all output, like environment values (see [safety.md](safety.md#secret-managers)).
+References are read in credential fields only: in `auth` (`token`, `value`, `username`, `password`, `clientId`, `clientSecret`), in `source.headers` values, in `source.url` as the whole connection URL or as its user or password (`postgres://app:${op://Engineering/Shop/password}@db.internal/shop`), and in `http.oauth.introspection.clientId` and `clientSecret`. Anywhere else they are a config error: in fields that choose where requests go or what is opened (`source.baseUrl`, `auth.tokenUrl`, `source.path`, the host, port, database or options of `source.url`), and in fields that read no reference at all (an `audience`, a description), where the text would otherwise be sent as written. Environment variables keep working in those fields. In credential fields references follow the same rules as environment variables in secret fields: no default (there is no `:-` form, and no reference inside a default such as `${UNSET:-${op://...}}`), and text around them only next to a real reference. A value is inserted as it is, so a password inside a URL must be stored URL-encoded; or store the whole URL. Every value read is a secret: it is redacted from all output, like environment values (see [safety.md](safety.md#secret-managers)).
+
+A config with secret manager references can read anything the signed-in session can reach (every vault the 1Password account sees, every secret the AWS or Google identity may read), and sends each value where the config says. Review such a config like code, and give the session no more than apitame needs: a 1Password service account limited to one vault, an AWS role or Google service account limited to the secrets in the config. `serve` logs each reference it reads (never the value), and `doctor` lists them.
 
 **The forms**, checked when the config loads:
 
 - `op://vault/item/field`, or `op://vault/item/section/field` for a field in a section, as 1Password writes [secret references](https://developer.1password.com/docs/cli/secret-reference-syntax/). Names may hold letters, digits, spaces, `-`, `_` and `.`, and do not start with `-`; for any other name, use its ID. Query parameters (`?attribute=`) are not supported.
-- `aws-sm://NAME` with the secret's name or ARN (letters, digits and `/_+=.@:-`, not starting with `-`). The current version (`AWSCURRENT`) is read. `#key` reads one key of a secret that holds a JSON object, as the console stores key and value pairs: `aws-sm://prod/shop-db#password`. Binary secrets (`SecretBinary`) are not supported.
+- `aws-sm://NAME` with the secret's name (letters, digits and `/_+=.@-`, not starting with `-`) or its full ARN (`arn:aws:secretsmanager:REGION:ACCOUNT:secret:NAME`). Nothing else is accepted: the AWS CLI reads a parameter that starts with `file://`, `fileb://`, `http://` or `https://` from that file or URL. The current version (`AWSCURRENT`) is read. `#key` reads one key of a secret that holds a JSON object, as the console stores key and value pairs: `aws-sm://prod/shop-db#password`. Binary secrets (`SecretBinary`) are not supported.
 - `gcp-sm://projects/PROJECT/secrets/SECRET` reads the latest version; add `/versions/VERSION` for a version number or alias. `PROJECT` is the project id or number. Regional secrets (`locations/...`) are not supported.
 
-**When they are read.** `serve` reads every reference in `auth` and `source` at startup, at most four at a time (1Password references one at a time, so the 1Password app asks once), and the introspection secret when it serves HTTP with `http.oauth.introspection`. If one cannot be read (CLI missing, not signed in, no permission, not found, an empty value, a value with a line break, no answer within `secrets.timeoutSeconds`), apitame does not start and says which field and reference failed, without the value; it never starts with part of the config. Values are kept for the life of the process: a `--watch` reload reads only references it has not seen, and a rotated secret needs a restart. `test --live`, `test` on a database, `init --skills-only` on a database and `doctor` read them too. `inspect`, `test` against the mock, `init --skills-only` for an OpenAPI source and `diff` never ask a secret manager, since they send no credentials. `init` writes references only into comments, as suggestions, never a value.
+**When they are read.** `serve` reads every reference in `auth` and `source` at startup, at most four at a time (1Password references one at a time, so the 1Password app asks once), and the introspection secret when it serves HTTP with `http.oauth.introspection`. If one cannot be read (CLI missing, not signed in, no permission, not found, an empty value or one of only spaces, a value with a line break or another control character, a value shorter than 4 characters in a secret field, no answer within `secrets.timeoutSeconds`), apitame does not start and says which field and reference failed, without the value; it never starts with part of the config. Values are kept for the life of the process: a `--watch` reload reads only references it has not seen, and a rotated secret needs a restart. `test --live`, `test` on a database, `init --skills-only` on a database and `doctor` read them too. `inspect`, `test` against the mock, `init --skills-only` for an OpenAPI source and `diff` never ask a secret manager, since they send no credentials. `init` writes references only into comments, as suggestions, never a value.
 
 ### `secrets`
 
 ```yaml
 secrets:
-  timeoutSeconds: 15            # how long one CLI call may take, 1 to 300
-  op:
-    cli: op                     # default: found on PATH
+  timeoutSeconds: 15            # how long one CLI call may take, 1 to 60
   aws:
-    cli: aws
     region: eu-west-1           # optional: --region for every call
     profile: apitame            # optional: --profile for every call
-  gcp:
-    cli: gcloud
 ```
 
-`cli` is the program's name, found in an absolute folder of `PATH`, or the absolute path of the same program (`/opt/homebrew/bin/op`), for MCP clients that start apitame with a short `PATH` (desktop apps on macOS often do). It cannot name another program. `region` and `profile` are passed as `--region` and `--profile`; without them the AWS CLI uses `AWS_REGION`, `AWS_PROFILE` and its own configuration.
+1Password references are read one at a time, so several that fail can take `timeoutSeconds` each before apitame gives up. `region` and `profile` are passed as `--region` and `--profile`; without them the AWS CLI uses `AWS_REGION`, `AWS_PROFILE` and its own configuration.
+
+**Where the CLIs are.** apitame looks for `op`, `aws` and `gcloud` in the absolute folders of `PATH` (a relative entry such as `.` is skipped). The config cannot choose a program, since a config, and the `.env` next to it, may come with a project. When a CLI is somewhere else, for example because an MCP client starts apitame with a short `PATH` (desktop apps on macOS often do), set its absolute path in the environment that starts apitame (the shell, or the `env` of the MCP client config): `APITAME_OP_CLI`, `APITAME_AWS_CLI` or `APITAME_GCLOUD_CLI`. These variables, and `PATH`, are not read from `.env`.
 
 The CLIs cannot ask questions: they run without a terminal and without input, so sign in before starting apitame. Each one gets only the environment it needs (see [safety.md](safety.md#secret-managers)):
 
 | CLI | Variables passed on |
 | --- | --- |
 | all | `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `TEMP`, `TMP`, `LANG`, `LC_ALL`, `LC_CTYPE`, `LC_MESSAGES`, `TZ`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR`, the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, in either case), `SSL_CERT_FILE`, `SSL_CERT_DIR`, and on Windows `SYSTEMROOT`, `WINDIR`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA` and `USERNAME` |
-| `op` | every `OP_*` variable (`OP_SERVICE_ACCOUNT_TOKEN`, `OP_ACCOUNT`, `OP_CONNECT_HOST`, `OP_CONNECT_TOKEN`, `OP_SESSION_*`) |
+| `op` | every `OP_*` variable (`OP_SERVICE_ACCOUNT_TOKEN`, `OP_ACCOUNT`, `OP_CONNECT_HOST`, `OP_CONNECT_TOKEN`, `OP_SESSION`) |
 | `aws` | every `AWS_*` variable (`AWS_PROFILE`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_CONTAINER_CREDENTIALS_*`), except `AWS_CLI_AUTO_PROMPT`; `AWS_PAGER` is set empty |
 | `gcloud` | every `CLOUDSDK_*` variable, `GCE_METADATA_HOST` and `GCE_METADATA_IP`; `CLOUDSDK_CORE_DISABLE_PROMPTS` is set to `1` |
 
-Variables in `.env` next to the config count, so `OP_SERVICE_ACCOUNT_TOKEN` or `AWS_PROFILE` can live there.
+From `.env` next to the config, a CLI only gets credentials, a profile and a region: `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`, `OP_CONNECT_HOST` (only with `OP_CONNECT_TOKEN` from `.env` too), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE`, `AWS_REGION` and `AWS_DEFAULT_REGION` (region names only). Everything else `.env` sets is left out for the CLIs, because it could make them run another program or send credentials elsewhere (`AWS_CONFIG_FILE` with a `credential_process`, `CLOUDSDK_PYTHON`, `HOME`, `AWS_ENDPOINT_URL`). Variables from the environment that starts apitame follow the table above.
 
 ### 1Password
 
-apitame runs `op read --no-newline <reference>`. On your own machine, the simplest sign-in is the 1Password app integration (Settings, Developer, Integrate with 1Password CLI): the app asks you to approve apitame's first read, then remembers it for a while. `eval $(op signin)` works only for programs started from that shell, since the session lives in an `OP_SESSION_*` variable. On a server or in CI, use a [service account](https://developer.1password.com/docs/service-accounts/) with read access to the vaults apitame needs, and set `OP_SERVICE_ACCOUNT_TOKEN`. If the app's approval takes longer than 15 seconds, raise `secrets.timeoutSeconds`.
+apitame runs `op read --no-newline <reference>`. On your own machine, the simplest sign-in is the 1Password app integration (Settings, Developer, Integrate with 1Password CLI): the app asks you to approve apitame's first read, then remembers it for a while. `eval $(op signin)` works only for programs started from that shell, since the session lives in an `OP_SESSION` variable. On a server or in CI, use a [service account](https://developer.1password.com/docs/service-accounts/) with read access to the vaults apitame needs, and set `OP_SERVICE_ACCOUNT_TOKEN`. If the app's approval takes longer than 15 seconds, raise `secrets.timeoutSeconds`.
 
 ### AWS Secrets Manager
 
@@ -434,5 +433,6 @@ Names that match no tool or operation, write patterns that grant nothing and ent
 | `APITAME_CONFIG` | `serve`, `inspect`, `test`, `doctor`, `add-to` | Config path when `--config` is not given. The container image sets it to `/config/apitame.config.yaml`. |
 | `APITAME_LOG_LEVEL` | `serve` | `debug`, `info` (default), `warn`, `error` or `silent`. Logs go to stderr. |
 | `APITAME_HTTP_TOKEN` | `serve --transport http`, `doctor` | Static bearer token, required when listening beyond loopback unless `http.oauth` is set. Cannot be combined with `http.oauth`. `doctor` checks the HTTP setup when it is set. |
+| `APITAME_OP_CLI`, `APITAME_AWS_CLI`, `APITAME_GCLOUD_CLI` | commands that read [secret manager references](#secret-managers) | Absolute path of `op`, `aws` or `gcloud` when it is not on `PATH`. Not read from `.env`. |
 | `APITAME_DEBUG` | all | Print stack traces for errors. |
 | `NO_COLOR` | all | Disable colors. |
