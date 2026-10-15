@@ -4,9 +4,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-### Security
+## [0.3.0] - 2026-10-15
 
-- SQL lexer: PostgreSQL (and DuckDB) end a `--` comment at a carriage return as well as a newline, but the lexer only stopped at a newline, so in `SELECT 1 --\r; DELETE FROM orders WHERE true --\nAND true` the lexer layer saw one statement where PostgreSQL runs two. The parser layer refused the query and the read-only transaction and single-statement protocol would have stopped the DELETE, so nothing ran; the lexer now agrees with the server. Found by a differential test against DuckDB, which shares PostgreSQL's rule.
+### Changed
+
+- **Breaking:** `confirmation.method: elicitation` refuses approvals over HTTP without authentication, in both protocol eras. A local process can open its own session or send its own answer there, so such an approval proves nothing. 2025-era clients that used `--sessions` without `APITAME_HTTP_TOKEN` or `http.oauth` under `elicitation` now need a token, OAuth or stdio; `auto` and `token` are unchanged.
+- **Breaking:** unknown keys at the top level of `apitame.config.yaml` are an error that names the key, instead of being ignored, so a typo or a misplaced block cannot silently turn a setting off.
+- **Breaking:** unknown keys under `writes` are an error too, so `rule:` for `rules:` cannot leave a write without its rules.
+- **Breaking:** Node.js 22.14 or later is required. Node 20 reached end of life in April 2026, and the SQLite driver (better-sqlite3 13) crashes on Node 22 before 22.14; `apitame doctor` fails on older versions. Thanks @Enard52 (#48).
+- commander 15: a "too many arguments" error now lists the arguments it got (`Expected 0 arguments but got 2: extra1, extra2.`). Options and help output are unchanged.
+- Installing apitame is about 13 MB larger since better-sqlite3 13, which ships prebuilt binaries for every platform: measured 53 MB before and 66 MB after.
 
 ### Added
 
@@ -20,14 +27,9 @@ All notable changes to this project are documented here. The format follows [Kee
 - Per-user permissions with OAuth: `http.oauth.permissions.default` is what every OAuth caller gets (read-only when unset), and entries in `byScope` (token scopes) and `byClient` (client ids) add to it: `mode: read-only`, a `writes` list that must also match `writes.allow`, and the `tools` it shows. A write runs only when one single entry grants it and reaches it through its own tools, and permissions can only narrow the server config, never widen it. Each caller's `tools/list` shows only what it may use, over stateless HTTP, sessions and protocol 2026-07-28, and the operations of groups a caller does not see are out of reach of `call_operation` and `search_operations` too. A write outside the caller's permissions is refused before anything is sent and before the human is asked, with a reason that does not name other users' permissions, and the audit log records which entries applied. Names that match nothing, writes that grant nothing and entries that add nothing to `default` are reported as warnings by `serve`, `doctor` and `inspect`. Permissions apply on a `--watch` reload; a reload that removes or changes the rest of `http.oauth` is refused while apitame checks OAuth tokens. Over stdio and without OAuth nothing changes (#59).
 - Per-user rate limits: `limits.perCaller.maxCallsPerMinute` and `maxWritesPerMinute` give each OAuth user (client and subject) a budget of their own, on top of the server-wide limits. Off by default (#59).
 
-### Changed
+### Security
 
-- **Breaking:** `confirmation.method: elicitation` refuses approvals over HTTP without authentication, in both protocol eras. A local process can open its own session or send its own answer there, so such an approval proves nothing. 2025-era clients that used `--sessions` without `APITAME_HTTP_TOKEN` or `http.oauth` under `elicitation` now need a token, OAuth or stdio; `auto` and `token` are unchanged.
-- **Breaking:** unknown keys at the top level of `apitame.config.yaml` are an error that names the key, instead of being ignored, so a typo or a misplaced block cannot silently turn a setting off.
-- **Breaking:** unknown keys under `writes` are an error too, so `rule:` for `rules:` cannot leave a write without its rules.
-- **Breaking:** Node.js 22.14 or later is required. Node 20 reached end of life in April 2026, and the SQLite driver (better-sqlite3 13) crashes on Node 22 before 22.14; `apitame doctor` fails on older versions. Thanks @Enard52 (#48).
-- commander 15: a "too many arguments" error now lists the arguments it got (`Expected 0 arguments but got 2: extra1, extra2.`). Options and help output are unchanged.
-- Installing apitame is about 13 MB larger since better-sqlite3 13, which ships prebuilt binaries for every platform: measured 53 MB before and 66 MB after.
+- SQL lexer: PostgreSQL (and DuckDB) end a `--` comment at a carriage return as well as a newline, but the lexer only stopped at a newline, so in `SELECT 1 --\r; DELETE FROM orders WHERE true --\nAND true` the lexer layer saw one statement where PostgreSQL runs two. The parser layer refused the query and the read-only transaction and single-statement protocol would have stopped the DELETE, so nothing ran; the lexer now agrees with the server. Found by a differential test against DuckDB, which shares PostgreSQL's rule.
 
 ## [0.2.0] - 2026-10-14
 
@@ -109,6 +111,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Deterministic skill generation, also served through the MCP Skills extension.
 - Examples: Petstore, a GitHub API subset and a PostgreSQL shop with Docker Compose.
 
-[Unreleased]: https://github.com/albert-canfield/apitame/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/albert-canfield/apitame/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/albert-canfield/apitame/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/albert-canfield/apitame/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/albert-canfield/apitame/releases/tag/v0.1.0
