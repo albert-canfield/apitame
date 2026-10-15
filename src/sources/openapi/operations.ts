@@ -1,6 +1,7 @@
 import { matchesAny } from '../../safety/policy.js';
 import type { Access, JsonSchema } from '../../types.js';
 import type { OpenApiDocument } from './load.js';
+import { detectPaging, type Paging } from './pagination.js';
 import { compactSchema, isObject, truncate, typeLabel } from './schema.js';
 
 export const HTTP_METHODS = ['get', 'head', 'options', 'post', 'put', 'patch', 'delete'] as const;
@@ -109,6 +110,8 @@ export interface Operation {
   inputSchema: JsonSchema & { type: 'object' };
   /** Reason the operation cannot be called (unsupported content type), if any. */
   unsupported?: string;
+  /** How the operation pages, when apitame recognises it (GET reads only). */
+  paging?: Paging;
 }
 
 export interface ClassifyOptions {
@@ -270,6 +273,7 @@ export function extractOperations(doc: OpenApiDocument, opts: ClassifyOptions = 
       }
 
       let response: Operation['response'];
+      let responseHeaders: string[] = [];
       if (isObject(raw.responses)) {
         const codes = Object.keys(raw.responses).sort();
         const ok =
@@ -278,6 +282,7 @@ export function extractOperations(doc: OpenApiDocument, opts: ClassifyOptions = 
           codes.find((c) => c === 'default');
         const r = ok ? raw.responses[ok] : undefined;
         if (ok && isObject(r)) {
+          if (isObject(r.headers)) responseHeaders = Object.keys(r.headers);
           const picked = pickContent(r.content);
           if (picked && JSON_TYPES.test(picked.contentType) && picked.schema) {
             response = {
@@ -301,6 +306,14 @@ export function extractOperations(doc: OpenApiDocument, opts: ClassifyOptions = 
         opts,
       );
 
+      const paging = detectPaging({
+        method,
+        access,
+        params,
+        response: response?.rawSchema,
+        headers: responseHeaders,
+      });
+
       ops.push({
         id,
         method,
@@ -317,6 +330,7 @@ export function extractOperations(doc: OpenApiDocument, opts: ClassifyOptions = 
         noAuth: Array.isArray(raw.security) && raw.security.length === 0,
         access,
         inputSchema: buildInputSchema(params, body),
+        ...(paging ? { paging } : {}),
       });
     }
   }

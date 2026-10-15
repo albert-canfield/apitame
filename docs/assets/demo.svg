@@ -53,24 +53,24 @@ text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',mo
 <text id="s0l1" x="22" y="71" xml:space="preserve"><tspan class="g">✔</tspan> Read GitHub REST API (subset): 38 operations (25 read, 13 write)</text>
 <text id="s0l2" x="22" y="90" xml:space="preserve"><tspan class="g">✔</tspan> Grouped into 8 tools: repos, issues, pulls, search, users, activity, search_operations, call_operation</text>
 <text id="s0l3" x="22" y="109" xml:space="preserve"><tspan class="g">✔</tspan> Read-only mode: 13 write operations blocked until you allow them</text>
-<text id="s0l4" x="22" y="128" xml:space="preserve"><tspan class="g">✔</tspan> Tool list costs ~2,087 tokens (one tool per endpoint: ~5,522, <tspan class="g">62% saved</tspan>)</text>
+<text id="s0l4" x="22" y="128" xml:space="preserve"><tspan class="g">✔</tspan> Tool list costs ~2,218 tokens (one tool per endpoint: ~5,522, <tspan class="g">60% saved</tspan>)</text>
 <text id="s0l5" x="22" y="147" xml:space="preserve"><tspan class="g">✔</tspan> Wrote ./apitame.config.yaml and 2 skill files in ./skills</text>
 <text id="s1l0" x="22" y="52" xml:space="preserve"><tspan class="p">$</tspan> <tspan class="w">npx apitame inspect</tspan></text>
 <text id="s1l1" x="22" y="71" xml:space="preserve">github  openapi · <tspan class="c">read-only</tspan> · ./openapi.yaml</text>
 <text id="s1l2" x="22" y="90" xml:space="preserve"></text>
 <text id="s1l3" x="22" y="109" xml:space="preserve"><tspan class="d">TOOL               OPS  ACCESS  TOKENS</tspan></text>
-<text id="s1l4" x="22" y="128" xml:space="preserve">repos               11  read       550</text>
-<text id="s1l5" x="22" y="147" xml:space="preserve">issues               4  read       307</text>
-<text id="s1l6" x="22" y="166" xml:space="preserve">pulls                4  read       291</text>
-<text id="s1l7" x="22" y="185" xml:space="preserve">search               3  read       256</text>
+<text id="s1l4" x="22" y="128" xml:space="preserve">repos               11  read       566</text>
+<text id="s1l5" x="22" y="147" xml:space="preserve">issues               4  read       323</text>
+<text id="s1l6" x="22" y="166" xml:space="preserve">pulls                4  read       307</text>
+<text id="s1l7" x="22" y="185" xml:space="preserve">search               3  read       272</text>
 <text id="s1l8" x="22" y="204" xml:space="preserve">users                2  read       156</text>
-<text id="s1l9" x="22" y="223" xml:space="preserve">activity             1  read       172</text>
+<text id="s1l9" x="22" y="223" xml:space="preserve">activity             1  read       187</text>
 <text id="s1l10" x="22" y="242" xml:space="preserve">search_operations    -  read       119</text>
-<text id="s1l11" x="22" y="261" xml:space="preserve">call_operation     any  read       114</text>
+<text id="s1l11" x="22" y="261" xml:space="preserve">call_operation     any  read       130</text>
 <text id="s1l12" x="22" y="280" xml:space="preserve"></text>
-<text id="s1l13" x="22" y="299" xml:space="preserve">8 tools, ~2,087 tokens (includes 122 for server instructions; estimate)</text>
-<text id="s1l14" x="22" y="318" xml:space="preserve">  one tool per endpoint (38 tools): ~5,522 tokens, <tspan class="g">apitame saves 62%</tspan></text>
-<text id="s1l15" x="22" y="337" xml:space="preserve">  search + call only: ~233 tokens (smallest, but every task needs extra round trips)</text>
+<text id="s1l13" x="22" y="299" xml:space="preserve">8 tools, ~2,218 tokens (includes 158 for server instructions; estimate)</text>
+<text id="s1l14" x="22" y="318" xml:space="preserve">  one tool per endpoint (38 tools): ~5,522 tokens, <tspan class="g">apitame saves 60%</tspan></text>
+<text id="s1l15" x="22" y="337" xml:space="preserve">  search + call only: ~249 tokens (smallest, but every task needs extra round trips)</text>
 <text id="s1l16" x="22" y="356" xml:space="preserve"></text>
 <text id="s1l17" x="22" y="375" xml:space="preserve"><tspan class="y">!</tspan> 13 operations blocked by <tspan class="c">read-only</tspan> mode: repos/update, repos/delete, repos/create-for-authenticated-u...</text>
 <text id="s1l18" x="22" y="394" xml:space="preserve"><tspan class="g">✔</tspan> Skills: github-api</text>
@@ -78,10 +78,10 @@ text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',mo
 <text id="s2l0" x="22" y="52" xml:space="preserve"><tspan class="p">$</tspan> <tspan class="w">npx apitame test</tspan></text>
 <text id="s2l1" x="22" y="71" xml:space="preserve"><tspan class="d">CHECK                              TOOL      RESULT  MS  DETAIL</tspan></text>
 <text id="s2l2" x="22" y="90" xml:space="preserve">search/issues-and-pull-requests    search    <tspan class="g">pass</tspan>     2  HTTP 200</text>
-<text id="s2l3" x="22" y="109" xml:space="preserve">search/code                        search    <tspan class="g">pass</tspan>     3  HTTP 200</text>
-<text id="s2l4" x="22" y="128" xml:space="preserve">users/get-by-username              users     <tspan class="g">pass</tspan>     0  HTTP 200</text>
+<text id="s2l3" x="22" y="109" xml:space="preserve">search/code                        search    <tspan class="g">pass</tspan>     1  HTTP 200</text>
+<text id="s2l4" x="22" y="128" xml:space="preserve">users/get-by-username              users     <tspan class="g">pass</tspan>     1  HTTP 200</text>
 <text id="s2l5" x="22" y="147" xml:space="preserve">users/get-authenticated            users     <tspan class="g">pass</tspan>     0  HTTP 200</text>
-<text id="s2l6" x="22" y="166" xml:space="preserve">activity/list-stargazers-for-repo  activity  <tspan class="g">pass</tspan>     2  HTTP 200</text>
+<text id="s2l6" x="22" y="166" xml:space="preserve">activity/list-stargazers-for-repo  activity  <tspan class="g">pass</tspan>     1  HTTP 200</text>
 <text id="s2l7" x="22" y="185" xml:space="preserve">13 blocked write operations        safety    <tspan class="g">pass</tspan>     0  refused, nothing sent</text>
 <text id="s2l8" x="22" y="204" xml:space="preserve"></text>
 <text id="s2l9" x="22" y="223" xml:space="preserve"><tspan class="g">✔</tspan> 26 passed, 0 warnings, 0 failed</text>

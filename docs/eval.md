@@ -14,9 +14,9 @@ Every task runs on three tool surfaces built from the same spec, the same runtim
 
 | Surface | Config | Petstore | GitHub subset |
 | --- | --- | ---: | ---: |
-| Curated | The example's committed `apitame.config.yaml` | 5 tools, ~855 tokens | 8 tools, ~2,087 tokens |
-| One tool per endpoint | One group per operation, long tail off | 8 tools, ~882 tokens | 25 tools, ~4,390 tokens |
-| Search and call only | `tools: []`, long tail on | 2 tools, ~356 tokens | 2 tools, ~355 tokens |
+| Curated | The example's committed `apitame.config.yaml` | 5 tools, ~855 tokens | 8 tools, ~2,218 tokens |
+| One tool per endpoint | One group per operation, long tail off | 8 tools, ~882 tokens | 25 tools, ~4,666 tokens |
+| Search and call only | `tools: []`, long tail on | 2 tools, ~356 tokens | 2 tools, ~407 tokens |
 
 Token figures are apitame's estimates for the `tools/list` result plus the server instructions. All three surfaces run in read-only mode, so the one-tool-per-endpoint surface has one tool per read operation. That is why it is smaller than the "one tool per endpoint" column in the README, which counts writes too.
 

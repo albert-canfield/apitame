@@ -359,6 +359,8 @@ export const ConfigSchema = z
           rowLimit: z.number().int().min(1).max(10_000).default(200),
           /** Total size of files an agent may upload in one call. */
           maxUploadBytes: z.number().int().min(1_000).max(100_000_000).default(10_000_000),
+          /** Pages a list operation may read in one call (`pages`). 1 turns paging off. */
+          maxPages: z.number().int().min(1).max(20).default(5),
           /** Tool calls per minute across all tools. 0 means unlimited. */
           maxCallsPerMinute: z.number().int().min(0).max(100_000).default(120),
           /** Writes per minute (HTTP writes and named write queries). 0 means unlimited. */
