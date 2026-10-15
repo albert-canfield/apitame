@@ -94,11 +94,11 @@ Only used by OpenAPI sources.
 ```yaml
 auth: { type: none }
 
-auth: { type: bearer, token: ${API_TOKEN} }
+auth: { type: bearer, token: "${API_TOKEN}" }
 
-auth: { type: apiKey, in: header, name: X-API-Key, value: ${API_KEY} }   # in: header | query | cookie
+auth: { type: apiKey, in: header, name: X-API-Key, value: "${API_KEY}" }   # in: header | query | cookie
 
-auth: { type: basic, username: ${API_USER}, password: ${API_PASSWORD} }
+auth: { type: basic, username: "${API_USER}", password: "${API_PASSWORD}" }
 
 auth:
   type: oauth2                        # client credentials flow
