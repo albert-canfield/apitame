@@ -54,6 +54,38 @@ The decision is made in one place (`src/safety/policy.ts`) for every path into t
 
 Blocked operations are not listed in any tool, so they cost no tokens. If the agent still asks for one through `call_operation`, it gets a refusal that explains how a human can enable it. `search_operations` shows blocked operations with their status, so the agent can tell the user what exists.
 
+### Argument rules
+
+The allowlist decides which writes can run. Argument rules decide how they can be called: with only `createRefund` in `writes.allow`, an agent could still refund any amount on any charge.
+
+```yaml
+writes:
+  allow: [createRefund, issues/update]
+  rules:
+    createRefund:
+      body.amount: { required: true, max: 5000 }   # cents
+    issues/update:
+      owner: { in: [acme] }
+      repo: { pattern: '^(web|api)$' }
+      body.state: { in: [open, closed] }
+      body.labels[]: { notIn: [security] }
+```
+
+- Rules are checked after the arguments are validated (so `"5000"` for an integer is already 5000), and before the dry run preview, the confirmation prompt, the write rate limit and the request. A call that breaks a rule is never sent, never shown to a human for approval and does not count against `limits.maxWritesPerMinute`.
+- The refusal names the operation, the argument, the rule and the value, and lists every broken rule at once so the agent can correct the call in one go. Values go through the redactor, by value and by key (a rule on `body.password` never shows the password).
+- The audit log records the refusal as `blocked`, with a `reason` that names the rule, such as `writes.rules.createRefund.body.amount (max: 5000): body.amount must be at most 5000, got 6000`.
+- Rules only narrow `writes.allow`. They never make an operation callable, and in read-only mode every write stays blocked. Rules on read operations (GET, or anything in `writes.treatAsRead`) are ignored, with a warning.
+- Operations are named by their exact id, never by a pattern, so a rule cannot silently miss an operation. `serve`, `inspect` and `doctor` warn about rules for ids, arguments or fields that do not exist, and about operators that can never match the field's type (`in: [ten]` on an integer).
+- The agent sees the rules before it calls: in the tool description (`Rules: body.amount: required, at most 5000.`), in `search_operations` results and in the generated skill, whose examples follow the rules. Dry run results and confirmation prompts say which rules passed.
+- A rule on a value only checks a value that is there. When leaving an argument out is risky, add `required: true`: a refund without an amount usually refunds the whole charge, and the rule above would not see it otherwise.
+- `null` is a value: it fails `in`, `min` or `pattern` unless listed, and counts as missing for `required` but as set for `forbidden`.
+- A path that cannot be followed is refused, not skipped: with `body.items[].price` in a rule, `items` sent as an object instead of a list is refused.
+- Prefer `in` (an allowlist) to `notIn` (a denylist). `notIn` ignores case and surrounding spaces and compares numbers by value (`"042"` matches 42), but an API may accept other spellings that apitame cannot predict.
+
+`pattern` does not use the JavaScript regular expression engine. That engine backtracks, so a pattern such as `(a+)+$` or even `\d+\d+$` can take exponential or polynomial time on a value crafted by the agent, and a rule meant to protect the API would stall the server instead. apitame compiles patterns to a small automaton and runs it with a Pike VM, as RE2 does: time grows linearly with the length of the value, whatever the pattern. The syntax is the common subset (literals, `.`, classes, `\d \w \s`, groups, alternation, `* + ? {n,m}`, `^` and `$`); backreferences, lookaround, `\b` and patterns longer than 200 characters are refused when the config is loaded. The whole value must match, as if the pattern were wrapped in `^(?:...)$`.
+
+The full reference is in [configuration.md](configuration.md#writesrules).
+
 ### Confirmation
 
 Confirmation is enforced by the server, not requested politely in a description.
@@ -154,6 +186,21 @@ Named queries in `sql.queries` are written by you, not the agent, and are expose
 - DuckDB sources have no write queries: a config with `write: true` on a DuckDB source does not load.
 - Write queries (`write: true`) are hidden unless `mode: read-write` and the query name is in `writes.allow`. DELETE, DROP, TRUNCATE, ALTER, MERGE and UPDATE without WHERE are destructive and always need confirmation. The confirmation preview includes the number of rows the statement would affect right now, measured in a rolled-back transaction. On MySQL that measurement only runs when every table involved is transactional (InnoDB or NDB) and has no triggers, since a rollback cannot undo changes to MyISAM or MEMORY tables. `dryRun: true` reports the same number without changing anything; as for HTTP operations, anything but `true` or `false` is refused. Named query parameters cannot be called `dryRun` or `confirm`, and are bound with their declared types after validation (`"42"` becomes 42 for an integer, `0` becomes `"0"` for a string). `writes.destructive` patterns and the write rate limit apply as for HTTP operations.
 
+#### Argument rules
+
+`writes.rules` applies to named write queries too, keyed by the query name, with parameter names as paths:
+
+```yaml
+writes:
+  allow: [set_order_status]
+  rules:
+    set_order_status:
+      status: { in: [paid, shipped] }
+      id: { required: true, min: 1 }
+```
+
+The rules are checked after the parameters are validated and coerced, and before the dry run, the row count measured for the confirmation preview, the confirmation and the write, so a refused call never touches the database. Everything in [Argument rules](#argument-rules) for HTTP operations holds here as well, including the audit entry and the warning for rules on read queries. DuckDB sources cannot write, so rules there only produce a warning.
+
 ### Limits
 
 `limits.rowLimit` (default 200) caps rows per result and the agent can only ask for fewer. `limits.maxResponseBytes` caps every result, `list_tables` and `describe_table` included. `limits.timeoutMs` cancels slow queries on the server (PostgreSQL `statement_timeout`) and on the client; for DuckDB it stops the separate process.
@@ -194,7 +241,7 @@ With a file set, apitame appends one JSON object per line:
 {"time":"2026-10-14T01:30:00.000Z","server":"github","tool":"issues","operation":"issues/update","access":"write","outcome":"sent","status":200,"durationMs":312,"args":{"owner":"octocat","repo":"hello-world","issue_number":12,"body":{"state":"closed"}}}
 ```
 
-- `include: writes` records every write attempt, whatever happened to it: `blocked`, `dry-run`, `confirmation-requested`, `declined`, `approval-refused`, `rate-limited`, `sent` or `error`. Refused SQL queries are always recorded, because a refused DELETE is worth knowing about.
+- `include: writes` records every write attempt, whatever happened to it: `blocked`, `dry-run`, `confirmation-requested`, `declined`, `approval-refused`, `rate-limited`, `sent` or `error`. `blocked` covers writes the allowlist refuses and calls that break an [argument rule](#argument-rules); the `reason` says which. Refused SQL queries are always recorded, because a refused DELETE is worth knowing about.
 - `declined` means the human did not approve, or that apitame could not ask under `confirmation.method: elicitation` (with the reason `unauthenticated HTTP` when that is because HTTP runs without authentication). `approval-refused` means a 2026-07-28 approval id was refused, whatever the answer said, with the `reason`: `unknown` (never issued, or changed), `used` (sent again), `expired`, or `mismatch` (other arguments, another operation or another user). A forged or replayed approval therefore never looks like a human decision.
 - `include: all` records reads too.
 - Arguments go through the redactor and are capped at 2,000 characters. The file is created with owner-only permissions (`0600`).

@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { MAX_PATTERN_LENGTH } from '../safety/pattern.js';
+import { parseRulePath, RULE_PATH_HELP, ruleProblems } from '../safety/rules.js';
 
 /** Matches a `${VAR}` or `${VAR:-default}` reference anywhere in a string. */
 export const ENV_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/;
@@ -130,6 +132,91 @@ export const NamedQuerySchema = z.object({
   write: z.boolean().default(false),
 });
 
+const ruleValue = z.union([z.string(), z.number(), z.boolean(), z.null()], {
+  error: 'values must be text, numbers, true, false or null',
+});
+const ruleNumber = (op: string) => z.number({ error: `${op} must be a number` }).optional();
+const ruleLength = (op: string) =>
+  z
+    .number({ error: `${op} must be a whole number of characters or items` })
+    .int()
+    .min(0)
+    .optional();
+const ruleFlag = (op: string) =>
+  z.literal(true, { error: `${op} can only be true (leave it out otherwise)` }).optional();
+
+/** One argument rule (`writes.rules.<id>.<path>`). See src/safety/rules.ts. */
+export const ArgumentRuleSchema = z
+  .strictObject(
+    {
+      in: z.array(ruleValue, { error: 'in must be a list' }).min(1).optional(),
+      notIn: z.array(ruleValue, { error: 'notIn must be a list' }).min(1).optional(),
+      equals: ruleValue.optional(),
+      pattern: z
+        .string({ error: 'pattern must be text' })
+        .min(1)
+        .max(MAX_PATTERN_LENGTH, `patterns are limited to ${MAX_PATTERN_LENGTH} characters`)
+        .optional(),
+      min: ruleNumber('min'),
+      max: ruleNumber('max'),
+      minLength: ruleLength('minLength'),
+      maxLength: ruleLength('maxLength'),
+      required: ruleFlag('required'),
+      forbidden: ruleFlag('forbidden'),
+    },
+    {
+      error: unknownKeys({
+        enum: 'did you mean in?',
+        oneOf: 'did you mean in?',
+        not_in: 'did you mean notIn?',
+        notin: 'did you mean notIn?',
+        const: 'did you mean equals?',
+        equal: 'did you mean equals?',
+        regex: 'did you mean pattern?',
+        minimum: 'did you mean min?',
+        maximum: 'did you mean max?',
+        minlength: 'did you mean minLength?',
+        maxlength: 'did you mean maxLength?',
+      }),
+    },
+  )
+  .superRefine((rule, ctx) => {
+    for (const message of ruleProblems(rule)) ctx.addIssue({ code: 'custom', message });
+  });
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** `writes.rules`: exact operation ids (or named queries), then argument paths, then a rule. */
+const WriteRulesSchema = z
+  .record(z.string(), z.record(z.string(), ArgumentRuleSchema))
+  .superRefine(
+    (rules, ctx) => {
+      for (const [id, paths] of Object.entries(rules)) {
+        if (id.includes('*'))
+          ctx.addIssue({
+            code: 'custom',
+            path: [id],
+            message:
+              'rules take an exact operation id or named query, not a pattern, so a rule cannot miss an operation by accident',
+          });
+        if (!isRecord(paths)) continue;
+        if (Object.keys(paths).length === 0)
+          ctx.addIssue({ code: 'custom', path: [id], message: 'no rules listed' });
+        for (const path of Object.keys(paths))
+          if (!parseRulePath(path))
+            ctx.addIssue({
+              code: 'custom',
+              path: [id, path],
+              message: `not a valid rule path. ${RULE_PATH_HELP}`,
+            });
+      }
+    },
+    // Also when a rule has other errors, so every mistake is reported at once.
+    { when: (payload) => isRecord(payload.value) },
+  )
+  .default({});
+
 export const ConfigSchema = z
   .strictObject(
     {
@@ -169,16 +256,28 @@ export const ConfigSchema = z
       tools: z.array(ToolGroupSchema).default([]),
       longTail: z.object({ enabled: z.boolean().default(true) }).prefault({}),
       writes: z
-        .object({
-          /** Operation ids (or named queries) allowed to write. `*` wildcards are supported. */
-          allow: z.array(z.string()).default([]),
-          /** Writes that always need confirmation, on top of destructive ones. */
-          confirm: z.array(z.string()).default([]),
-          /** Non-GET operations that are known to be safe reads (for example POST /search). */
-          treatAsRead: z.array(z.string()).default([]),
-          /** Writes that should be treated as destructive even if they do not look like it. */
-          destructive: z.array(z.string()).default([]),
-        })
+        .strictObject(
+          {
+            /** Operation ids (or named queries) allowed to write. `*` wildcards are supported. */
+            allow: z.array(z.string()).default([]),
+            /** Writes that always need confirmation, on top of destructive ones. */
+            confirm: z.array(z.string()).default([]),
+            /** Non-GET operations that are known to be safe reads (for example POST /search). */
+            treatAsRead: z.array(z.string()).default([]),
+            /** Writes that should be treated as destructive even if they do not look like it. */
+            destructive: z.array(z.string()).default([]),
+            /** Limits on the arguments of allowed writes, checked before anything is sent. */
+            rules: WriteRulesSchema,
+          },
+          {
+            error: unknownKeys({
+              rule: 'did you mean rules?',
+              allowed: 'did you mean allow?',
+              allowlist: 'did you mean allow?',
+              confirmation: 'did you mean confirm?',
+            }),
+          },
+        )
         .prefault({}),
       confirmation: z
         .object({

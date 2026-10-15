@@ -6,6 +6,7 @@ import { ConfirmationStore, confirmOrChallenge } from '../safety/confirm.js';
 import { Guardrails, type AuditEntry, type AuditOutcome } from '../safety/guardrails.js';
 import { decide, matchesAny } from '../safety/policy.js';
 import { Redactor } from '../safety/redact.js';
+import { WriteRules } from '../safety/rules.js';
 import type { SqlDriver, TableInfo } from '../sources/sql/driver.js';
 import { guardDuckdbSelect } from '../sources/sql/duckdb-guard.js';
 import {
@@ -59,6 +60,8 @@ export class SqlRuntime implements Runtime {
   readonly mode: Config['mode'];
   readonly sourceType: 'postgres' | 'sqlite' | 'mysql' | 'duckdb';
   readonly warnings: string[] = [];
+  /** `writes.rules` for named write queries, checked before a dry run, confirmation or the write. */
+  readonly rules: WriteRules;
   private readonly named = new Map<string, NamedTool>();
   private readonly confirmations: ConfirmationStore;
   private readonly guardrails: Guardrails;
@@ -80,6 +83,30 @@ export class SqlRuntime implements Runtime {
     this.confirmations = new ConfirmationStore(config.confirmation.ttlSeconds * 1_000);
     this.guardrails =
       guardrails ?? Guardrails.fromConfig(config, process.cwd(), redactor, this.logger);
+    // DuckDB sources cannot write (named write queries are refused), so no rule can apply.
+    const readOnlySource = this.sourceType === 'duckdb';
+    this.rules = new WriteRules(
+      readOnlySource ? {} : config.writes.rules,
+      config.sql.queries.map((q) => ({
+        id: q.name,
+        access: q.write ? 'write' : 'read',
+        schema: {
+          type: 'object',
+          properties: Object.fromEntries(
+            Object.entries(q.params).map(([name, p]) => [name, { type: p.type }]),
+          ),
+          additionalProperties: false,
+        },
+      })),
+      redactor,
+      'named query',
+    );
+    if (readOnlySource)
+      for (const id of Object.keys(config.writes.rules))
+        this.warnings.push(
+          `writes.rules.${id}: DuckDB sources are read-only, so argument rules never apply.`,
+        );
+    this.warnings.push(...this.rules.warnings);
     for (const q of config.sql.queries) this.registerNamed(q);
   }
 
@@ -201,9 +228,10 @@ export class SqlRuntime implements Runtime {
         };
       }
     }
+    const rules = this.rules.describe(q.name);
     const def: ToolDefinition = {
       name: q.name,
-      description: `${q.description}${access === 'read' ? '' : ` [${access}${decision.needsConfirmation ? ', asks for confirmation' : ''}]`}`,
+      description: `${q.description}${access === 'read' ? '' : ` [${access}${decision.needsConfirmation ? ', asks for confirmation' : ''}]`}${rules ? ` Rules: ${rules}.` : ''}`,
       inputSchema: {
         type: 'object',
         properties,
@@ -543,6 +571,13 @@ export class SqlRuntime implements Runtime {
       return errorResult(`Blocked: ${decision.reason}\n${decision.hint}`);
     }
 
+    const refused = this.rules.enforce(named.query.name, params);
+    if (refused) {
+      audit('blocked', { reason: refused.reason });
+      return errorResult(refused.message);
+    }
+    const rulesPassed = this.rules.describe(named.query.name);
+
     const timeoutMs = this.config.limits.timeoutMs;
     if (dryRun) {
       const res = await this.driver.writeQuery(bound.sql, bound.params, {
@@ -556,6 +591,7 @@ export class SqlRuntime implements Runtime {
         query: named.query.name,
         params,
         wouldAffectRows: res.rowCount,
+        ...(rulesPassed ? { rulesPassed } : {}),
       });
     }
 
@@ -577,7 +613,7 @@ export class SqlRuntime implements Runtime {
       }
       const outcome = await confirmOrChallenge({
         id: named.query.name,
-        preview: `${named.access.toUpperCase()}: ${named.query.description}\nSQL: ${named.sql}\nParameters: ${JSON.stringify(params)}\nRows that would be affected now: ${affected}`,
+        preview: `${named.access.toUpperCase()}: ${named.query.description}\nSQL: ${named.sql}\nParameters: ${JSON.stringify(params)}\nRows that would be affected now: ${affected}${rulesPassed ? `\nRules passed: ${rulesPassed}.` : ''}`,
         args: params,
         confirmToken: typeof confirm === 'string' ? confirm : undefined,
         method: this.config.confirmation.method,

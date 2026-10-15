@@ -83,9 +83,19 @@ issues               4  read       307
 ✔ Skills: github-api
 ```
 
+With [argument rules](configuration.md#writesrules), it lists them too, and warns about rules that cannot apply:
+
+```text
+✔ Argument rules for 2 writes, checked before anything is sent or anyone is asked:
+  OPERATION   ARGUMENT       RULE
+  addPet      body.status    one of "available", "pending"
+  placeOrder  body.quantity  required, between 1 and 5
+! writes.rules.getPetById: "getPetById" is a read operation; rules only apply to writes, so these are ignored.
+```
+
 | Option | Description |
 | --- | --- |
-| `--json` | Machine-readable output: tools with tokens, totals, blocked operations, skills and warnings. |
+| `--json` | Machine-readable output: tools with tokens, totals, blocked operations, argument rules per operation, skills and warnings. |
 | `--verbose` | List the operations inside each tool. |
 | `--max-tokens <n>` | Exit with code 1 when the tool list costs more than `n` tokens. Use it in CI to stop the tool list from growing unnoticed. |
 
@@ -132,6 +142,7 @@ $ apitame doctor
 | .env | If present, that git ignores it (a committed `.env` leaks secrets). |
 | Environment | Every `${VAR}` the config needs is set (after loading `.env`). |
 | writes.* | Every allowlist or confirm pattern matches at least one operation (catches typos). |
+| writes.rules | Argument rules name operations, arguments and fields that exist, are not on reads (where they are ignored), and use operators that can match the field's type. |
 | API | Calls the first GET that needs no input, to test DNS, TLS and credentials. 401 and 403 are failures. |
 | DuckDB driver | For DuckDB sources: `@duckdb/node-api` loads in a child process, and its DuckDB version (a warning when it is newer than the tested release). |
 | Database | Connects, lists tables, and checks whether the role (or the SQLite or DuckDB file) could write. |

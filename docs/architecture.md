@@ -39,7 +39,7 @@ flowchart LR
 | `src/sources/openapi/` | Load and dereference specs (file or URL, external refs, discovery), convert Swagger 2.0 in memory (`swagger2.ts`), normalize operations and body kinds, compact JSON Schemas, classify access, group operations into tools. |
 | `src/sources/sql/` | Database-accurate lexer (PostgreSQL, MySQL, SQLite and DuckDB rules), the SELECT guard, write classification, named parameter binding, and the PostgreSQL, MySQL, SQLite and DuckDB drivers (each with a `privileges()` check). DuckDB's parser layer (`duckdb-guard.ts`) asks DuckDB itself, its driver package is an optional peer dependency, and all DuckDB work runs in a child process (`duckdb-worker.ts`, built to `dist/duckdb-worker.js`) that is killed on timeout. Loaded on demand. |
 | `src/server/` | Runtimes that turn a source into tools, the HTTP client (redirect policy, uploads, size caps), response field selection (`fields.ts`), argument validation, the MCP server wiring, transports, OAuth access token checks for the HTTP transport (`oauth.ts`), and skills over MCP. |
-| `src/safety/` | The policy decision (`decide`), confirmation tokens, approval ids and the elicitation flow for both protocol eras, the redactor, and `guardrails.ts` (per-minute rate limits and the JSON Lines audit log, shared by both runtimes). |
+| `src/safety/` | The policy decision (`decide`), argument rules for writes (`rules.ts`, with a linear-time matcher for `pattern` in `pattern.ts`), confirmation tokens, approval ids and the elicitation flow for both protocol eras, the redactor, and `guardrails.ts` (per-minute rate limits and the JSON Lines audit log, shared by both runtimes). |
 | `src/auth/` | Bearer, API key, basic and OAuth2 client credentials providers. |
 | `src/generator/` | Config file rendering (with comments), skill generation, and a small ZIP writer for packaging skills as uploads. |
 | `src/mock/` | Sample values from JSON Schema and the mock HTTP server used by `test`. |
@@ -52,7 +52,7 @@ flowchart LR
 3. The guardrails check the per-minute call budget.
 4. `OpenApiRuntime` resolves the operation (from `operation` for grouped tools, the tool itself for single-operation tools, or `operationId` for `call_operation`).
 5. `safety/policy.decide` returns allowed, blocked (with a reason and a hint), or allowed with confirmation.
-6. Arguments are validated with Ajv against the operation's compact schema.
+6. Arguments are validated with Ajv against the operation's compact schema. Writes are then checked against `writes.rules` (`safety/rules.ts`); a call that breaks a rule is refused here, before any preview, approval or rate limit.
 7. `http-client.buildRequest` builds the URL (refusing dot segments), query, headers and body (JSON, form, multipart or binary, with the upload cap). With `dryRun`, the redacted request is returned here, files summarized.
 8. If confirmation is needed (after a check that the write budget is not used up, so a rate-limited call never asks), `safety/confirm.confirmOrChallenge` elicits approval, returns the approval form with a new approval id (2026-07-28 first round), checks the answer and the approval id (second round), or issues or checks a one-time token. Writes then take a slot of the per-minute write budget.
 9. `http-client.sendRequest` applies auth, follows redirects (credentials only to the same origin), enforces the timeout, retries once on 401 for OAuth2, applies `fields`, and trims large JSON.
@@ -64,7 +64,7 @@ flowchart LR
 2. The driver runs the cleaned SQL: PostgreSQL in a read-only transaction through a cursor with the extended protocol; MySQL in a read-only transaction with `max_execution_time` and `sql_select_limit`; SQLite in a worker thread on a read-only connection; DuckDB in a child process (killed when the timeout passes), in a new read-only, locked-down instance per call, after DuckDB confirms one SELECT statement.
 3. Rows come back as arrays, trimmed to the row limit and the response size cap, then redacted.
 
-Named queries are validated once at startup. Write queries go through the same policy and confirmation code as HTTP writes; their dry run is a transaction that is rolled back.
+Named queries are validated once at startup. Write queries go through the same policy, argument rules and confirmation code as HTTP writes; their dry run is a transaction that is rolled back.
 
 ## Protocol eras
 
