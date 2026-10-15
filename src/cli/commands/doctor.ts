@@ -11,6 +11,7 @@ import { createRuntime, type AnyRuntime } from '../../server/runtime.js';
 import type { SqlRuntime } from '../../server/sql-runtime.js';
 import type { GeneratedFile } from '../../generator/skills.js';
 import { apitameCommand, DUCKDB_PACKAGE, DUCKDB_SPEC } from '../../sources/sql/duckdb-package.js';
+import { withDeadline } from '../../util/deadline.js';
 import { c } from '../ui.js';
 import { claudeDesktopConfigPath } from './add-to.js';
 import { checkHttp, wantsHttpChecks } from './doctor-http.js';
@@ -117,6 +118,9 @@ function checkPatterns(
   }
 }
 
+/** How long the API reachability check may take. */
+const API_TIMEOUT_MS = 10_000;
+
 async function checkApi(
   rt: OpenApiRuntime,
   add: (s: Status, check: string, detail: string) => void,
@@ -154,16 +158,21 @@ async function checkApi(
     return;
   }
   try {
-    const res = await fetch(rt.baseUrl, {
-      method: 'GET',
-      redirect: 'manual',
-      signal: AbortSignal.timeout(10_000),
-    });
-    await res.body?.cancel().catch(() => {});
+    const baseUrl = rt.baseUrl;
+    // The deadline covers the whole exchange, held by a timer (see withDeadline).
+    const status = await withDeadline(
+      API_TIMEOUT_MS,
+      () => new Error(`no answer within ${API_TIMEOUT_MS / 1000} seconds`),
+      async (signal) => {
+        const res = await fetch(baseUrl, { method: 'GET', redirect: 'manual', signal });
+        await res.body?.cancel().catch(() => {});
+        return res.status;
+      },
+    );
     add(
       'ok',
       'API',
-      `${rt.baseUrl} is reachable (HTTP ${res.status}); no parameterless read to test auth with`,
+      `${rt.baseUrl} is reachable (HTTP ${status}); no parameterless read to test auth with`,
     );
   } catch (err) {
     add('fail', 'API', `${rt.baseUrl} is not reachable: ${(err as Error).message}`);

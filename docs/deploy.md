@@ -191,6 +191,22 @@ The proxy must pass two paths to apitame unchanged: `/mcp` and `/.well-known/oau
 
 apitame must also reach the issuer over HTTPS from inside the container, to read its metadata and signing keys. If your identity provider uses a private certificate authority, mount its certificate and set `NODE_EXTRA_CA_CERTS` to its path.
 
+If your identity provider issues opaque tokens, apitame asks its introspection endpoint about each one (see [clients.md](clients.md#opaque-tokens-token-introspection)). The client secret comes from the environment, so it goes in `.env` next to the other credentials, never in the config:
+
+```yaml
+http:
+  oauth:
+    issuer: https://login.example.com/realms/tools
+    resource: https://mcp.example.com/mcp
+    scopes: [mcp:tools]
+    introspection:
+      url: https://login.example.com/realms/tools/protocol/openid-connect/token/introspect
+      clientId: apitame
+      clientSecret: ${INTROSPECTION_CLIENT_SECRET}   # set in .env
+```
+
+The container must reach that endpoint too. Each new token costs one request to it, and active answers are cached for a minute by default, so a restart briefly sends more of them.
+
 Then let `doctor` check the whole chain from inside the deployment:
 
 ```bash
@@ -204,6 +220,8 @@ docker compose exec apitame apitame doctor --host 0.0.0.0
 ✔ OAuth keys      2 signing keys at https://login.example.com/realms/tools/protocol/openid-connect/certs
 ✔ Public URL      https://mcp.example.com/mcp reaches apitame, and its metadata names this issuer
 ```
+
+With `http.oauth.introspection`, `doctor` also asks the endpoint about a random token with the configured client, as `serve` does at startup, and fails if the credentials are rejected, the answer is not RFC 7662, or that token comes back active. Under `verify: introspection` it skips the signing keys, which apitame does not use then.
 
 It warns, among other things, when the proxy does not pass the metadata path, when the issuer's metadata names a slightly different issuer (a trailing slash), when the metadata lacks what MCP clients need to sign users in, and when `resource` is not a public HTTPS URL. See [cli.md](cli.md#apitame-doctor) for every check.
 

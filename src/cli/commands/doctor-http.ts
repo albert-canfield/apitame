@@ -1,4 +1,10 @@
-import type { Config } from '../../config/schema.js';
+import { verifyMode, type Config, type OAuthConfig } from '../../config/schema.js';
+import { Redactor } from '../../safety/redact.js';
+import {
+  createOAuthVerifiers,
+  IntrospectionMisconfigured,
+  type IntrospectionVerifier,
+} from '../../server/introspection.js';
 import {
   assertSecureUrl,
   FETCH_TIMEOUT_MS,
@@ -11,13 +17,14 @@ import {
   show,
 } from '../../server/oauth.js';
 import { isLoopback } from '../../server/transport.js';
+import { withDeadline } from '../../util/deadline.js';
 import type { Finding } from './doctor.js';
 
 /**
  * `doctor` checks for `serve --transport http` deployments: authentication, and with `http.oauth`
- * the resource URL, the issuer's metadata, its signing keys and the public URL behind the
- * reverse proxy. Each check is a function in `HTTP_CHECKS`; later checks read what earlier ones
- * found from the shared context.
+ * the resource URL, the issuer's metadata, its signing keys, token introspection and the public
+ * URL behind the reverse proxy. Each check is a function in `HTTP_CHECKS`; later checks read
+ * what earlier ones found from the shared context.
  */
 
 type HttpConfig = Config['http'];
@@ -31,6 +38,10 @@ export interface HttpCheckOptions {
   /** Skip the checks that contact the authorization server or the public URL. */
   offline?: boolean | undefined;
   fetch?: typeof fetch;
+  /** Where secrets in the config come from. Default: `process.env`. */
+  env?: NodeJS.ProcessEnv | undefined;
+  /** How long one request may take, answer included. Default 10 seconds, as for `serve`. */
+  timeoutMs?: number | undefined;
 }
 
 /** What the HTTP checks share. A check may record what later checks need. */
@@ -42,6 +53,8 @@ export interface HttpCheckContext {
   token: string | undefined;
   offline: boolean;
   fetch: typeof fetch;
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
   add: Add;
   /** `http.oauth.resource`, once `checkResource` found it usable. */
   resource?: URL;
@@ -57,6 +70,7 @@ const AUTH = 'HTTP auth';
 const RESOURCE = 'OAuth resource';
 const ISSUER = 'OAuth issuer';
 const KEYS = 'OAuth keys';
+const INTROSPECTION = 'OAuth introspection';
 const PUBLIC = 'Public URL';
 
 /** A shorter `APITAME_HTTP_TOKEN` is reported: it is the only thing between the network and every tool. */
@@ -77,37 +91,44 @@ const shownUrl = (value: string) => (URL.canParse(value) ? new URL(value).href :
 
 type Document = { ok: true; json: unknown } | { ok: false; problem: string };
 
+/** Why a request ended at its deadline. */
+const timedOut = (url: string, ms: number) => () =>
+  new Error(`${url} did not answer within ${ms / 1000} seconds.`);
+
 /**
  * GET a JSON document with the hardening `JwtVerifier` uses for the issuer's documents:
- * no redirects, a timeout, and at most 1 MB.
+ * no redirects, at most 1 MB, and a deadline that covers the whole answer, so a server that
+ * drips its body cannot hold doctor.
  */
-async function getDocument(url: string, fetchImpl: typeof fetch): Promise<Document> {
-  let res: Response;
+async function getDocument(ctx: HttpCheckContext, url: string): Promise<Document> {
   try {
-    res = await fetchImpl(url, {
-      headers: { Accept: 'application/json' },
-      redirect: 'error',
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    return await withDeadline(ctx.timeoutMs, timedOut(url, ctx.timeoutMs), async (signal) => {
+      let res: Response;
+      try {
+        res = await ctx.fetch(url, {
+          headers: { Accept: 'application/json' },
+          redirect: 'error',
+          signal,
+        });
+      } catch (err) {
+        const why = reason(err);
+        const hint = /redirect/i.test(why) ? ' Redirects are not followed: use the final URL.' : '';
+        return { ok: false, problem: `Fetching ${url} failed (${why}).${hint}` };
+      }
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => {});
+        return { ok: false, problem: `${url} answered HTTP ${res.status}.` };
+      }
+      const text = await readCapped(res, url);
+      try {
+        return { ok: true, json: JSON.parse(text) as unknown };
+      } catch {
+        return { ok: false, problem: `${url} did not answer with JSON.` };
+      }
     });
   } catch (err) {
-    const why = reason(err);
-    const hint = /redirect/i.test(why) ? ' Redirects are not followed: use the final URL.' : '';
-    return { ok: false, problem: `Fetching ${url} failed (${why}).${hint}` };
-  }
-  if (!res.ok) {
-    await res.body?.cancel().catch(() => {});
-    return { ok: false, problem: `${url} answered HTTP ${res.status}.` };
-  }
-  let text: string;
-  try {
-    text = await readCapped(res, url);
-  } catch (err) {
+    // The deadline, or a body over 1 MB.
     return { ok: false, problem: (err as Error).message };
-  }
-  try {
-    return { ok: true, json: JSON.parse(text) as unknown };
-  } catch {
-    return { ok: false, problem: `${url} did not answer with JSON.` };
   }
 }
 
@@ -124,7 +145,9 @@ function checkAuthentication(ctx: HttpCheckContext): void {
     return;
   }
   if (oauth) {
-    add('ok', AUTH, `OAuth access tokens from ${oauth.issuer} required on ${host}`);
+    const mode = verifyMode(oauth);
+    const how = mode === 'jwt' ? '' : ` (verify: ${mode})`;
+    add('ok', AUTH, `OAuth access tokens from ${oauth.issuer} required on ${host}${how}`);
     for (const w of oauthWarnings(oauth)) add('warn', AUTH, w);
     return;
   }
@@ -238,9 +261,11 @@ async function checkIssuer(ctx: HttpCheckContext): Promise<void> {
     return;
   }
   if (oauth.jwksUri) ctx.jwksUri = oauth.jwksUri;
+  // Under verify: introspection, serve reads no keys and so needs no metadata of its own.
+  const needsKeys = verifyMode(oauth) !== 'introspection';
   const problems: string[] = [];
   for (const url of metadataUrls(oauth.issuer)) {
-    const got = await getDocument(url, ctx.fetch);
+    const got = await getDocument(ctx, url);
     if (!got.ok) {
       problems.push(got.problem);
       continue;
@@ -250,19 +275,23 @@ async function checkIssuer(ctx: HttpCheckContext): Promise<void> {
     const doc = got.json;
     const usable =
       isRecord(doc) &&
-      (typeof doc.jwks_uri === 'string' || (oauth.jwksUri && typeof doc.issuer === 'string'));
+      (typeof doc.jwks_uri === 'string' ||
+        ((oauth.jwksUri || !needsKeys) && typeof doc.issuer === 'string'));
     if (!usable) {
       problems.push(`${url} is not authorization server metadata.`);
       continue;
     }
-    reportMetadata(ctx, oauth, url, doc);
+    reportMetadata(ctx, oauth, url, doc, needsKeys);
     return;
   }
-  if (oauth.jwksUri) {
+  if (oauth.jwksUri || !needsKeys) {
+    const serve = oauth.jwksUri
+      ? 'serve reads the keys from http.oauth.jwksUri'
+      : 'serve does not need it under verify: introspection';
     ctx.add(
       'warn',
       ISSUER,
-      `no authorization server metadata found: ${problems.join(' ')} serve reads the keys from http.oauth.jwksUri, but MCP clients need the metadata to find where to sign users in.`,
+      `no authorization server metadata found: ${problems.join(' ')} ${serve}, but MCP clients need the metadata to find where to sign users in.`,
     );
     return;
   }
@@ -275,9 +304,10 @@ async function checkIssuer(ctx: HttpCheckContext): Promise<void> {
 
 function reportMetadata(
   ctx: HttpCheckContext,
-  oauth: NonNullable<HttpConfig['oauth']>,
+  oauth: OAuthConfig,
   url: string,
   doc: Record<string, unknown>,
+  needsKeys: boolean,
 ): void {
   if (doc.issuer !== oauth.issuer) {
     const slash =
@@ -294,7 +324,7 @@ function reportMetadata(
     ctx.issuerMetadata = { url, document: doc };
   }
   const published = typeof doc.jwks_uri === 'string' ? doc.jwks_uri : undefined;
-  if (published && !oauth.jwksUri) {
+  if (published && !oauth.jwksUri && needsKeys) {
     try {
       // The normalized form: a remote value is never printed raw.
       ctx.jwksUri = assertSecureUrl(published, 'jwks_uri').href;
@@ -332,14 +362,25 @@ function reportMetadata(
 /** The signing keys, loaded exactly as `serve` loads them at startup. */
 async function checkSigningKeys(ctx: HttpCheckContext): Promise<void> {
   const oauth = ctx.http.oauth;
+  if (!oauth) return;
+  if (verifyMode(oauth) === 'introspection') {
+    ctx.add(
+      'info',
+      KEYS,
+      'not used: under verify: introspection the authorization server checks every token.',
+    );
+    return;
+  }
   // Without a key set location, checkIssuer has reported why.
-  if (!oauth || ctx.offline || !ctx.jwksUri) return;
+  if (ctx.offline || !ctx.jwksUri) return;
   try {
     // The resource plays no part in loading keys. A stand-in keeps a resource problem, reported
     // by checkResource, from hiding a problem with the keys.
     const verifier = new JwtVerifier(
       { ...oauth, resource: ctx.resource?.href ?? oauth.issuer, jwksUri: ctx.jwksUri },
       ctx.fetch,
+      Date.now,
+      ctx.timeoutMs,
     );
     const keys = await verifier.warmUp();
     if (keys === 0) {
@@ -363,13 +404,18 @@ async function checkPublicUrl(ctx: HttpCheckContext): Promise<void> {
   const oauth = ctx.http.oauth;
   if (!oauth || ctx.offline || !ctx.resource) return;
   const metadataUrl = protectedResourceMetadataUrl(oauth.resource);
-  let res: Response;
+  let answer: { status: number; challenge: string };
   try {
-    // A redirect is an answer too (a proxy that adds a trailing slash, say), so it is not followed.
-    res = await ctx.fetch(oauth.resource, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
+    answer = await withDeadline(
+      ctx.timeoutMs,
+      timedOut(oauth.resource, ctx.timeoutMs),
+      async (signal) => {
+        // A redirect is an answer too (a proxy that adds a trailing slash, say): not followed.
+        const res = await ctx.fetch(oauth.resource, { redirect: 'manual', signal });
+        await res.body?.cancel().catch(() => {});
+        return { status: res.status, challenge: res.headers.get('www-authenticate') ?? '' };
+      },
+    );
   } catch (err) {
     ctx.add(
       'info',
@@ -378,17 +424,16 @@ async function checkPublicUrl(ctx: HttpCheckContext): Promise<void> {
     );
     return;
   }
-  await res.body?.cancel().catch(() => {});
-  const challenge = res.headers.get('www-authenticate') ?? '';
-  if (res.status !== 401 || !challenge.includes(`resource_metadata="${metadataUrl}"`)) {
+  const { status, challenge } = answer;
+  if (status !== 401 || !challenge.includes(`resource_metadata="${metadataUrl}"`)) {
     ctx.add(
       'warn',
       PUBLIC,
-      `${oauth.resource} answered HTTP ${res.status} without apitame's challenge pointing to ${metadataUrl}. Check that the reverse proxy passes ${ctx.resource.pathname} to apitame's ${MCP_PATH}, and that apitame runs with this config.`,
+      `${oauth.resource} answered HTTP ${status} without apitame's challenge pointing to ${metadataUrl}. Check that the reverse proxy passes ${ctx.resource.pathname} to apitame's ${MCP_PATH}, and that apitame runs with this config.`,
     );
     return;
   }
-  const got = await getDocument(metadataUrl, ctx.fetch);
+  const got = await getDocument(ctx, metadataUrl);
   if (!got.ok) {
     ctx.add(
       'warn',
@@ -411,14 +456,70 @@ async function checkPublicUrl(ctx: HttpCheckContext): Promise<void> {
 }
 
 /**
- * The HTTP checks, in order. A check for another way to verify tokens (token introspection, say)
- * goes after `checkIssuer`, whose metadata it can read from the context.
+ * Token introspection (`http.oauth.introspection`): the verifier is built by the same code as in
+ * `serve` (secrets resolved from the environment, the URL checked), and checked as `serve` checks
+ * it at startup, by asking about a random token nobody issued. Rejected credentials, an answer
+ * that is not RFC 7662, and `active: true` for that token are failures.
+ */
+async function checkIntrospection(ctx: HttpCheckContext): Promise<void> {
+  const oauth = ctx.http.oauth;
+  const settings = oauth?.introspection;
+  if (!oauth || !settings) return;
+  // Everything said here goes through a redactor that knows the client secret.
+  const redactor = new Redactor();
+  const add = (status: Finding['status'], detail: string) =>
+    ctx.add(status, INTROSPECTION, redactor.text(detail));
+  let verifier: IntrospectionVerifier | undefined;
+  try {
+    // Only the introspection verifier, and a stand-in resource as for the keys: problems with the
+    // JWT settings or the resource are reported by their own checks.
+    verifier = createOAuthVerifiers(
+      { ...oauth, verify: 'introspection', resource: ctx.resource?.href ?? oauth.issuer },
+      { redactor, env: ctx.env, fetch: ctx.fetch },
+    ).introspection;
+  } catch (err) {
+    add('fail', `${(err as Error).message} serve refuses to start until this is fixed.`);
+    return;
+  }
+  if (!verifier) return;
+  const published = ctx.issuerMetadata?.document.introspection_endpoint;
+  if (typeof published === 'string' && shownUrl(published) !== shownUrl(settings.url)) {
+    add(
+      'warn',
+      `the issuer's metadata (${ctx.issuerMetadata?.url}) names the introspection endpoint ${shownUrl(published)}, but http.oauth.introspection.url is ${settings.url}. apitame only uses the configured URL: check that it is the authorization server's endpoint.`,
+    );
+  }
+  if (ctx.offline) {
+    add('info', `${settings.url} not contacted (--offline)`);
+    return;
+  }
+  try {
+    await verifier.warmUp();
+    add(
+      'ok',
+      `${settings.url} accepts apitame's credentials and calls a token nobody issued inactive`,
+    );
+  } catch (err) {
+    const message = (err as Error).message;
+    add(
+      'fail',
+      err instanceof IntrospectionMisconfigured
+        ? `${message} serve refuses to start with it.`
+        : `${message} Tokens that need introspection are refused until it works.`,
+    );
+  }
+}
+
+/**
+ * The HTTP checks, in order. Checks for the ways tokens are verified (keys, introspection) come
+ * after `checkIssuer`, whose metadata they can read from the context.
  */
 export const HTTP_CHECKS: HttpCheck[] = [
   checkAuthentication,
   checkResource,
   checkIssuer,
   checkSigningKeys,
+  checkIntrospection,
   checkPublicUrl,
 ];
 
@@ -439,6 +540,8 @@ export async function checkHttp(http: HttpConfig, opts: HttpCheckOptions, add: A
     token: opts.token || undefined,
     offline: opts.offline === true,
     fetch: opts.fetch ?? fetch,
+    env: opts.env ?? process.env,
+    timeoutMs: opts.timeoutMs ?? FETCH_TIMEOUT_MS,
     add,
   };
   for (const check of HTTP_CHECKS) await check(ctx);
