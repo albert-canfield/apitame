@@ -1,6 +1,6 @@
 {
   "name": "apitame",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Turn an OpenAPI spec or a SQL database into a safe, curated MCP server plus agent skills. One command.",
   "keywords": [
     "mcp",

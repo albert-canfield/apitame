@@ -93,13 +93,13 @@ npx apitame add-to claude-code --write  # writes .mcp.json and installs the skil
     "github": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "apitame@0.2", "serve", "--config", "${CLAUDE_PROJECT_DIR:-.}/apitame.config.yaml"]
+      "args": ["-y", "apitame@0.3", "serve", "--config", "${CLAUDE_PROJECT_DIR:-.}/apitame.config.yaml"]
     }
   }
 }
 ```
 
-Or: `claude mcp add --transport stdio --scope project github -- npx -y apitame@0.2 serve --config /abs/path/apitame.config.yaml`. Skills go to `.claude/skills/`.
+Or: `claude mcp add --transport stdio --scope project github -- npx -y apitame@0.3 serve --config /abs/path/apitame.config.yaml`. Skills go to `.claude/skills/`.
 
 </details>
 
@@ -109,10 +109,10 @@ Or: `claude mcp add --transport stdio --scope project github -- npx -y apitame@0
 ```toml
 [mcp_servers.github]
 command = "npx"
-args = ["-y", "apitame@0.2", "serve", "--config", "/abs/path/apitame.config.yaml"]
+args = ["-y", "apitame@0.3", "serve", "--config", "/abs/path/apitame.config.yaml"]
 ```
 
-Or: `codex mcp add github -- npx -y apitame@0.2 serve --config /abs/path/apitame.config.yaml`. Skills go to `.agents/skills/`.
+Or: `codex mcp add github -- npx -y apitame@0.3 serve --config /abs/path/apitame.config.yaml`. Skills go to `.agents/skills/`.
 
 </details>
 
@@ -125,7 +125,7 @@ Or: `codex mcp add github -- npx -y apitame@0.2 serve --config /abs/path/apitame
     "github": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "apitame@0.2", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
+      "args": ["-y", "apitame@0.3", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
     }
   }
 }
@@ -144,7 +144,7 @@ Or: `codex mcp add github -- npx -y apitame@0.2 serve --config /abs/path/apitame
     "github": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "apitame@0.2", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
+      "args": ["-y", "apitame@0.3", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
     }
   }
 }

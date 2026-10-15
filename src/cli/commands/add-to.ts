@@ -33,7 +33,7 @@ interface ServerCommand {
 /**
  * Default launcher: npx with the current minor version, so updates do not break configs.
  * Optional packages (the DuckDB driver) are added with `-p`, so npx installs them next
- * to apitame: `npx -y -p apitame@0.2 -p @duckdb/node-api@1.5.6-r.1 apitame serve ...`.
+ * to apitame: `npx -y -p apitame@0.3 -p @duckdb/node-api@1.5.6-r.1 apitame serve ...`.
  */
 function launcher(opts: AddToOptions, configArg: string, extras: string[] = []): ServerCommand {
   if (opts.command) {

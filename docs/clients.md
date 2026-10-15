@@ -4,7 +4,7 @@
 
 In the examples the server is called `github` and the config sits at the project root. apitame reads secrets from the environment or from `.env` next to `apitame.config.yaml`, so none of these files contain credentials.
 
-For a DuckDB source, the server needs the optional DuckDB driver next to apitame, and `add-to` adds it to every launcher: `"args": ["-y", "-p", "apitame@0.2", "-p", "@duckdb/node-api@1.5.6-r.1", "apitame", "serve", ...]` (the driver is pinned to the release apitame is tested with) instead of `["-y", "apitame@0.2", "serve", ...]`. See [DuckDB](sql.md#duckdb).
+For a DuckDB source, the server needs the optional DuckDB driver next to apitame, and `add-to` adds it to every launcher: `"args": ["-y", "-p", "apitame@0.3", "-p", "@duckdb/node-api@1.5.6-r.1", "apitame", "serve", ...]` (the driver is pinned to the release apitame is tested with) instead of `["-y", "apitame@0.3", "serve", ...]`. See [DuckDB](sql.md#duckdb).
 
 ## Claude Code
 
@@ -16,7 +16,7 @@ Project scope, shared through git (`.mcp.json` at the project root):
     "github": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "apitame@0.2", "serve", "--config", "${CLAUDE_PROJECT_DIR:-.}/apitame.config.yaml"]
+      "args": ["-y", "apitame@0.3", "serve", "--config", "${CLAUDE_PROJECT_DIR:-.}/apitame.config.yaml"]
     }
   }
 }
@@ -25,7 +25,7 @@ Project scope, shared through git (`.mcp.json` at the project root):
 With the CLI:
 
 ```bash
-claude mcp add --transport stdio --scope project github -- npx -y apitame@0.2 serve --config /abs/path/apitame.config.yaml
+claude mcp add --transport stdio --scope project github -- npx -y apitame@0.3 serve --config /abs/path/apitame.config.yaml
 ```
 
 Skills: `.claude/skills/<name>/SKILL.md` for the project, or `~/.claude/skills/` for all projects. Claude Code asks you to approve project servers the first time.
@@ -37,13 +37,13 @@ User scope (`~/.codex/config.toml`), or project scope (`.codex/config.toml`, rea
 ```toml
 [mcp_servers.github]
 command = "npx"
-args = ["-y", "apitame@0.2", "serve", "--config", "/abs/path/apitame.config.yaml"]
+args = ["-y", "apitame@0.3", "serve", "--config", "/abs/path/apitame.config.yaml"]
 ```
 
 With the CLI (writes the user config):
 
 ```bash
-codex mcp add github -- npx -y apitame@0.2 serve --config /abs/path/apitame.config.yaml
+codex mcp add github -- npx -y apitame@0.3 serve --config /abs/path/apitame.config.yaml
 ```
 
 Skills: `.agents/skills/` in the repository, or `~/.agents/skills/`.
@@ -58,7 +58,7 @@ Skills: `.agents/skills/` in the repository, or `~/.agents/skills/`.
     "github": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "apitame@0.2", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
+      "args": ["-y", "apitame@0.3", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
     }
   }
 }
@@ -76,7 +76,7 @@ Skills: `.agents/skills/` in the repository, or `~/.agents/skills/`.
     "github": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "apitame@0.2", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
+      "args": ["-y", "apitame@0.3", "serve", "--config", "${workspaceFolder}/apitame.config.yaml"]
     }
   }
 }
@@ -93,7 +93,7 @@ Skills: `.agents/skills/`, `.github/skills/` or `.claude/skills/`.
   "mcpServers": {
     "github": {
       "command": "npx",
-      "args": ["-y", "apitame@0.2", "serve", "--config", "/abs/path/apitame.config.yaml"]
+      "args": ["-y", "apitame@0.3", "serve", "--config", "/abs/path/apitame.config.yaml"]
     }
   }
 }
@@ -110,7 +110,7 @@ Claude Desktop reads `claude_desktop_config.json` (macOS: `~/Library/Application
   "mcpServers": {
     "github": {
       "command": "/Users/you/.nvm/versions/node/v22.22.2/bin/npx",
-      "args": ["-y", "apitame@0.2", "serve", "--config", "/Users/you/project/apitame.config.yaml"],
+      "args": ["-y", "apitame@0.3", "serve", "--config", "/Users/you/project/apitame.config.yaml"],
       "env": { "PATH": "/Users/you/.nvm/versions/node/v22.22.2/bin:..." }
     }
   }
@@ -127,7 +127,7 @@ Any MCP client that can launch a stdio server works with:
 
 ```text
 command: npx
-args:    -y apitame@0.2 serve --config /abs/path/apitame.config.yaml
+args:    -y apitame@0.3 serve --config /abs/path/apitame.config.yaml
 ```
 
 ## Streamable HTTP
@@ -232,7 +232,7 @@ Good to know:
 
 ## Pinning and local builds
 
-`add-to` pins the minor version (`apitame@0.2`) so a new release cannot change your server's behavior without you noticing. To run a local checkout instead:
+`add-to` pins the minor version (`apitame@0.3`) so a new release cannot change your server's behavior without you noticing. To run a local checkout instead:
 
 ```bash
 npx apitame add-to claude-code --command "node /path/to/apitame/dist/cli.js"
