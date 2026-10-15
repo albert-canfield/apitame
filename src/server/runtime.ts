@@ -54,7 +54,14 @@ export async function createRuntime(
       : target.kind === 'mysql'
         ? new (await import('../sources/sql/mysql.js')).MysqlDriver(target.url)
         : target.kind === 'duckdb'
-          ? await (await import('../sources/sql/duckdb.js')).DuckdbDriver.open(target.file)
+          ? await (
+              await import('../sources/sql/duckdb.js')
+            ).DuckdbDriver.open(target.file, {
+              memoryLimit: config.sql.duckdb?.memoryLimit,
+              threads: config.sql.duckdb?.threads,
+              timeoutMs: config.limits.timeoutMs,
+              warn: (message) => logger.warn(message),
+            })
           : new (await import('../sources/sql/sqlite.js')).SqliteDriver(target.file);
   return new SqlRuntime(
     config,

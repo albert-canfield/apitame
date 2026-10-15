@@ -416,7 +416,7 @@ export class SqlRuntime implements Runtime {
       ...(result.truncated
         ? {
             truncated: true,
-            note: `Only the first ${limit} rows are shown. Add filters, aggregation or ORDER BY ... LIMIT.`,
+            note: `Only the first ${Math.min(limit, result.rowCount)} rows are shown. Add filters, aggregation or ORDER BY ... LIMIT.`,
           }
         : {}),
       elapsedMs: result.elapsedMs,
@@ -465,6 +465,7 @@ export class SqlRuntime implements Runtime {
     const res = await this.driver.readQuery(g.sql, [], {
       rowLimit: limit,
       timeoutMs: this.config.limits.timeoutMs,
+      maxBytes: this.config.limits.maxResponseBytes,
     });
     this.guardrails.record({
       tool: 'query',
@@ -530,6 +531,7 @@ export class SqlRuntime implements Runtime {
       const res = await this.driver.readQuery(bound.sql, bound.params, {
         rowLimit: limit,
         timeoutMs: this.config.limits.timeoutMs,
+        maxBytes: this.config.limits.maxResponseBytes,
       });
       audit('sent');
       return this.format(res, limit);

@@ -63,12 +63,12 @@ npx apitame init https://api.example.com   # a spec URL, or a base URL (apitame 
 npx apitame init postgres://readonly_user:password@localhost:5432/shop
 npx apitame init mysql://readonly_user:password@localhost:3306/shop
 npx apitame init ./shop.db
-npx -p apitame -p @duckdb/node-api apitame init ./data.duckdb
+npx -p apitame -p @duckdb/node-api@1.5.6-r.1 apitame init ./data.duckdb
 ```
 
 The connection string is saved to `.env` (never to the config file). Use a read-only role: [docs/sql.md](docs/sql.md) has a two-line setup.
 
-DuckDB's driver is an optional extra (its native binary adds 40 to 120 MB), so it is not part of the default install: run apitame with `npx -p apitame -p @duckdb/node-api apitame <command>`, and `add-to` writes client configs that do the same. See [DuckDB](docs/sql.md#duckdb).
+DuckDB's driver is an optional extra (its native binary adds 40 to 120 MB), so it is not part of the default install: run apitame with `npx -p apitame -p @duckdb/node-api@1.5.6-r.1 apitame <command>` (the tested release), and `add-to` writes client configs that do the same. DuckDB runs in a separate process with memory, thread and time limits. See [DuckDB](docs/sql.md#duckdb).
 
 ### Check it, then connect your agent
 
@@ -213,7 +213,7 @@ For SQL, every free-form query passes four independent layers:
 
 1. **A lexer that follows the database's own quoting rules**: exactly one statement, no write keywords, no side-effect functions (`pg_sleep`, `pg_read_file`, `dblink`, `load_extension`, DuckDB's `read_csv` and `query` and others), no credential catalogs.
 2. **A real SQL parser**: the statement must be a SELECT, with no `SELECT INTO` and no row locks. Anything the parser cannot read is refused. For DuckDB this is DuckDB's own parser, run on a separate in-memory database: it cannot disagree with the engine, but it is not independent of it either.
-3. **The database itself**: PostgreSQL runs the query inside `BEGIN READ ONLY` with `statement_timeout`, through the extended protocol (which accepts one statement only) and a cursor that stops at the row limit. MySQL uses `START TRANSACTION READ ONLY`, `max_execution_time`, `sql_select_limit` and single-statement prepared statements. SQLite uses a read-only connection, `query_only`, a per-statement read-only check and a worker thread that is killed on timeout. DuckDB opens the file `READ_ONLY` with file access and extension loading turned off and the configuration locked, and checks with DuckDB itself that the text is one SELECT statement.
+3. **The database itself**: PostgreSQL runs the query inside `BEGIN READ ONLY` with `statement_timeout`, through the extended protocol (which accepts one statement only) and a cursor that stops at the row limit. MySQL uses `START TRANSACTION READ ONLY`, `max_execution_time`, `sql_select_limit` and single-statement prepared statements. SQLite uses a read-only connection, `query_only`, a per-statement read-only check and a worker thread that is killed on timeout. DuckDB runs in a separate process that is stopped at the timeout, opens the file `READ_ONLY` with file access and extension loading turned off, bounded memory and threads and the configuration locked, and checks with DuckDB itself that the text is one SELECT statement.
 4. **Your read-only database role**, which nothing can bypass. DuckDB has no roles: a read-only file plays that part.
 
 The layers exist because parsers and databases disagree. `SELECT '\'; DELETE FROM orders; --'` is one harmless string to a typical SQL parser and two statements to PostgreSQL. apitame's lexer reads it the way PostgreSQL does, and the test suite includes that case and the `COMMIT; DROP SCHEMA` escape that affected the archived reference Postgres server.

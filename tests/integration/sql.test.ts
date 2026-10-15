@@ -100,8 +100,8 @@ const targets: Target[] = [
           name: 'duckdb',
           dialect: 'duckdb' as const,
           realServer: false,
-          driver: () => new DuckdbDriver(duckFile, duck),
-          count: (table: string) => countWith(new DuckdbDriver(duckFile, duck), table),
+          driver: () => new DuckdbDriver(duckFile),
+          count: (table: string) => countWith(new DuckdbDriver(duckFile), table),
         },
       ]
     : []),

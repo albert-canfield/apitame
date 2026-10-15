@@ -46,6 +46,8 @@ export interface QueryResult {
 export interface ReadOptions {
   rowLimit: number;
   timeoutMs: number;
+  /** Stop reading rows once their JSON would exceed this many bytes (DuckDB). */
+  maxBytes?: number;
 }
 
 export interface WriteOptions {

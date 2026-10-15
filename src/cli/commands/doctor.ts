@@ -10,7 +10,7 @@ import type { OpenApiRuntime } from '../../server/openapi-runtime.js';
 import { createRuntime, type AnyRuntime } from '../../server/runtime.js';
 import type { SqlRuntime } from '../../server/sql-runtime.js';
 import type { GeneratedFile } from '../../generator/skills.js';
-import { apitameCommand, DUCKDB_PACKAGE } from '../../sources/sql/duckdb-package.js';
+import { apitameCommand, DUCKDB_PACKAGE, DUCKDB_SPEC } from '../../sources/sql/duckdb-package.js';
 import { c } from '../ui.js';
 import { claudeDesktopConfigPath } from './add-to.js';
 import { skillsFor } from './init.js';
@@ -244,6 +244,7 @@ function checkClients(
   // A DuckDB server must be started with the optional driver next to apitame.
   const needsDuckdb = loaded.config.source.type === 'duckdb';
   const withoutDriver: string[] = [];
+  const unpinned: string[] = [];
   const entry = (file: string, key: string) => {
     try {
       const data = JSON.parse(readFileSync(file, 'utf8')) as Record<
@@ -259,7 +260,9 @@ function checkClients(
   const check = (label: string, value: unknown) => {
     if (!value) return;
     found.push(label);
-    if (needsDuckdb && !JSON.stringify(value).includes(DUCKDB_PACKAGE)) withoutDriver.push(label);
+    const text = JSON.stringify(value);
+    if (needsDuckdb && !text.includes(DUCKDB_PACKAGE)) withoutDriver.push(label);
+    else if (needsDuckdb && !text.includes(DUCKDB_SPEC)) unpinned.push(label);
   };
   check('Claude Code (.mcp.json)', entry(join(cwd, '.mcp.json'), 'mcpServers'));
   check('Cursor', entry(join(cwd, '.cursor/mcp.json'), 'mcpServers'));
@@ -281,6 +284,13 @@ function checkClients(
       'warn',
       'Clients',
       `${withoutDriver.join(', ')} start${withoutDriver.length === 1 ? 's' : ''} "${name}" without ${DUCKDB_PACKAGE}, so the server cannot open the DuckDB file. Run "add-to <client> --write" again.`,
+    );
+  }
+  if (unpinned.length > 0) {
+    add(
+      'warn',
+      'Clients',
+      `${unpinned.join(', ')} start${unpinned.length === 1 ? 's' : ''} "${name}" with a ${DUCKDB_PACKAGE} version other than the tested ${DUCKDB_SPEC}. Run "add-to <client> --write" again to pin it.`,
     );
   }
   if (found.length > 0) add('ok', 'Clients', `"${name}" configured for ${found.join(', ')}`);
@@ -316,8 +326,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<Finding[]> {
 
   if (loaded.config.source.type === 'duckdb') {
     try {
-      const duck = await (await import('../../sources/sql/duckdb.js')).loadDuckdb();
-      add('ok', 'DuckDB driver', `${DUCKDB_PACKAGE} (DuckDB ${duck.version()})`);
+      const probe = await (await import('../../sources/sql/duckdb.js')).probeDuckdb();
+      if (probe.warning) add('warn', 'DuckDB driver', probe.warning);
+      else add('ok', 'DuckDB driver', `${DUCKDB_PACKAGE} (DuckDB ${probe.version})`);
     } catch (err) {
       add('fail', 'DuckDB driver', (err as Error).message.replace(/\n/g, ' '));
       checkClients(loaded, add);
