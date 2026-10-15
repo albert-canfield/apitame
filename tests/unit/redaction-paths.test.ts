@@ -88,7 +88,7 @@ describe('secrets in responses that are cut to size', () => {
 
 describe('secrets that come from environment variables', () => {
   it('hides a token carried in the base URL path in previews and logs', async () => {
-    const token = '123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw';
+    const token = 'fake-bot-token-not-real-0123456789';
     const { rt, logs } = runtime({
       baseUrl: 'https://api.telegram.org/bot${BOT_TOKEN}',
       env: { BOT_TOKEN: token },
@@ -99,7 +99,7 @@ describe('secrets that come from environment variables', () => {
     expect(preview).toContain('https://api.telegram.org/bot[REDACTED]/echo');
     await call(rt, 'send');
     expect(logs.join('\n')).toContain('/bot[REDACTED]/echo');
-    expect([preview, ...logs].join('\n')).not.toContain('AAHdq');
+    expect([preview, ...logs].join('\n')).not.toContain('not-real');
   });
 
   it('hides the bare variable inside a composite value', async () => {
