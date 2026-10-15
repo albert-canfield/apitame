@@ -203,14 +203,15 @@ export interface SentRequest {
 /**
  * An OpenAPI runtime over an in-memory spec, with a fake fetch: every request
  * is recorded in `sent`, and `respond` decides the response (200 `{"ok":true}`
- * by default). Logs are captured in `logs`.
+ * by default; it also gets the fetch options, signal included, and may answer
+ * later). Logs are captured in `logs`.
  */
 export function fakeApi(opts: {
   paths: Record<string, unknown>;
   config?: Record<string, unknown>;
   env?: Record<string, string>;
   baseUrl?: string;
-  respond?: (s: SentRequest) => Response;
+  respond?: (s: SentRequest, init: RequestInit) => Response | Promise<Response>;
 }): { rt: OpenApiRuntime; sent: SentRequest[]; logs: string[] } {
   const sent: SentRequest[] = [];
   const logs: string[] = [];
@@ -223,7 +224,7 @@ export function fakeApi(opts: {
     };
     sent.push(s);
     return opts.respond
-      ? opts.respond(s)
+      ? opts.respond(s, init)
       : new Response('{"ok":true}', { headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
   const config = parseConfig({

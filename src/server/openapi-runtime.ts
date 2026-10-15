@@ -33,10 +33,28 @@ import type {
   ToolResult,
   ToolSummary,
 } from '../types.js';
-import { buildRequest, RequestBuildError, sendRequest } from './http-client.js';
+import type { Paging } from '../sources/openapi/pagination.js';
+import {
+  buildRequest,
+  fitJson,
+  RequestBuildError,
+  sendRequest,
+  type BuiltRequest,
+  type HttpResult,
+} from './http-client.js';
 import { errorResult, jsonResult } from './results.js';
-import { parseFields } from './fields.js';
-import { parseDryRun } from './flags.js';
+import { parseFields, projectFields } from './fields.js';
+import { parseDryRun, parsePages } from './flags.js';
+import {
+  applyPosition,
+  continuation,
+  cutsInsidePages,
+  jsonBytes,
+  listAt,
+  positionAfter,
+  positionKeys,
+  withList,
+} from './pages.js';
 import { ArgValidator } from './validate.js';
 
 export interface OpenApiRuntimeOptions {
@@ -84,20 +102,33 @@ const viewOf = (list: BuiltTool[], surface?: Set<string>): ToolView => ({
 const MAX_VIEWS = 32;
 
 /** Arguments that steer apitame itself rather than the API. */
-const CONTROL_ARGS = ['dryRun', 'confirm', 'fields'] as const;
+const CONTROL_ARGS = ['dryRun', 'confirm', 'fields', 'pages'] as const;
+
+/**
+ * Controls an API parameter of the same name takes over in single-operation tools: they only
+ * shape the result, so the API's own meaning wins. dryRun and confirm never give way.
+ */
+const YIELDING = new Set<string>(['fields', 'pages']);
 
 interface Flags {
   dryRun: boolean;
   confirm: string | undefined;
   fields: string[] | undefined;
+  pages: number | undefined;
 }
 
 /** Read the control arguments. */
-function parseFlags(args: { dryRun?: unknown; confirm?: unknown; fields?: unknown }): Flags {
+function parseFlags(args: {
+  dryRun?: unknown;
+  confirm?: unknown;
+  fields?: unknown;
+  pages?: unknown;
+}): Flags {
   return {
     dryRun: parseDryRun(args.dryRun),
     confirm: typeof args.confirm === 'string' ? args.confirm : undefined,
     fields: parseFields(args.fields),
+    pages: parsePages(args.pages),
   };
 }
 
@@ -285,6 +316,9 @@ export class OpenApiRuntime implements Runtime {
     const props: Record<string, JsonSchema> = {};
     // Explained once in the server instructions, so no per-tool description.
     if (ops.some((o) => o.response)) props.fields = { type: 'array', items: { type: 'string' } };
+    if (this.pagingOffered(ops)) {
+      props.pages = { type: 'integer', minimum: 1, maximum: this.config.limits.maxPages };
+    }
     if (ops.some((o) => o.access !== 'read')) {
       props.dryRun = {
         type: 'boolean',
@@ -303,6 +337,11 @@ export class OpenApiRuntime implements Runtime {
       };
     }
     return props;
+  }
+
+  /** Whether a tool over these operations offers `pages`. */
+  private pagingOffered(ops: Operation[]): boolean {
+    return this.config.limits.maxPages > 1 && ops.some((o) => o.paging);
   }
 
   private annotations(title: string, ops: Operation[]): ToolAnnotations {
@@ -347,9 +386,10 @@ export class OpenApiRuntime implements Runtime {
           .join('\n');
         // dryRun and confirm keep their meaning. An API parameter with the same name is
         // exposed as api_<name>, so an agent can never send a "dry run" to the API for real.
-        // An API's own `fields` wins over field selection: the API trims server-side.
+        // An API's own `fields` wins over field selection (the API trims server-side), and its
+        // own `pages` over apitame's paging.
         const controls = this.safetyProps(ops, perm);
-        const reserved = (k: string) => k in controls && k !== 'fields';
+        const reserved = (k: string) => k in controls && !YIELDING.has(k);
         const renamed: Record<string, string> = {};
         const props: Record<string, JsonSchema> = {};
         for (const [k, v] of Object.entries(
@@ -493,6 +533,9 @@ export class OpenApiRuntime implements Runtime {
         : '',
       'Results are JSON: {"status": <http status>, "data": <body>}.',
       'Add "fields": ["id", "items.name"] (dot paths) to keep only the fields you need from large responses.',
+      this.pagingOffered(this.operations)
+        ? `"pages" (up to ${this.config.limits.maxPages}) reads the following pages of a list in one call; "pagination.next" in the result holds the arguments that continue.`
+        : '',
     ];
     return parts.filter(Boolean).join(' ');
   }
@@ -536,8 +579,8 @@ export class OpenApiRuntime implements Runtime {
     args: Record<string, unknown>,
     ctx?: CallContext,
   ): Promise<ToolResult> {
-    const { dryRun, confirm, fields, ...rest } = args;
-    const control: Record<string, unknown> = { dryRun, confirm, fields };
+    const { dryRun, confirm, fields, pages, ...rest } = args;
+    const control: Record<string, unknown> = { dryRun, confirm, fields, pages };
 
     switch (tool.kind) {
       case 'search':
@@ -672,6 +715,12 @@ export class OpenApiRuntime implements Runtime {
       audit('blocked', { reason: decision.reason });
       return errorResult(`Blocked: ${decision.reason}\n${decision.hint}`);
     }
+    // A write is sent once, whatever the agent asks: paging only ever repeats reads.
+    if (op.access !== 'read' && (flags.pages ?? 1) > 1) {
+      return errorResult(
+        `"pages" only applies to read operations, and ${op.id} is a ${op.access} operation. Nothing was sent.`,
+      );
+    }
 
     const problems = this.validator.check(op.id, op.inputSchema, params);
     if (problems.length > 0) {
@@ -763,29 +812,297 @@ export class OpenApiRuntime implements Runtime {
     if (op.access !== 'read')
       this.logger.info(`${op.access} ${op.id}: ${req.method} ${req.url.pathname}`);
 
-    const started = Date.now();
-    let res: Awaited<ReturnType<typeof sendRequest>>;
-    try {
-      res = await sendRequest(req, op.noAuth ? undefined : this.auth, {
-        timeoutMs: this.config.limits.timeoutMs,
+    const send = (r: BuiltRequest, timeoutMs: number) =>
+      sendRequest(r, op.noAuth ? undefined : this.auth, {
+        timeoutMs,
         maxResponseBytes: this.config.limits.maxResponseBytes,
         fields: flags.fields,
         redactor: this.redactor,
-        basePath: new URL(this.baseUrl).pathname,
+        basePath: new URL(this.baseUrl!).pathname,
+        ...(op.paging ? { keepBody: true } : {}),
         ...(this.opts.fetchImpl ? { fetchImpl: this.opts.fetchImpl } : {}),
         ...(ctx?.signal ? { signal: ctx.signal } : {}),
       });
+    const started = Date.now();
+    let res: HttpResult;
+    try {
+      res = await send(req, this.config.limits.timeoutMs);
     } catch (err) {
       audit('error', { durationMs: Date.now() - started, reason: (err as Error).message });
       throw err;
     }
     audit(res.ok ? 'sent' : 'error', { status: res.status, durationMs: Date.now() - started });
+
+    const max = this.config.limits.maxPages;
+    const asked = flags.pages ?? 1;
+    const capped = asked > max ? `"pages" is capped at ${max} (limits.maxPages).` : undefined;
+    if (op.paging && res.body !== undefined) {
+      return this.readPages({
+        op: op as Operation & { paging: Paging },
+        params,
+        first: res,
+        req,
+        want: Math.min(asked, max),
+        ...(capped ? { capped } : {}),
+        fields: flags.fields,
+        send,
+        deadline: started + this.config.limits.timeoutMs,
+        ctx,
+        tool,
+        audit,
+      });
+    }
+    const why = !op.paging
+      ? 'apitame does not know how this operation pages, so it read one page.'
+      : 'The response is not a JSON list apitame can page through, so it read one page.';
     const payload = this.redactor.value({
       status: res.status,
       data: res.data,
       ...(res.note ? { note: res.note } : {}),
+      ...(asked > 1 && res.ok ? { pagination: { pages: 1, note: why } } : {}),
     });
     return res.ok ? jsonResult(payload) : { ...jsonResult(payload), isError: true };
+  }
+
+  /**
+   * Read the following pages of a list operation, one after the other, and merge their items.
+   * Every following request is built from the same operation and arguments, with only the
+   * position replaced and validated again, so it stays on the same endpoint and is always a
+   * read. Stops at `want` pages, at the end of the data, at `limits.maxResponseBytes` (counted
+   * after field selection and redaction, never inside an item), at the call's deadline, at a
+   * rate limit or at a page that fails, and says where the next page starts.
+   */
+  private async readPages(o: {
+    op: Operation & { paging: Paging };
+    params: Record<string, unknown>;
+    first: HttpResult;
+    req: BuiltRequest;
+    want: number;
+    capped?: string;
+    fields: string[] | undefined;
+    send: (req: BuiltRequest, timeoutMs: number) => Promise<HttpResult>;
+    deadline: number;
+    ctx: CallContext | undefined;
+    tool: string;
+    audit: (outcome: AuditOutcome, extra?: Partial<AuditEntry>) => void;
+  }): Promise<ToolResult> {
+    const { op, params, want } = o;
+    const p = op.paging;
+    const budget = this.config.limits.maxResponseBytes;
+    const budgetText = `limits.maxResponseBytes (${budget} bytes)`;
+    const base = new URL(this.baseUrl!);
+    const shape = (body: unknown) =>
+      this.redactor.value(o.fields ? projectFields(body, o.fields) : body);
+    // has_more is set to its final value at the end; "false" is the longer of the two.
+    const sized = (env: unknown) =>
+      p.kind === 'cursor' && env && typeof env === 'object' && !Array.isArray(env) && p.more in env
+        ? { ...(env as Record<string, unknown>), [p.more]: false }
+        : env;
+
+    const notes: string[] = o.capped ? [o.capped] : [];
+    const merged: unknown[] = [];
+    let mergedBytes = 0;
+    let envelope: unknown;
+    let pages = 0;
+    let more: boolean;
+    let next: Record<string, unknown> | undefined;
+    let res = o.first;
+    let req = o.req;
+    let args = params;
+    /** The position that read the current page (none for the first page: the agent's own). */
+    let position: Record<string, unknown> | undefined;
+
+    for (let n = 1; ; n++) {
+      const items = listAt(res.body, p.items);
+      const shaped = shape(res.body);
+      const shown = listAt(shaped, p.items);
+      if (!items || !shown || shown.length !== items.length) {
+        const where = p.items ? `"${p.items}"` : 'the body';
+        if (n === 1) {
+          // Not a list after all (or fields left it out): one page, trimmed as usual.
+          const fitted = fitJson(shaped, budget);
+          return jsonResult(
+            this.redactor.value({
+              status: res.status,
+              data: fitted.value,
+              ...(fitted.note ? { note: fitted.note } : {}),
+              ...(want > 1
+                ? {
+                    pagination: {
+                      pages: 1,
+                      note: `There is no list at ${where} in this response${o.fields ? ' (keep it in "fields")' : ''}, so apitame read one page.`,
+                    },
+                  }
+                : {}),
+            }),
+          );
+        }
+        more = true;
+        next = position;
+        notes.push(`Page ${n} has no list at ${where}, so it is not included.`);
+        break;
+      }
+
+      const cont = continuation(
+        p,
+        { args, body: res.body, items, link: res.link, url: req.url },
+        base,
+      );
+      const env = sized(shaped);
+      const fixed = jsonBytes(withList(env, p.items, []));
+      const sizes = shown.map(jsonBytes);
+      // The size of the result with the first `count` items of this page added.
+      const total = (count: number) => {
+        let bytes = fixed + mergedBytes + Math.max(0, merged.length + count - 1);
+        for (let i = 0; i < count; i++) bytes += sizes[i]!;
+        return bytes;
+      };
+      if (total(shown.length) <= budget) {
+        merged.push(...shown);
+        for (const b of sizes) mergedBytes += b;
+        envelope = shaped;
+        pages = n;
+        more = cont.more;
+        next = cont.position;
+        if (cont.problem) notes.push(cont.problem);
+      } else {
+        let fit = 0;
+        while (fit < shown.length && total(fit + 1) <= budget) fit++;
+        if (cutsInsidePages(p) && !cont.backwards && fit > 0) {
+          // The cursor or offset can point right after the last item that fits.
+          merged.push(...shown.slice(0, fit));
+          envelope = shaped;
+          pages = n;
+          more = true;
+          next = positionAfter(p, args, items, fit);
+          notes.push(
+            `Page ${n} was cut to ${fit} of ${items.length} items to fit ${budgetText}${next ? '; "next" continues right after the last item returned' : ', and the last item returned has no id to continue from'}.`,
+          );
+        } else if (n === 1 && fit > 0) {
+          merged.push(...shown.slice(0, fit));
+          envelope = shaped;
+          pages = 1;
+          more = true;
+          next = cont.position;
+          notes.push(
+            `Page 1 was cut to ${fit} of ${items.length} items to fit ${budgetText}${next ? `, and "next" skips the ${items.length - fit} that were cut` : ''}. Ask for fewer items per page, or select fewer fields.`,
+          );
+          if (cont.problem) notes.push(cont.problem);
+        } else if (n === 1) {
+          const fitted = fitJson(shaped, budget);
+          return jsonResult(
+            this.redactor.value({
+              status: res.status,
+              data: fitted.value,
+              ...(fitted.note ? { note: fitted.note } : {}),
+              pagination: {
+                pages: 1,
+                more: true,
+                note: `Not even one item fits in ${budgetText}. Select fewer fields.`,
+              },
+            }),
+          );
+        } else {
+          more = true;
+          next = position;
+          notes.push(
+            `Page ${n} did not fit in ${budgetText}, so it is not included. Continue with "next", or select fewer fields to fit more.`,
+          );
+        }
+        break;
+      }
+
+      if (!more || !next || cont.problem) break;
+      if (cont.backwards) {
+        if (want > 1)
+          notes.push(
+            `apitame only reads following pages forward (${p.kind === 'cursor' ? p.param.name : 'next'}), so with ${p.kind === 'cursor' && p.before ? p.before.name : 'this position'} it read one page.`,
+          );
+        break;
+      }
+      if (n >= want) break;
+
+      // The next page: the same operation and arguments, with only the position replaced.
+      const nextArgs = applyPosition(p, params, next);
+      if (positionKeys(p).every((k) => JSON.stringify(nextArgs[k]) === JSON.stringify(args[k]))) {
+        next = undefined;
+        notes.push('The API pointed to the same page again, so apitame stopped.');
+        break;
+      }
+      const problems = this.validator.check(op.id, op.inputSchema, nextArgs);
+      if (problems.length > 0) {
+        next = undefined;
+        notes.push(`The API's position for the next page is not valid: ${problems.join('; ')}.`);
+        break;
+      }
+      let nextReq: BuiltRequest;
+      try {
+        nextReq = buildRequest(op, nextArgs, this.baseUrl!, this.staticHeaders, {
+          maxUploadBytes: this.config.limits.maxUploadBytes,
+        });
+      } catch (err) {
+        next = undefined;
+        notes.push((err as Error).message);
+        break;
+      }
+      const remaining = o.deadline - Date.now();
+      const late = `Stopped before page ${n + 1}: limits.timeoutMs (${this.config.limits.timeoutMs} ms) covers every page of a call. Continue with "next".`;
+      if (remaining <= 0) {
+        notes.push(late);
+        break;
+      }
+      // Every page counts against the per-minute limits, like a call of its own.
+      const limited = this.guardrails.checkCall(o.ctx?.caller) ?? this.guardrails.checkTool(o.tool);
+      if (limited) {
+        notes.push(`Stopped before page ${n + 1}. ${limited}`);
+        break;
+      }
+      const started = Date.now();
+      try {
+        res = await o.send(nextReq, remaining);
+      } catch (err) {
+        const message = (err as Error).message;
+        o.audit('error', { args: nextArgs, durationMs: Date.now() - started, reason: message });
+        notes.push(
+          Date.now() >= o.deadline
+            ? late
+            : `Page ${n + 1} failed (${message}), so it is not included. Continue with "next" to retry.`,
+        );
+        break;
+      }
+      o.audit(res.ok ? 'sent' : 'error', {
+        args: nextArgs,
+        status: res.status,
+        durationMs: Date.now() - started,
+      });
+      if (!res.ok || res.body === undefined) {
+        notes.push(
+          `Page ${n + 1} answered with status ${res.status}${res.ok ? ' and no JSON' : ''}, so it is not included. Continue with "next" to retry.`,
+        );
+        break;
+      }
+      req = nextReq;
+      args = nextArgs;
+      position = next;
+    }
+
+    let data = withList(envelope, p.items, merged);
+    if (p.kind === 'cursor' && data && typeof data === 'object' && !Array.isArray(data)) {
+      const d = data as Record<string, unknown>;
+      if (p.more in d) data = { ...d, [p.more]: more };
+    }
+    return jsonResult(
+      this.redactor.value({
+        status: o.first.status,
+        data,
+        pagination: {
+          pages,
+          more,
+          ...(more && next ? { next } : {}),
+          ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
+        },
+      }),
+    );
   }
 
   /** Request headers as shown in previews: sensitive ones and every static header from the config are hidden. */

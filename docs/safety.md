@@ -147,6 +147,7 @@ A call that would exceed `limits.maxWritesPerMinute` is refused before the human
 - Arguments are validated against the operation's JSON Schema before anything is sent. Unknown parameters are rejected (they are usually typos), and obvious type mismatches such as `"42"` for an integer are coerced.
 - `limits.timeoutMs` (default 15 s) aborts slow requests. It covers the whole exchange: every redirect, a retry after a token refresh, and reading the response.
 - `limits.maxResponseBytes` (default 50 KB) caps what goes back to the agent. JSON arrays are trimmed to the number of items that fit, with a note such as "showing 37 of 500 items", so the agent gets valid data and knows to paginate.
+- `pages` reads at most `limits.maxPages` pages of a list in one call (default 5). All of them share the one `limits.timeoutMs` deadline and the one `limits.maxResponseBytes` budget, and each counts against the per-minute limits. See [Paging](#paging).
 
 ### Outgoing requests
 
@@ -156,6 +157,16 @@ A call that would exceed `limits.maxWritesPerMinute` is refused before the human
 - Object query parameters with `explode` (each key becomes its own query parameter) only accept the keys their schema lists, unless the schema allows additional properties, so an agent cannot add parameters such as `_method=DELETE` that some frameworks honor.
 - File uploads take content inline (base64 or text) and never a local path, so an agent cannot be talked into uploading files from the machine. Total upload size is capped by `limits.maxUploadBytes`.
 - Binary responses (images, PDFs, archives and similar, but not `+json` or `+xml` types such as `application/vnd.api+json`) are described (`{"binary": true, "contentType", "bytes"}`) instead of being returned to the agent.
+
+### Paging
+
+With `pages`, one tool call can send several requests, and where the next one goes comes from the API's response. A response is not trusted, so ([openapi.md](openapi.md#paging) has the feature itself):
+
+- Only GET operations classified as reads are paged. A POST in `writes.treatAsRead` or a GET marked as a write never is, and `pages` on a write is refused before anything is sent: a write is sent once.
+- Every following request is built from the same operation and the same validated arguments as the first, with only the position replaced (`page`, `starting_after`, `cursor`, `offset` and the like). The new position is validated against the operation's schema like any argument (`page=two` for an integer is refused), and the request goes through the same URL building, base path check, auth and redirect rules as any other.
+- A next link, from a `Link: <...>; rel="next"` header or a `next` field, is never requested as it is. apitame only reads the position parameters from its query string, and only when the link is on the API's own origin (same scheme, host and port) and under the base URL's path. A link anywhere else is refused: paging stops, the pages read so far are returned, and the note says why. So a response can neither send the next request, credentials included, to another host, nor turn it into another endpoint or a write. Other values in the link, such as a different `state` or a larger `per_page`, are ignored. The path may differ under the base path, because GitHub answers `/repos/{owner}/{repo}/issues` with links to `/repositories/{id}/issues`; the request still goes to the operation's own path.
+- A position the API sends twice in a row stops paging, and so does a page that fails, a page that is not a list, the deadline and a rate limit. The result says where the next page starts, so nothing is retried behind the agent's back.
+- Every page is redacted before it counts against `limits.maxResponseBytes`, as for a single response, and the size cut falls between items, never inside one.
 
 ## SQL sources
 
@@ -291,6 +302,8 @@ limits:
 
 The window slides over the last 60 seconds. A call over the limit is refused with the number of seconds to wait, and nothing is sent. `0` turns a limit off.
 
+Each following page that `pages` reads counts as a call of its own, against `maxCallsPerMinute`, `perTool` and the caller's own limit below. When a limit is reached in the middle of a call, the pages read so far are returned, with `next` pointing at the first page not read.
+
 The limits above are per server: every client shares them. Over HTTP with `http.oauth`, `limits.perCaller` adds a budget for each user, so one signed-in user whose agent loops cannot use up the budget for everyone:
 
 ```yaml
@@ -320,7 +333,7 @@ With a file set, apitame appends one JSON object per line:
 
 - `include: writes` records every write attempt, whatever happened to it: `blocked`, `dry-run`, `confirmation-requested`, `declined`, `approval-refused`, `rate-limited`, `sent` or `error`. `blocked` covers writes the allowlist refuses and calls that break an [argument rule](#argument-rules); the `reason` says which. Refused SQL queries are always recorded, because a refused DELETE is worth knowing about.
 - `declined` means the human did not approve, or that apitame could not ask under `confirmation.method: elicitation` (with the reason `unauthenticated HTTP` when that is because HTTP runs without authentication). `approval-refused` means a 2026-07-28 approval id was refused, whatever the answer said, with the `reason`: `unknown` (never issued, or changed), `used` (sent again), `expired`, or `mismatch` (other arguments, another operation or another user). A forged or replayed approval therefore never looks like a human decision.
-- `include: all` records reads too.
+- `include: all` records reads too, with one line for each page that `pages` reads.
 - Arguments go through the redactor and are capped at 2,000 characters. The file is created with owner-only permissions (`0600`).
 - Over HTTP with `http.oauth`, each entry also names the token's client and subject (`"client"`, `"subject"`), each when the token carries it, so you can tell which user's agent made the call. With `http.oauth.permissions`, `"permissions"` lists the entries that applied to that user: `default` first, then the matching ones, such as `["default", "byScope.mcp:write"]` or `["default"]`.
 - If the file cannot be written, apitame logs one error and keeps serving; tool calls never fail because of the audit log.

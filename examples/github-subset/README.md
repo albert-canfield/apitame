@@ -5,7 +5,7 @@
 ```bash
 cd examples/github-subset
 cp .env.example .env     # then put a token in GITHUB_TOKEN
-npx apitame inspect      # 8 tools, about 2,100 tokens instead of about 5,500
+npx apitame inspect      # 8 tools, about 2,200 tokens instead of about 5,500
 npx apitame test         # mock run, no token needed
 npx apitame test --live  # real API, read operations only
 npx apitame add-to claude-code --write

@@ -296,6 +296,12 @@ export function generateOpenApiSkill(rt: OpenApiRuntime): GeneratedFile[] {
     'Grouped tools take `{"operation": "<operation id>", "params": {...}}`. Results are JSON: `{"status": <http status>, "data": <body>}`.',
     '',
     'Add `"fields"` with dot paths to keep only what you need, for example `"fields": ["id", "name", "items.owner.login"]`. Arrays are handled for you, so `items.name` keeps `name` in every item. It saves a lot of context on large responses.',
+    ...(rt.config.limits.maxPages > 1 && rt.operations.some((o) => o.paging && refOf.has(o.id))
+      ? [
+          '',
+          `List operations that page take \`"pages"\` (up to ${rt.config.limits.maxPages}) to read the following pages in one call, with the items merged. \`pagination\` in the result says how many pages were read and whether more exist, and \`next\` holds the arguments that continue: pass them with the same arguments as before instead of building a cursor or page number yourself.`,
+        ]
+      : []),
     ...(rt.operations.some(
       (o) => refOf.has(o.id) && (o.body?.kind === 'multipart' || o.body?.kind === 'binary'),
     )

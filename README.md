@@ -33,7 +33,7 @@ Giving an agent an API is easy. Giving it one safely, without flooding its conte
 
 - **Safe by default.** Read-only out of the box. Writes need `mode: read-write` and an explicit allowlist. Destructive operations stop for human approval. Every write has a dry run.
 - **Rules for how a write is called.** `writes.rules` limits the arguments of allowed writes, such as `amount: { max: 5000 }`, `owner: { in: [acme] }` or `repo: { pattern: '^(web|api)$' }`. A call that breaks one, or leaves out a value a rule checks, is refused before it is previewed, approved or sent, and the agent sees the rules in the tool description.
-- **A curated tool surface.** Endpoints are grouped into a handful of task-level tools, with `search_operations` and `call_operation` for the long tail. The GitHub example goes from 38 endpoints to 8 tools and about 60% fewer tokens; Stripe's full API goes from 612 endpoints to 12 tools and 99% fewer. Responses can be trimmed to the fields the agent needs with `"fields": ["items.full_name"]`.
+- **A curated tool surface.** Endpoints are grouped into a handful of task-level tools, with `search_operations` and `call_operation` for the long tail. The GitHub example goes from 38 endpoints to 8 tools and about 60% fewer tokens; Stripe's full API goes from 612 endpoints to 12 tools and 99% fewer. Responses can be trimmed to the fields the agent needs with `"fields": ["items.full_name"]`, and list endpoints read several pages in one call with `"pages": 3` and say exactly how to continue.
 - **Skills that match the server.** Generated `SKILL.md` files use the real tool names, argument shapes, workflows and safety rules. They are installed where Claude Code, Codex, Cursor, VS Code and Gemini CLI look for them, packaged for Claude Desktop, and served over MCP.
 - **SQL without the usual footguns.** PostgreSQL, MySQL, SQLite and DuckDB with `list_tables`, `describe_table` and a SELECT-only `query`, checked by a lexer and a real SQL parser, then run read-only at the database level with a row limit and a timeout.
 - **One config file you can review in a pull request.** `apitame.config.yaml` holds the tool groups, the allowlist, limits and auth. No daemon, no account, no code generation.
@@ -54,7 +54,7 @@ npx apitame init https://api.example.com   # a spec URL, or a base URL (apitame 
 ✔ Read GitHub REST API (subset): 38 operations (25 read, 13 write)
 ✔ Grouped into 8 tools: repos, issues, pulls, search, users, activity, search_operations, call_operation
 ✔ Read-only mode: 13 write operations blocked until you allow them
-✔ Tool list costs ~2,087 tokens (one tool per endpoint: ~5,522, 62% saved)
+✔ Tool list costs ~2,218 tokens (one tool per endpoint: ~5,522, 60% saved)
 ✔ Wrote ./apitame.config.yaml and 2 skill files in ./skills
 ```
 
@@ -265,11 +265,11 @@ Every field is documented in [docs/configuration.md](docs/configuration.md).
 | Example | Operations | One tool per endpoint | apitame (read-only) | Saved |
 | --- | ---: | ---: | ---: | ---: |
 | [Petstore](examples/petstore) | 19 | ~2,046 tokens, 19 tools | ~855 tokens, 5 tools | 58% |
-| [GitHub subset](examples/github-subset) | 38 | ~5,522 tokens, 38 tools | ~2,087 tokens, 8 tools | 62% |
-| [Stripe](https://github.com/stripe/openapi) (full public spec) | 612 | ~434,000 tokens, 612 tools | ~4,400 tokens, 12 tools | 99% |
-| [GitHub REST](https://github.com/github/rest-api-description) (full public spec) | 1,242 | ~421,000 tokens, 1,242 tools | ~9,100 tokens, 12 tools | 98% |
+| [GitHub subset](examples/github-subset) | 38 | ~5,522 tokens, 38 tools | ~2,218 tokens, 8 tools | 60% |
+| [Stripe](https://github.com/stripe/openapi) (full public spec) | 612 | ~434,000 tokens, 612 tools | ~4,600 tokens, 12 tools | 99% |
+| [GitHub REST](https://github.com/github/rest-api-description) (full public spec) | 1,242 | ~421,000 tokens, 1,242 tools | ~9,300 tokens, 12 tools | 98% |
 
-On the full Stripe and GitHub APIs, a one-tool-per-endpoint list would not even fit in most context windows; apitame serves both in a few thousand tokens, keeps every operation reachable through `search_operations`, and `init` plus `test` take about three seconds each. The estimate is calibrated against a real BPE tokenizer and lands slightly above it; exact counts vary by model. Several clients now load tool schemas on demand, so the bigger win is often fewer, clearer tools rather than raw token count. A search-and-call-only surface is smaller still (about 230 tokens) but costs extra round trips on every task; apitame gives you both.
+On the full Stripe and GitHub APIs, a one-tool-per-endpoint list would not even fit in most context windows; apitame serves both in a few thousand tokens, keeps every operation reachable through `search_operations`, and `init` plus `test` take about three seconds each. The estimate is calibrated against a real BPE tokenizer and lands slightly above it; exact counts vary by model. Several clients now load tool schemas on demand, so the bigger win is often fewer, clearer tools rather than raw token count. A search-and-call-only surface is smaller still (about 250 tokens) but costs extra round trips on every task; apitame gives you both.
 
 Tokens are only part of the story. A [tool-selection eval](docs/eval.md) runs the same tasks on the curated, one-tool-per-endpoint and search-only surfaces and measures success, calls and cost; results will be published there whatever they show.
 

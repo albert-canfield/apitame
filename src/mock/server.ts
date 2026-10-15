@@ -51,7 +51,10 @@ export async function startMockServer(
   ops: Operation[],
   opts: {
     basePath?: string;
-    handler?: (req: RecordedRequest) => { status: number; body: unknown } | undefined;
+    /** Answer a request yourself (for example with `Link` headers to test paging). */
+    handler?: (
+      req: RecordedRequest,
+    ) => { status: number; body: unknown; headers?: Record<string, string> } | undefined;
   } = {},
 ): Promise<MockServer> {
   const basePath = (opts.basePath ?? '').replace(/\/+$/, '');
@@ -87,7 +90,7 @@ export async function startMockServer(
     const custom = opts.handler?.(recorded);
     if (custom) {
       res
-        .writeHead(custom.status, { 'Content-Type': 'application/json' })
+        .writeHead(custom.status, { 'Content-Type': 'application/json', ...custom.headers })
         .end(JSON.stringify(custom.body));
       return;
     }

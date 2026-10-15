@@ -68,6 +68,12 @@ export interface HttpResult {
   contentType: string;
   data: unknown;
   note?: string;
+  /**
+   * With `keepBody`, for a complete 2xx JSON response: the body as parsed, before field
+   * selection, redaction and trimming (`data` is then left out), and the `Link` header.
+   */
+  body?: unknown;
+  link?: string;
 }
 
 export class RequestBuildError extends Error {
@@ -370,6 +376,11 @@ export interface SendOptions {
   redactor?: Redactor;
   /** Path of the API base URL. A write is only resent (307, 308) to a location under it. */
   basePath?: string;
+  /**
+   * Paging: return a complete 2xx JSON body as parsed, untouched, for the caller to select,
+   * redact and trim once the pages are merged. Never sent to the agent as it is.
+   */
+  keepBody?: boolean;
 }
 
 /** Send a request with auth, timeout and response size limits. */
@@ -513,6 +524,17 @@ async function exchange(
   } else if (/json/i.test(contentType) || /^\s*[[{]/.test(text)) {
     try {
       const parsed: unknown = JSON.parse(text);
+      if (opts.keepBody && res.ok) {
+        const link = res.headers.get('link');
+        return {
+          status: res.status,
+          ok: res.ok,
+          contentType,
+          data: undefined,
+          body: parsed,
+          ...(link ? { link } : {}),
+        };
+      }
       const selected = opts.fields ? projectFields(parsed, opts.fields) : parsed;
       fitted = fitJson(redactor ? redactor.value(selected) : selected, opts.maxResponseBytes);
     } catch {

@@ -95,6 +95,48 @@ returns `total_count` and, for every item, only `full_name` and `stargazers_coun
 
 Results are compact JSON: `{"status": 200, "data": ...}`. Non-2xx statuses are returned with `isError: true` and the API's error body, so the agent can read the reason. Responses larger than `limits.maxResponseBytes` are trimmed (arrays are cut to the items that fit) with a `note` explaining what happened.
 
+### Paging
+
+List endpoints usually return one page at a time, and agents get the cursor or the page number wrong surprisingly often. When apitame loads the spec, it looks at each GET operation that is a read for one of five common paging styles:
+
+| Style | Recognised by | Where the next page starts |
+| --- | --- | --- |
+| Cursor (Stripe) | a `starting_after` query parameter, and `has_more` next to the list | `starting_after` set to the `id` of the last item, while `has_more` is true |
+| Token in the body | a response field such as `next_page`, `nextPageToken`, `next_cursor` or `next_token` (at the top level or inside `meta`, `pagination`, `paging`, `response_metadata` or `links`), and the query parameter that takes it (`page`, `pageToken`, `cursor`, `next_token`) | the field's value, until it is empty |
+| Next link | a `Link` header declared on the response, or a `next`, `next_url`, `nextLink` or `links.next` field, plus a position parameter (`page`, `cursor`, `after`, `before`, `offset`, `page_token` and similar, or `since` when there is no other) | the position parameters in the query string of the `rel="next"` link |
+| Offset | an integer `offset` (or `skip`, `start`) and a page size (`limit`, `per_page`, `page_size`, `size` and similar) | `offset` plus the number of items read, until a page comes back short |
+| Page number | an integer `page` (or `page_number`) and a page size | `page` plus one, until a page comes back short, or until a `Link` header comes back without `rel="next"` |
+
+The styles are tried in that order. The list is the response itself when it is an array, or the array in the response object (`data`, `items`, `results` and similar names first, otherwise the only array). An operation that matches none of the styles, or whose response has no list, is not paged. On the full public specs this finds 126 cursor and 7 token operations in Stripe's, 194 next-link and 67 page-number operations in GitHub's, and none in the Petstore.
+
+A tool that includes a paged operation takes `pages`:
+
+```json
+{ "operation": "issues/list-for-repo", "params": { "owner": "octocat", "repo": "hello-world", "per_page": 50 }, "pages": 3 }
+```
+
+apitame reads up to that many pages, one after the other, merges their lists and returns one result:
+
+```json
+{"status":200,"data":[...150 issues...],"pagination":{"pages":3,"more":true,"next":{"page":4}}}
+```
+
+- `pages`: how many pages are in `data`.
+- `more`: whether items follow the last one returned.
+- `next`: the arguments that continue, to pass with the same arguments as before. It is only there when `more` is true and apitame knows where the next page starts.
+- `note`: why paging stopped early, when it did.
+
+`pages` defaults to 1 and is capped at `limits.maxPages` (5 by default, with a note when the agent asked for more). Every result of a paged operation carries `pagination`, so with the default the agent still gets the exact `next` instead of working out a cursor itself. When the response is an object (`{"data": [...], "has_more": true}`), the object of the last page read is kept with its list replaced by the merged one, and Stripe's `has_more` is set to match `more`.
+
+Paging stops at the number of pages asked for, at the end of the data, at a page that fails (the pages before it are returned, and `next` points at the failed one), at `limits.timeoutMs` (one deadline for the whole call, not one per page), at the per-minute rate limits (every page counts as a call) and at `limits.maxResponseBytes`. The size limit is applied after `fields` and redaction, so selecting fields fits more pages, and it never cuts an item in half:
+
+- With cursor and offset paging, the last page read is cut between two items, and `next` continues right after the last item returned.
+- With token, next-link and page-number paging, a position can only point at the start of a page. A following page that does not fit is left out whole and `next` points at it. A first page that does not fit is cut as before, and then `next` skips the items that were cut; the note says so, so the agent can ask for fewer items per page or select fewer fields.
+
+Stripe's `ending_before` pages backwards. apitame does not follow it: it reads one page and `next` gives the `ending_before` for the page before.
+
+`pages` follows the same rule as `fields` when an API has a parameter of the same name: in a single-operation tool the API's parameter wins, and in grouped tools and `call_operation` the API's parameter lives inside `params`, next to apitame's `pages`. Tools offer `pages` only when one of their operations pages. Asking for more than one page of an operation that does not page reads one page, with a note; asking it of a write is refused, because a write is sent once. How each following request is built, and why a next link is never requested as it is, is described in [safety.md](safety.md#paging).
+
 ## Auth
 
 ```yaml
