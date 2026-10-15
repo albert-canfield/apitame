@@ -118,6 +118,31 @@ describe('serve --watch', () => {
     expect(changes).toEqual([true, false]);
   });
 
+  it('reloads with a warning when permissions name a tool that does not exist', async () => {
+    const logs: string[] = [];
+    const redactor = new Redactor();
+    const p = project();
+    const live = await LiveRuntime.start(p.file, {
+      redactor,
+      logger: new Logger(redactor, 'warn', (l) => logs.push(l)),
+    });
+    cleanups.push(() => live.close());
+    p.write({
+      http: {
+        oauth: {
+          issuer: 'https://login.example.com',
+          resource: 'https://mcp.example.com/mcp',
+          scopes: ['mcp:tools'],
+          permissions: { byScope: { 'mcp:read': { tools: ['pets'] } } },
+        },
+      },
+    });
+    // The new config is served: a name that matches nothing can only fail to grant.
+    expect(await live.reload()).toBe(true);
+    expect(live.runtime.config.http.oauth?.permissions).toBeDefined();
+    expect(logs.join('')).toMatch(/byScope\.mcp:read\.tools: no tool matches "pets"/);
+  });
+
   it('keeps serving the previous config when the new one is invalid', async () => {
     const p = project();
     const errors: string[] = [];

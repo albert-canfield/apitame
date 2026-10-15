@@ -1,4 +1,3 @@
-import { ConfigError } from '../config/load.js';
 import type { Config, PermissionConfig } from '../config/schema.js';
 import type { CallerContext } from '../types.js';
 import { matchesAny } from './policy.js';
@@ -87,12 +86,13 @@ export interface PermissionTargets {
 }
 
 /**
- * Check `http.oauth.permissions` against the tools and operations the source defines.
+ * Check `http.oauth.permissions` against the tools and operations the source defines, and
+ * return warnings for `serve` (at startup and on reload), `doctor` and `inspect`.
  *
- * A tool or write pattern that matches nothing is a typo, and an error (thrown as a
- * `ConfigError`, so `serve` does not start and a `--watch` reload keeps the previous config).
- * A write pattern that only matches operations the server never lets anyone write grants
- * nothing, because permissions only narrow `writes.allow`: that is returned as a warning.
+ * A tool or write pattern that matches nothing is probably a typo, and a write pattern that only
+ * matches operations the server never lets anyone write grants nothing (permissions only narrow
+ * `writes.allow`). Neither can widen access, so neither is an error: an error would stop `serve`
+ * when a spec loaded from a URL drops an operation that an entry names.
  */
 export function checkPermissions(config: Config, targets: PermissionTargets): string[] {
   const permissions = config.http.oauth?.permissions;
@@ -110,19 +110,22 @@ export function checkPermissions(config: Config, targets: PermissionTargets): st
       ? [['default', permissions.default] as [string, PermissionConfig]]
       : []),
   ];
-  const errors: string[] = [];
   const warnings: string[] = [];
   for (const [label, entry] of entries) {
     const path = `http.oauth.permissions.${label}`;
     for (const p of entry.tools ?? []) {
       if (!targets.tools.some((t) => matchesAny(t, [p]))) {
-        errors.push(`${path}.tools: no tool matches "${p}" (tools: ${targets.tools.join(', ')})`);
+        warnings.push(
+          `${path}.tools: no tool matches "${p}" (typo?), so it shows nothing. Tools: ${targets.tools.join(', ')}.`,
+        );
       }
     }
     for (const p of entry.writes ?? []) {
       const matching = targets.operations.filter((o) => matchesAny(o.id, [p]));
       if (matching.length === 0) {
-        errors.push(`${path}.writes: no ${targets.noun} matches "${p}"`);
+        warnings.push(
+          `${path}.writes: no ${targets.noun} matches "${p}" (typo?), so it grants nothing.`,
+        );
       } else if (
         config.mode === 'read-write' &&
         !matching.some((o) => o.write && matchesAny(o.id, config.writes.allow))
@@ -132,11 +135,6 @@ export function checkPermissions(config: Config, targets: PermissionTargets): st
         );
       }
     }
-  }
-  if (errors.length > 0) {
-    throw new ConfigError(
-      `Invalid http.oauth.permissions:\n${errors.map((e) => `  - ${e}`).join('\n')}`,
-    );
   }
   return warnings;
 }
