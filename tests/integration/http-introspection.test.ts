@@ -280,9 +280,48 @@ describe('HTTP transport with token introspection', () => {
       as.answers.set(token, { active: false });
       const res = await rpc(url, bearer(token));
       expect(res.status).toBe(401);
-      expect(((await res.json()) as { error_description: string }).error_description).toMatch(
-        /not active/,
-      );
+    } finally {
+      await stop(http);
+    }
+  });
+
+  it('tells callers only that a token is invalid or inactive, and logs why at debug level', async () => {
+    const lines: string[] = [];
+    const redactor = new Redactor();
+    const { rt, config } = await petServer();
+    const { http, url } = await start(
+      rt,
+      config,
+      { logger: new Logger(redactor, 'debug', (l) => lines.push(l)) },
+      redactor,
+    );
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const cases: Array<[string, RegExp]> = [
+        ['made-up-token', /not active/],
+        [opaque({ aud: 'https://other.example.com/mcp' }), /audience/],
+        [opaque({ exp: now - 10 }), /expired/],
+        [opaque({ token_type: 'refresh_token' }), /not an access token/],
+      ];
+      for (const [token, reason] of cases) {
+        lines.length = 0;
+        const res = await rpc(url, bearer(token));
+        expect(res.status).toBe(401);
+        // The same answer whatever the reason: nothing to probe the authorization server with.
+        expect(await res.json()).toEqual({
+          error: 'invalid_token',
+          error_description: 'The access token is invalid or inactive.',
+        });
+        expect(res.headers.get('www-authenticate')).toContain(
+          'error_description="The access token is invalid or inactive."',
+        );
+        const log = lines.join('');
+        expect(log).toMatch(
+          /OAuth: refused a request: The access token is invalid or inactive\. \(/,
+        );
+        expect(log).toMatch(reason);
+        expect(log).not.toContain(token);
+      }
     } finally {
       await stop(http);
     }

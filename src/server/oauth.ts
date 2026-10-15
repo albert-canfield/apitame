@@ -61,8 +61,8 @@ const ALGORITHMS: Record<
 const ACCESS_TOKEN_TYPES = new Set(['at+jwt', 'application/at+jwt']);
 /** Payload claims that only ID tokens carry (OpenID Connect Core 2 and 3.3.2.11). */
 const ID_TOKEN_CLAIMS = ['nonce', 'at_hash', 'c_hash'];
-/** Payload `typ` values of tokens that are not access tokens (Keycloak), compared without case. */
-const OTHER_TOKEN_TYPES = new Set(['id', 'refresh', 'offline']);
+/** Token type names, normalized by {@link namesOtherTokenType}, of ID and offline tokens. */
+const ID_OR_OFFLINE = new Set(['id', 'idtoken', 'offline', 'offlinetoken']);
 /** Claims that name the client a token was issued to, in order of preference. */
 const CLIENT_CLAIMS = ['client_id', 'azp', 'cid', 'appid'];
 
@@ -166,10 +166,13 @@ export function reason(err: unknown): string {
   return e.cause?.message ? `${e.message}: ${e.cause.message}` : e.message;
 }
 
-/** Read a response body up to 1 MB. */
+/** Read a response body up to 1 MB. A larger one is cancelled, which closes the connection. */
 export async function readCapped(res: Response, url: string): Promise<string> {
   const tooLarge = () => new Error(`${url} sent more than ${MAX_BODY_BYTES / 1_000_000} MB.`);
-  if (Number(res.headers.get('content-length')) > MAX_BODY_BYTES) throw tooLarge();
+  if (Number(res.headers.get('content-length')) > MAX_BODY_BYTES) {
+    await res.body?.cancel().catch(() => {});
+    throw tooLarge();
+  }
   if (!res.body) return '';
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -245,10 +248,9 @@ export function accessTokenInfo(
   }
   // An ID token or a refresh token from the same server is not an access token, even when its
   // audience happens to be accepted.
-  const payloadType = typeof claims.typ === 'string' ? claims.typ.toLowerCase() : undefined;
   if (
     ID_TOKEN_CLAIMS.some((c) => claims[c] !== undefined) ||
-    (payloadType && OTHER_TOKEN_TYPES.has(payloadType))
+    (typeof claims.typ === 'string' && namesOtherTokenType(claims.typ))
   ) {
     throw invalid('The token is an ID or refresh token, not an access token.');
   }
@@ -288,6 +290,17 @@ export function accessTokenInfo(
     resource: new URL(rules.resource),
     extra: { ...identity },
   };
+}
+
+/**
+ * Whether a token type (Keycloak's `typ`, RFC 7662 `token_type`, `token_use`) names a refresh,
+ * offline or ID token, however it is spelled: case, spaces, dashes and underscores do not count,
+ * and neither does a URN prefix such as `urn:ietf:params:oauth:token-type:`. So `Refresh Token`,
+ * ` refresh_token` and `refresh-token` are all refresh tokens.
+ */
+export function namesOtherTokenType(type: string): boolean {
+  const name = (type.split(':').pop() ?? '').toLowerCase().replace(/[\s_-]+/g, '');
+  return name.includes('refresh') || ID_OR_OFFLINE.has(name);
 }
 
 /**

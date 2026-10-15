@@ -19,6 +19,7 @@ import {
   tempDir,
 } from '../helpers.js';
 import {
+  activeAnswer,
   claimsFor,
   FakeAuthServer,
   INTROSPECTION_CLIENT,
@@ -421,6 +422,48 @@ describe('CLI: serve over HTTP with OAuth token introspection', () => {
     expect(res.stderr).toMatch(
       /Missing environment variable INTROSPECTION_CLIENT_SECRET \(used by http\.oauth\.introspection\.clientSecret\)/,
     );
+  });
+
+  it('refuses to start when the endpoint calls a token nobody issued active', async () => {
+    // A test double or a wrong URL that answers "active" for anything would accept any token.
+    as.overrides.set('/introspect', (res) =>
+      res
+        .writeHead(200, { 'Content-Type': 'application/json' })
+        .end(JSON.stringify(activeAnswer(as.issuer, resource))),
+    );
+    const port = await freePort();
+    const child = spawn(
+      process.execPath,
+      [...NODE_ARGS, 'serve', '--transport', 'http', '--port', String(port)],
+      {
+        cwd: t.dir,
+        env: {
+          ...process.env,
+          NO_COLOR: '1',
+          APITAME_LOG_LEVEL: 'info',
+          APITAME_HTTP_TOKEN: '',
+          INTROSPECTION_CLIENT_ID: INTROSPECTION_CLIENT.id,
+          INTROSPECTION_CLIENT_SECRET: INTROSPECTION_CLIENT.secret,
+        },
+      },
+    );
+    let stderr = '';
+    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+    try {
+      const code = await new Promise<number | null>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`still running:\n${stderr}`)), 30_000);
+        child.on('exit', (c) => {
+          clearTimeout(timer);
+          resolve(c);
+        });
+      });
+      expect(code).toBe(1);
+      expect(stderr).toMatch(/says that a random token nobody issued is active/);
+      expect(stderr).not.toMatch(/serving /);
+    } finally {
+      as.overrides.delete('/introspect');
+      child.kill();
+    }
   });
 });
 

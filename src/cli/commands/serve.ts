@@ -5,7 +5,7 @@ import { asksForConfirmation, type ConfirmationMethod } from '../../safety/confi
 import { Redactor } from '../../safety/redact.js';
 import { LiveRuntime } from '../../server/live.js';
 import { createMcpServer } from '../../server/mcp.js';
-import { createOAuthVerifiers } from '../../server/introspection.js';
+import { createOAuthVerifiers, IntrospectionMisconfigured } from '../../server/introspection.js';
 import { oauthChange, oauthReloadRefusal, oauthWarnings } from '../../server/oauth.js';
 import { serveHttp, serveStdio } from '../../server/transport.js';
 import type { ToolDefinition } from '../../types.js';
@@ -166,6 +166,23 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
       warnUnauthenticated();
     });
   }
+  // Before listening: an endpoint that calls a made-up token active would accept anything, and
+  // that must stop apitame. Any other failure is logged and apitame serves anyway: every new
+  // token is introspected, so it works once the endpoint does.
+  const introspectionUrl = oauthConfig?.introspection?.url;
+  if (oauth?.introspection && introspectionUrl) {
+    try {
+      await oauth.introspection.warmUp();
+      logger.info(
+        `OAuth: token introspection at ${introspectionUrl} accepts apitame's credentials`,
+      );
+    } catch (err) {
+      if (err instanceof IntrospectionMisconfigured) throw err;
+      logger.error(
+        `OAuth: token introspection does not work yet: ${(err as Error).message} Tokens that need introspection are refused until it does.`,
+      );
+    }
+  }
   // Every server reads the runtime through `live`, so stateless requests and sessions alike see reloads.
   // A 2026-07-28 request gets a server of its own that lives for that request only, so it is not
   // kept in `servers`: list changes reach those clients through `events`.
@@ -189,20 +206,6 @@ export async function serveCommand(opts: ServeOptions): Promise<void> {
       // Keep serving: the keys are fetched again when tokens arrive (at most every few seconds).
       logger.error(
         `OAuth: could not load the signing keys of ${oauthConfig.issuer}: ${(err as Error).message} ${oauth.introspection ? 'JWT access tokens' : 'Tokens'} are refused until the keys load; apitame tries again when requests arrive.`,
-      );
-    }
-  }
-  const introspectionUrl = oauthConfig?.introspection?.url;
-  if (oauth?.introspection && introspectionUrl) {
-    try {
-      await oauth.introspection.warmUp();
-      logger.info(
-        `OAuth: token introspection at ${introspectionUrl} accepts apitame's credentials`,
-      );
-    } catch (err) {
-      // Keep serving: every new token is introspected anyway, so it works once the server does.
-      logger.error(
-        `OAuth: token introspection does not work yet: ${(err as Error).message} Tokens that need introspection are refused until it does.`,
       );
     }
   }

@@ -14,7 +14,7 @@ const ENV_REFS = new RegExp(ENV_REF.source, 'g');
  * `hunter2${UNSET:-}` cannot pass a literal off as a reference. An empty default alone
  * (`${VAR:-}`) stands for an empty value, as for a password that an API leaves empty.
  */
-export function secretProblem(value: string, field: string): string | undefined {
+export function secretProblem(value: string, field: string, only = false): string | undefined {
   const inline = `${field} must come from an environment variable, for example "\${MY_SECRET}". Inline secrets are refused.`;
   const refs = [...value.matchAll(ENV_REFS)];
   if (refs.some((m) => m[2])) {
@@ -22,16 +22,21 @@ export function secretProblem(value: string, field: string): string | undefined 
   }
   // Without any reference, the whole value is outside one.
   const outside = value.replace(ENV_REFS, '');
-  if (outside !== '' && refs.every((m) => m[2] !== undefined)) return inline;
+  if (only && outside !== '') {
+    return `${field} must be environment variable references only, for example "\${MY_SECRET}", with no text around them.`;
+  }
+  // With `only`, an empty value is no secret either.
+  if ((outside !== '' || only) && refs.every((m) => m[2] !== undefined)) return inline;
   return undefined;
 }
 
-const envRef = (field: string) =>
+/** A secret field. `only`: nothing but references, and never empty. */
+const envRef = (field: string, only = false) =>
   z
     .string()
     .min(1)
     .superRefine((v, ctx) => {
-      const problem = secretProblem(v, field);
+      const problem = secretProblem(v, field, only);
       if (problem) ctx.addIssue({ code: 'custom', message: problem });
     });
 
@@ -82,10 +87,17 @@ export const PermissionSchema = z
 export const IntrospectionSchema = z.strictObject(
   {
     /** The authorization server's introspection endpoint. https, except on loopback hosts. */
-    url: z.string().url(),
+    url: z
+      .string()
+      .url()
+      .refine((v) => !v.includes('${'), {
+        message:
+          'environment variables are not read here (the text "${...}" would be sent as it is). Write the URL itself.',
+      }),
     /** apitame's client at the authorization server. May use ${VAR}. */
     clientId: z.string().min(1),
-    clientSecret: envRef('http.oauth.introspection.clientSecret'),
+    /** Only `${VAR}` references, so the secret itself never sits in the config. */
+    clientSecret: envRef('http.oauth.introspection.clientSecret', true),
     clientAuthMethod: z
       .enum(['client_secret_basic', 'client_secret_post'])
       .default('client_secret_basic'),
