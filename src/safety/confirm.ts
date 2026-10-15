@@ -77,8 +77,9 @@ export class OneTimeIds {
 }
 
 /**
- * One-time confirmation tokens. A token is bound to one operation and the
- * exact arguments it was issued for, expires after a TTL and can be used once.
+ * One-time confirmation tokens. A token is bound to one operation and what it was issued for
+ * (`confirmOrChallenge` binds the exact arguments and the OAuth caller), expires after a TTL and
+ * can be used once.
  */
 export class ConfirmationStore {
   private readonly tokens: OneTimeIds;
@@ -149,6 +150,13 @@ const text = (t: string, isError = false): ToolResult => ({
 
 type Refusal = Extract<ConfirmOutcome, { proceed: false }>;
 
+/**
+ * What a confirm token or an approval id is bound to, next to the operation: the exact arguments
+ * and the OAuth client and subject, so one user can never spend what another was given. Without
+ * OAuth (stdio, a static token, HTTP without authentication) there is no caller to tell apart.
+ */
+const bindingOf = (req: ConfirmRequest) => ({ args: req.args, caller: req.ctx?.caller ?? null });
+
 const notApproved = (id: string): Refusal => ({
   proceed: false,
   result: text(`The user did not approve "${id}". Nothing was changed.`, true),
@@ -185,7 +193,7 @@ function approvalRound(
   round: ApprovalRound,
   message: string,
 ): ConfirmOutcome | undefined {
-  const binding = { args: req.args, caller: req.ctx?.caller ?? null };
+  const binding = bindingOf(req);
   if (round.state !== undefined) {
     const check = req.store.approvals.consume(round.state, req.id, binding);
     if (!check.ok) {
@@ -243,7 +251,7 @@ export async function confirmOrChallenge(req: ConfirmRequest): Promise<ConfirmOu
   }
 
   if (req.confirmToken) {
-    const check = req.store.consume(req.confirmToken, req.id, req.args);
+    const check = req.store.consume(req.confirmToken, req.id, bindingOf(req));
     if (check.ok) return { proceed: true };
     return {
       proceed: false,
@@ -252,7 +260,7 @@ export async function confirmOrChallenge(req: ConfirmRequest): Promise<ConfirmOu
     };
   }
 
-  const { token } = req.store.issue(req.id, req.args);
+  const { token } = req.store.issue(req.id, bindingOf(req));
   const minutes = Math.max(1, Math.round(req.store.ttlMs / 60_000));
   return {
     proceed: false,

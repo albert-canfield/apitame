@@ -693,6 +693,45 @@ describe('permissions only narrow the server config', () => {
   });
 });
 
+describe('confirmation tokens', () => {
+  it('only work for the OAuth client and user they were issued to', async () => {
+    const { rt, sent } = api({ byScope: { admin: {} } });
+    const del = (ctx: CallContext | undefined, confirm?: string) =>
+      rt.callTool(
+        'call_operation',
+        { operationId: 'deletePet', params: { id: '9' }, ...(confirm ? { confirm } : {}) },
+        ctx,
+      );
+    const tokenFor = async (ctx: CallContext | undefined) =>
+      /"confirm": "([^"]+)"/.exec(textOf(await del(ctx)))?.[1] ?? '';
+    const alice = withScopes(['admin'], { client: 'app', subject: 'alice' });
+    // Another user, or the same user through another client: refused, and the token is burned.
+    for (const other of [
+      withScopes(['admin'], { client: 'app', subject: 'bob' }),
+      withScopes(['admin'], { client: 'web', subject: 'alice' }),
+      undefined,
+    ]) {
+      const token = await tokenFor(alice);
+      expect(textOf(await del(other, token))).toBe(
+        'Confirmation token was issued for a different operation or different arguments. Nothing was changed.',
+      );
+      expect(textOf(await del(alice, token))).toBe(
+        'Unknown or already used confirmation token. Nothing was changed.',
+      );
+    }
+    expect(sent).toHaveLength(0);
+    // The same client and user with a fresh access token (other scopes): accepted.
+    const token = await tokenFor(alice);
+    const fresh = withScopes(['admin', 'extra'], { client: 'app', subject: 'alice' });
+    expect((await del(fresh, token)).isError).toBeFalsy();
+    expect(sent).toHaveLength(1);
+    // Without OAuth there is no caller to tell apart: tokens work as before.
+    const plain = await tokenFor(undefined);
+    expect((await del(undefined, plain)).isError).toBeFalsy();
+    expect(sent).toHaveLength(2);
+  });
+});
+
 describe('stdio', () => {
   it('serves the server config unchanged when permissions are configured', async () => {
     const { rt } = await petServer({ byScope: {}, default: { mode: 'read-only', tools: ['pet'] } });
