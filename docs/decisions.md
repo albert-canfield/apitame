@@ -72,7 +72,7 @@ A running log of decisions and the reasons behind them. Newest last. Add an entr
 
 **Context.** npm requires two-factor authentication to publish and is restricting tokens that bypass it. v0.1.0 was published manually with a short-lived token.
 
-**Decision.** Releases run from `.github/workflows/release.yml` on a version tag, with npm trusted publishing (OIDC from GitHub Actions, npm 11.5.1 or later) and provenance. The goal is no long-lived npm token in the repository; until trusted publishing is configured on npmjs.com, the workflow falls back to a granular `NPM_TOKEN` secret, which should be deleted once it is. The workflow skips publishing when the version is already on npm and skips the GitHub release when it already exists, so a release can be finished by hand without breaking the workflow.
+**Decision.** Releases run from `.github/workflows/release.yml` on a version tag, with npm trusted publishing (OIDC from GitHub Actions, npm 11.5.1 or later) and provenance. No long-lived npm token is stored: trusted publishing was configured on npmjs.com on 15 October 2026 (this repository, `release.yml`, environment `npm`, publish only), after v0.1.0 to v0.3.0 had been published with a granular token, and that token's repository secret was deleted. The workflow still reads an `NPM_TOKEN` secret if one is ever added back, as an emergency fallback. The workflow skips publishing when the version is already on npm and skips the GitHub release when it already exists, so a release can be finished by hand without breaking the workflow.
 
 ## 014. Bundle only the SQL parsers apitame needs
 
