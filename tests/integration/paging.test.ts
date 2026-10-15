@@ -168,36 +168,35 @@ describe('cursor paging (Stripe)', () => {
     const rows = CUSTOMERS.map((c) => ({ ...c, bio: 'x'.repeat(120) }));
     const { rt, sent } = fakeApi({
       paths: stripePaths,
-      config: { limits: { maxResponseBytes: 1000 } },
+      config: { limits: { maxResponseBytes: 2000 } },
       respond: (s) => stripe(s, rows),
     });
     const r = jsonOf<Paged<{ data: Array<{ id: string }>; has_more: boolean }>>(
       await callOperation(rt, 'GetCustomers', { limit: 4 }, { pages: 5 }),
     );
-    expect(sent).toHaveLength(2);
+    expect(sent).toHaveLength(3);
     const ids = r.data.data.map((c) => c.id);
-    // Each item takes about 160 bytes: page 1 fits whole, page 2 only in part.
-    expect(ids.length).toBeGreaterThan(4);
-    expect(ids.length).toBeLessThan(8);
-    expect(JSON.stringify(r.data).length).toBeLessThanOrEqual(1000);
+    // Each item takes about 160 bytes: pages 1 and 2 fit whole, page 3 only in part.
+    expect(ids.length).toBeGreaterThan(8);
+    expect(ids.length).toBeLessThan(12);
+    // data and pagination share the budget.
+    expect(JSON.stringify(r.data).length + JSON.stringify(r.pagination).length).toBeLessThanOrEqual(
+      2000,
+    );
     expect(r.data.has_more).toBe(true);
     expect(r.pagination).toMatchObject({
-      pages: 2,
+      pages: 3,
       more: true,
       next: { starting_after: ids.at(-1) },
     });
     expect(r.pagination!.note).toMatch(
-      /Page 2 was cut to \d of 4 items to fit limits\.maxResponseBytes \(1000 bytes\); "next" continues right after the last item returned\./,
+      /^Page 3 was cut to \d of 4 items to fit limits\.maxResponseBytes \(2000 bytes\); "next" continues right after the last item returned\.$/,
     );
-
-    // When the last page is the one cut, has_more still says that more items follow.
-    const tail = jsonOf<Paged<{ data: Array<{ id: string }>; has_more: boolean }>>(
-      await callOperation(rt, 'GetCustomers', { limit: 4, starting_after: 'cus_04' }, { pages: 5 }),
+    // Calling again with next continues exactly after the last item.
+    const rest = jsonOf<Paged<{ data: Array<{ id: string }> }>>(
+      await callOperation(rt, 'GetCustomers', { limit: 4, ...r.pagination!.next }, { pages: 5 }),
     );
-    expect(tail.data.data[0]!.id).toBe('cus_05');
-    expect(tail.data.data.length).toBeLessThan(8);
-    expect(tail.data.has_more).toBe(true);
-    expect(tail.pagination).toMatchObject({ pages: 2, more: true });
+    expect([...ids, ...rest.data.data.map((c) => c.id)]).toEqual(CUSTOMERS.map((c) => c.id));
 
     // Without field selection fewer items fit than with it: fields apply before the budget.
     const slim = jsonOf<Paged<{ data: Array<{ id: string }> }>>(
@@ -210,6 +209,27 @@ describe('cursor paging (Stripe)', () => {
     );
     expect(slim.data.data.map((c) => c.id)).toEqual(CUSTOMERS.map((c) => c.id));
     expect(slim.pagination).toEqual({ pages: 3, more: false });
+  });
+
+  it('when the last page is the one cut, has_more still says that more items follow', async () => {
+    const rows = CUSTOMERS.map((c) => ({ ...c, bio: 'x'.repeat(120) }));
+    const { rt } = fakeApi({
+      paths: stripePaths,
+      config: { limits: { maxResponseBytes: 1000 } },
+      respond: (s) => stripe(s, rows),
+    });
+    // cus_05 to cus_12 is the end of the list (has_more: false), and too large to fit.
+    const tail = jsonOf<Paged<{ data: Array<{ id: string }>; has_more: boolean }>>(
+      await callOperation(rt, 'GetCustomers', { limit: 8, starting_after: 'cus_04' }),
+    );
+    expect(tail.data.data[0]!.id).toBe('cus_05');
+    expect(tail.data.data.length).toBeLessThan(8);
+    expect(tail.data.has_more).toBe(true);
+    expect(tail.pagination).toMatchObject({
+      pages: 1,
+      more: true,
+      next: { starting_after: tail.data.data.at(-1)!.id },
+    });
   });
 });
 
@@ -406,7 +426,7 @@ describe('next links (Link header and body)', () => {
     fakeApi({
       paths: issuesPaths(true),
       config: { auth: { type: 'bearer', token: '${GH_TOKEN}' } },
-      env: { GH_TOKEN: 'ghp_secret_value_123456' },
+      env: { GH_TOKEN: 'fake-key-github-123456' },
       respond: (s) => issues(s, { next }),
     });
 
@@ -433,7 +453,7 @@ describe('next links (Link header and body)', () => {
       '/v1/repos/o/r/issues?state=open&per_page=3&page=3',
     ]);
     expect(sent.every((s) => s.method === 'GET')).toBe(true);
-    expect(sent.every((s) => s.headers.Authorization === 'Bearer ghp_secret_value_123456')).toBe(
+    expect(sent.every((s) => s.headers.Authorization === 'Bearer fake-key-github-123456')).toBe(
       true,
     );
   });
@@ -494,7 +514,7 @@ describe('next links (Link header and body)', () => {
     );
     expect(sent).toHaveLength(2);
     expect(r.data).toHaveLength(6);
-    expect(r.pagination!.note).toMatch(/same page again/);
+    expect(r.pagination!.note).toMatch(/a page it already returned/);
   });
 
   it('follows a next URL in the body the same way', async () => {
@@ -682,7 +702,9 @@ describe('limits on paging', () => {
     expect(sent).toHaveLength(2);
     expect(r.data).toHaveLength(3);
     expect(r.pagination).toMatchObject({ pages: 1, more: true, next: { page: 2 } });
-    expect(r.pagination!.note).toMatch(/limits\.timeoutMs \(1000 ms\) covers every page of a call/);
+    expect(r.pagination!.note).toMatch(
+      /^Page 2 did not arrive within limits\.timeoutMs \(1000 ms\), which covers every page of a call, so it is not included\./,
+    );
     // Page 2 only had what was left of the call's 1000 ms, not 1000 ms of its own.
     expect(page2!.aborted! - page2!.started).toBeLessThan(700);
   });
@@ -690,7 +712,7 @@ describe('limits on paging', () => {
 
 describe('secrets and paging', () => {
   it('redacts every page before the budget is applied, and cuts only between items', async () => {
-    const secret = `sk_live_${'s'.repeat(300)}`;
+    const secret = `fake-key-${'s'.repeat(300)}`;
     const rows = Array.from({ length: 12 }, (_, i) => ({
       id: `cus_${String(i + 1).padStart(2, '0')}`,
       note: `key ${secret}`,
@@ -812,8 +834,354 @@ describe('pages that are not what the spec says', () => {
     expect(c.pagination).toEqual({
       pages: 1,
       more: true,
-      note: `Page 1 was cut to ${c.data.data.length} of 10 items to fit limits.maxResponseBytes (1000 bytes), and the last item returned has no id to continue from.`,
+      note: `Page 1 was cut to ${c.data.data.length} of 10 items to fit limits.maxResponseBytes (1000 bytes), and the last item returned has no id apitame can continue from.`,
     });
+  });
+});
+
+describe('what the API controls stays within limits', () => {
+  /** Google-style paging: nextPageToken in the body, passed back as pageToken. */
+  const tokenPaths = {
+    '/files': {
+      get: {
+        operationId: 'listFiles',
+        parameters: [q('pageToken'), q('maxResults', 'integer')],
+        responses: json({
+          type: 'object',
+          properties: { files: list, nextPageToken: { type: 'string' } },
+        }),
+      },
+    },
+  };
+  const files = (count: number, token: string | undefined, bytes = 0) =>
+    reply({
+      files: Array.from({ length: count }, (_, i) => ({ id: i, name: 'f'.repeat(bytes) })),
+      ...(token !== undefined ? { nextPageToken: token } : {}),
+    });
+
+  it('does not pass on a position longer than 2048 characters', async () => {
+    const huge = 'Z'.repeat(400_000);
+    const { rt, sent } = fakeApi({
+      paths: tokenPaths,
+      config: { limits: { maxResponseBytes: 1000 } },
+      respond: () => files(1, huge),
+    });
+    const res = await callOperation(rt, 'listFiles', {}, { pages: 3, fields: ['files.id'] });
+    expect(textOf(res).length).toBeLessThan(1200);
+    expect(sent).toHaveLength(1);
+    expect(jsonOf<Paged>(res).pagination).toEqual({
+      pages: 1,
+      more: true,
+      note: "The API's position for the next page is longer than 2048 characters, so apitame does not pass it on.",
+    });
+    // 2048 characters is still a position.
+    const { rt: ok } = fakeApi({ paths: tokenPaths, respond: () => files(1, 'Y'.repeat(2048)) });
+    const r = jsonOf<Paged>(await callOperation(ok, 'listFiles', {}));
+    expect((r.pagination!.next as { pageToken: string }).pageToken).toHaveLength(2048);
+  });
+
+  it('applies the cap to item ids and next link parameters too', async () => {
+    const id = 'I'.repeat(900_000);
+    const { rt } = fakeApi({
+      paths: stripePaths,
+      config: { limits: { maxResponseBytes: 1000 } },
+      respond: () => reply({ object: 'list', data: [{ id, name: 'x' }], has_more: true }),
+    });
+    const res = await callOperation(rt, 'GetCustomers', {}, { fields: ['data.name'] });
+    expect(textOf(res).length).toBeLessThan(1200);
+    expect(jsonOf<Paged>(res).pagination!.note).toMatch(/longer than 2048 characters/);
+
+    const { rt: linked } = fakeApi({
+      paths: issuesPaths(true),
+      respond: () =>
+        reply([{ number: 1 }], {
+          link: `<https://api.example.com/v1/x?page=${'9'.repeat(3000)}>; rel="next"`,
+        }),
+    });
+    const l = jsonOf<Paged>(
+      await callOperation(linked, 'issues/list-for-repo', { owner: 'o', repo: 'r' }),
+    );
+    expect(l.pagination).toMatchObject({ more: true });
+    expect(l.pagination!.next).toBeUndefined();
+    expect(l.pagination!.note).toMatch(/longer than 2048 characters/);
+  });
+
+  it('counts pagination in limits.maxResponseBytes', async () => {
+    const token = 'T'.repeat(1500);
+    const { rt } = fakeApi({
+      paths: tokenPaths,
+      config: { limits: { maxResponseBytes: 3000 } },
+      respond: () => files(30, token, 60),
+    });
+    // fields keeps the token out of data, so it is only counted once, in pagination.
+    const r = jsonOf<Paged<{ files: unknown[] }>>(
+      await callOperation(rt, 'listFiles', {}, { fields: ['files'] }),
+    );
+    expect((r.pagination!.next as { pageToken: string }).pageToken).toBe(token);
+    expect(JSON.stringify(r.data).length + JSON.stringify(r.pagination).length).toBeLessThanOrEqual(
+      3000,
+    );
+    expect(r.data.files.length).toBeGreaterThan(0);
+    expect(r.data.files.length).toBeLessThan(30);
+  });
+
+  it('limits.maxPages: 1 turns paging off', async () => {
+    const { rt } = fakeApi({
+      paths: tokenPaths,
+      config: { limits: { maxPages: 1, maxResponseBytes: 1000 } },
+      respond: () => files(1, 'Z'.repeat(300_000)),
+    });
+    const plain = await callOperation(rt, 'listFiles', {}, { fields: ['files'] });
+    expect(textOf(plain).length).toBeLessThan(1200);
+    expect(jsonOf<Paged>(plain).pagination).toBeUndefined();
+    const asked = jsonOf<Paged>(await callOperation(rt, 'listFiles', {}, { pages: 3 }));
+    expect(asked.pagination).toEqual({
+      pages: 1,
+      note: 'Paging is turned off on this server (limits.maxPages is 1), so apitame read one page.',
+    });
+  });
+
+  it('handles a page of a million tiny items in linear time', async () => {
+    const body = JSON.stringify(new Array(1_000_000).fill(0));
+    const { rt } = fakeApi({
+      paths: issuesPaths(false),
+      config: { limits: { maxResponseBytes: 250_000 } },
+      respond: () => new Response(body, { headers: { 'content-type': 'application/json' } }),
+    });
+    const started = Date.now();
+    const res = await callOperation(rt, 'issues/list-for-repo', { owner: 'o', repo: 'r' });
+    // Measured at about 0.3 s; quadratic fitting took many seconds here before.
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(res.isError).toBeFalsy();
+    const r = jsonOf<Paged<unknown[]>>(res);
+    expect(r.data.length).toBeGreaterThan(100_000);
+    expect(r.data.length).toBeLessThan(125_000);
+    expect(r.pagination!.note).toMatch(/^Page 1 was cut to \d+ of 1000000 items/);
+  });
+
+  it('merges a large page without running out of stack', async () => {
+    const body = JSON.stringify(new Array(300_000).fill(0));
+    const { rt } = fakeApi({
+      paths: issuesPaths(false),
+      config: { limits: { maxResponseBytes: 1_000_000 } },
+      respond: () => new Response(body, { headers: { 'content-type': 'application/json' } }),
+    });
+    const res = await callOperation(rt, 'issues/list-for-repo', { owner: 'o', repo: 'r' });
+    expect(res.isError).toBeFalsy();
+    expect(jsonOf<Paged<unknown[]>>(res).data).toHaveLength(300_000);
+  });
+
+  it('stops when the API repeats any earlier position, not just the last one', async () => {
+    const { rt, sent } = fakeApi({
+      paths: tokenPaths,
+      respond: (s) => files(1, query(s).pageToken === 'A' ? 'B' : 'A'),
+    });
+    const r = jsonOf<Paged<{ files: unknown[] }>>(
+      await callOperation(rt, 'listFiles', {}, { pages: 5 }),
+    );
+    expect(sent.map((x) => query(x).pageToken)).toEqual([undefined, 'A', 'B']);
+    expect(r.pagination).toEqual({
+      pages: 3,
+      more: true,
+      note: 'The API pointed to a page it already returned, so apitame stopped.',
+    });
+  });
+
+  it('keeps a cursor in a parameter called token, and still hides secrets in it', async () => {
+    const paths = {
+      '/tok': {
+        get: {
+          operationId: 'tok',
+          parameters: [q('token')],
+          responses: json({
+            type: 'object',
+            properties: { items: list, next_token: { type: 'string' } },
+          }),
+        },
+      },
+    };
+    let next = 'T2';
+    const { rt, sent } = fakeApi({
+      paths,
+      config: { auth: { type: 'bearer', token: '${API_KEY}' } },
+      env: { API_KEY: 'fake-key-0123456789abcdef' },
+      respond: (s) => reply({ items: [{ id: query(s).token ?? 'first' }], next_token: next }),
+    });
+    const r = jsonOf<Paged>(await callOperation(rt, 'tok', {}));
+    expect(r.pagination!.next).toEqual({ token: 'T2' });
+    await callOperation(rt, 'tok', r.pagination!.next);
+    expect(query(sent.at(-1)!).token).toBe('T2');
+
+    next = 'cursor-fake-key-0123456789abcdef';
+    const hidden = await callOperation(rt, 'tok', {});
+    expect(textOf(hidden)).not.toContain('fake-key-0123456789abcdef');
+    expect(jsonOf<Paged>(hidden).pagination!.next).toEqual({ token: 'cursor-[REDACTED]' });
+  });
+
+  it('keeps date filters with paging names, like GitHub notifications', async () => {
+    const paths = {
+      '/notifications': {
+        get: {
+          operationId: 'activity/list-notifications-for-authenticated-user',
+          parameters: [
+            q('all', 'boolean'),
+            q('since', 'string', { format: 'date-time' }),
+            q('before', 'string', { format: 'date-time' }),
+            q('page', 'integer', { default: 1 }),
+            q('per_page', 'integer', { default: 50 }),
+          ],
+          responses: json(list, { Link: { schema: { type: 'string' } } }),
+        },
+      },
+    };
+    let link = (page: number) => `<https://api.example.com/v1/notifications?page=${page + 1}>`;
+    const { rt, sent } = fakeApi({
+      paths,
+      respond: (s) => {
+        const page = Number(query(s).page ?? 1);
+        return reply([{ id: page }], page < 3 ? { link: `${link(page)}; rel="next"` } : {});
+      },
+    });
+    expect(rt.byId.get('activity/list-notifications-for-authenticated-user')!.paging).toEqual({
+      kind: 'link',
+      items: '',
+      params: [{ name: 'page', key: 'page', type: 'integer' }],
+    });
+    const before = '2024-01-01T00:00:00Z';
+    await callOperation(
+      rt,
+      'activity/list-notifications-for-authenticated-user',
+      { before, per_page: 1 },
+      { pages: 3 },
+    );
+    expect(sent.map((x) => [query(x).before, query(x).page])).toEqual([
+      [before, undefined],
+      [before, '2'],
+      [before, '3'],
+    ]);
+    // A link that sets another value for the filter does not change it.
+    sent.length = 0;
+    link = (page) =>
+      `<https://api.example.com/v1/notifications?page=${page + 1}&before=2099-01-01T00:00:00Z>`;
+    await callOperation(
+      rt,
+      'activity/list-notifications-for-authenticated-user',
+      { before, per_page: 1 },
+      { pages: 2 },
+    );
+    expect(sent.map((x) => query(x).before)).toEqual([before, before]);
+  });
+
+  it('follows @odata.nextLink', async () => {
+    const paths = {
+      '/users': {
+        get: {
+          operationId: 'listUsers',
+          parameters: [q('$top', 'integer'), q('$skiptoken')],
+          responses: json({
+            type: 'object',
+            properties: { value: list, '@odata.nextLink': { type: 'string' } },
+          }),
+        },
+      },
+    };
+    const { rt, sent } = fakeApi({
+      paths,
+      respond: (s) => {
+        const at = query(s).$skiptoken;
+        return reply({
+          value: [{ id: at ?? 'first' }],
+          ...(at
+            ? {}
+            : { '@odata.nextLink': 'https://api.example.com/v1/users?$top=1&$skiptoken=X1' }),
+        });
+      },
+    });
+    expect(rt.byId.get('listUsers')!.paging).toMatchObject({
+      kind: 'link',
+      field: '@odata.nextLink',
+      items: 'value',
+    });
+    const r = jsonOf<Paged<{ value: Array<{ id: string }> }>>(
+      await callOperation(rt, 'listUsers', { $top: 1 }, { pages: 3 }),
+    );
+    expect(r.data.value.map((u) => u.id)).toEqual(['first', 'X1']);
+    expect(sent.map((x) => query(x).$skiptoken)).toEqual([undefined, 'X1']);
+    expect(r.pagination).toEqual({ pages: 2, more: false });
+  });
+});
+
+describe('what operators see', () => {
+  const audited = (file: string) =>
+    readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as { outcome: string; access: string; reason?: string });
+
+  it('audits and logs a refused next link, even when only writes are audited', async () => {
+    const t = tempDir();
+    try {
+      const file = join(t.dir, 'audit.jsonl');
+      const { rt, logs } = fakeApi({
+        paths: issuesPaths(true),
+        config: { audit: { file, include: 'writes' } },
+        respond: () =>
+          reply([{ number: 1 }], {
+            link: '<https://evil.example.net/v1/x?page=2&k=v>; rel="next"',
+          }),
+      });
+      await callOperation(rt, 'issues/list-for-repo', { owner: 'o', repo: 'r' }, { pages: 2 });
+      await callOperation(rt, 'issues/list-for-repo', { owner: 'o', repo: 'r' }, { pages: 2 });
+      const entries = audited(file);
+      expect(entries).toHaveLength(2);
+      expect(entries[0]).toMatchObject({
+        outcome: 'refused',
+        access: 'read',
+        reason: 'next link to https://evil.example.net/v1/x is outside https://api.example.com/v1',
+      });
+      // The warning is logged once a minute per operation, so an API cannot flood the log.
+      expect(
+        logs.filter((l) => /refused a next link to https:\/\/evil\.example\.net/.test(l)),
+      ).toHaveLength(1);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it('audits an invalid position and a rate limit that stopped paging', async () => {
+    const t = tempDir();
+    try {
+      const file = join(t.dir, 'audit.jsonl');
+      const { rt } = fakeApi({
+        paths: issuesPaths(true),
+        config: { audit: { file, include: 'writes' } },
+        respond: () =>
+          reply([{ number: 1 }], { link: '<https://api.example.com/v1/x?page=two>; rel="next"' }),
+      });
+      await callOperation(rt, 'issues/list-for-repo', { owner: 'o', repo: 'r' }, { pages: 2 });
+      expect(audited(file)).toEqual([
+        expect.objectContaining({
+          outcome: 'refused',
+          reason: 'next page position: page: must be integer',
+        }),
+      ]);
+
+      const all = join(t.dir, 'all.jsonl');
+      const limited = fakeApi({
+        paths: issuesPaths(false),
+        config: { audit: { file: all, include: 'all' }, limits: { maxCallsPerMinute: 2 } },
+        respond: (s) => issues(s),
+      });
+      await callOperation(
+        limited.rt,
+        'issues/list-for-repo',
+        { owner: 'o', repo: 'r', per_page: 1 },
+        { pages: 5 },
+      );
+      expect(audited(all).map((e) => e.outcome)).toEqual(['sent', 'sent', 'rate-limited']);
+    } finally {
+      t.cleanup();
+    }
   });
 });
 

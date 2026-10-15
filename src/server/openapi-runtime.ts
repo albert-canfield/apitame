@@ -48,6 +48,7 @@ import { parseDryRun, parsePages } from './flags.js';
 import {
   applyPosition,
   continuation,
+  type Continuation,
   cutsInsidePages,
   jsonBytes,
   listAt,
@@ -132,6 +133,23 @@ function parseFlags(args: {
   };
 }
 
+/** One page read by `pages`, kept until the result is fitted to the size limit. */
+interface PageData {
+  /** The arguments that read it. */
+  args: Record<string, unknown>;
+  /** The body after field selection and redaction, and its list. */
+  envelope: unknown;
+  shown: unknown[];
+  /** The list as received, for ids. */
+  items: unknown[];
+  /** Size of the envelope with an empty list. */
+  fixed: number;
+  /** sums[c]: size of the first c items, measured only as far as the budget could hold. */
+  sums: number[];
+  /** Where the page after this one starts. */
+  cont: Continuation;
+}
+
 const SEARCH = 'search_operations';
 const CALL = 'call_operation';
 
@@ -172,6 +190,8 @@ export class OpenApiRuntime implements Runtime {
   private readonly guardrails: Guardrails;
   private readonly redactor: Redactor;
   private readonly logger: Logger;
+  /** When each operation last logged a refused next link, so an API cannot flood the log. */
+  private readonly linkWarnings = new Map<string, number>();
   private auth: AuthProvider | undefined;
   private authError: Error | undefined;
   private readonly staticHeaders: Record<string, string>;
@@ -812,6 +832,8 @@ export class OpenApiRuntime implements Runtime {
     if (op.access !== 'read')
       this.logger.info(`${op.access} ${op.id}: ${req.method} ${req.url.pathname}`);
 
+    // With limits.maxPages at 1, paging is off: no pages argument and no pagination in results.
+    const paging = this.config.limits.maxPages > 1 ? op.paging : undefined;
     const send = (r: BuiltRequest, timeoutMs: number) =>
       sendRequest(r, op.noAuth ? undefined : this.auth, {
         timeoutMs,
@@ -819,7 +841,7 @@ export class OpenApiRuntime implements Runtime {
         fields: flags.fields,
         redactor: this.redactor,
         basePath: new URL(this.baseUrl!).pathname,
-        ...(op.paging ? { keepBody: true } : {}),
+        ...(paging ? { keepBody: true } : {}),
         ...(this.opts.fetchImpl ? { fetchImpl: this.opts.fetchImpl } : {}),
         ...(ctx?.signal ? { signal: ctx.signal } : {}),
       });
@@ -836,9 +858,10 @@ export class OpenApiRuntime implements Runtime {
     const max = this.config.limits.maxPages;
     const asked = flags.pages ?? 1;
     const capped = asked > max ? `"pages" is capped at ${max} (limits.maxPages).` : undefined;
-    if (op.paging && res.body !== undefined) {
+    if (paging && res.body !== undefined) {
       return this.readPages({
-        op: op as Operation & { paging: Paging },
+        op,
+        paging,
         params,
         first: res,
         req,
@@ -852,9 +875,11 @@ export class OpenApiRuntime implements Runtime {
         audit,
       });
     }
-    const why = !op.paging
-      ? 'apitame does not know how this operation pages, so it read one page.'
-      : 'The response is not a JSON list apitame can page through, so it read one page.';
+    const why = op.paging
+      ? paging
+        ? 'The response is not a JSON list apitame can page through, so it read one page.'
+        : 'Paging is turned off on this server (limits.maxPages is 1), so apitame read one page.'
+      : 'apitame does not know how this operation pages, so it read one page.';
     const payload = this.redactor.value({
       status: res.status,
       data: res.data,
@@ -865,15 +890,17 @@ export class OpenApiRuntime implements Runtime {
   }
 
   /**
-   * Read the following pages of a list operation, one after the other, and merge their items.
-   * Every following request is built from the same operation and arguments, with only the
-   * position replaced and validated again, so it stays on the same endpoint and is always a
-   * read. Stops at `want` pages, at the end of the data, at `limits.maxResponseBytes` (counted
-   * after field selection and redaction, never inside an item), at the call's deadline, at a
-   * rate limit or at a page that fails, and says where the next page starts.
+   * Read the following pages of a list operation, one after the other, then fit as many items
+   * as possible into `limits.maxResponseBytes`. Every following request is built from the same
+   * operation and arguments, with only the position replaced and validated again, so it stays
+   * on the same endpoint and is always a read. Fetching stops at `want` pages, at the end of the
+   * data, once the budget is used up, at the call's deadline, at a rate limit, at a repeated
+   * position or at a page that fails. The budget covers `data` and `pagination` together, is
+   * counted after field selection and redaction, and never cuts inside an item.
    */
   private async readPages(o: {
-    op: Operation & { paging: Paging };
+    op: Operation;
+    paging: Paging;
     params: Record<string, unknown>;
     first: HttpResult;
     req: BuiltRequest;
@@ -886,31 +913,32 @@ export class OpenApiRuntime implements Runtime {
     tool: string;
     audit: (outcome: AuditOutcome, extra?: Partial<AuditEntry>) => void;
   }): Promise<ToolResult> {
-    const { op, params, want } = o;
-    const p = op.paging;
+    const { op, paging: p, params, want } = o;
     const budget = this.config.limits.maxResponseBytes;
     const budgetText = `limits.maxResponseBytes (${budget} bytes)`;
     const base = new URL(this.baseUrl!);
     const shape = (body: unknown) =>
       this.redactor.value(o.fields ? projectFields(body, o.fields) : body);
-    // has_more is set to its final value at the end; "false" is the longer of the two.
+    // has_more is set to its final value at the end, so it is measured as "false", the longer.
     const sized = (env: unknown) =>
       p.kind === 'cursor' && env && typeof env === 'object' && !Array.isArray(env) && p.more in env
         ? { ...(env as Record<string, unknown>), [p.more]: false }
         : env;
+    const positionOf = (args: Record<string, unknown>) =>
+      JSON.stringify(positionKeys(p).map((k) => args[k] ?? null));
 
-    const notes: string[] = o.capped ? [o.capped] : [];
-    const merged: unknown[] = [];
-    let mergedBytes = 0;
-    let envelope: unknown;
-    let pages = 0;
-    let more: boolean;
+    // Phase 1: read pages. The outcome below holds if every page read fits in the budget.
+    const pages: PageData[] = [];
+    let more = false;
     let next: Record<string, unknown> | undefined;
+    let note: string | undefined;
+    let used = 0;
+    let count = 0;
     let res = o.first;
     let req = o.req;
     let args = params;
-    /** The position that read the current page (none for the first page: the agent's own). */
     let position: Record<string, unknown> | undefined;
+    const seen = new Set([positionOf(params)]);
 
     for (let n = 1; ; n++) {
       const items = listAt(res.body, p.items);
@@ -921,118 +949,80 @@ export class OpenApiRuntime implements Runtime {
         if (n === 1) {
           // Not a list after all (or fields left it out): one page, trimmed as usual.
           const fitted = fitJson(shaped, budget);
-          return jsonResult(
-            this.redactor.value({
-              status: res.status,
-              data: fitted.value,
-              ...(fitted.note ? { note: fitted.note } : {}),
-              ...(want > 1
-                ? {
-                    pagination: {
-                      pages: 1,
-                      note: `There is no list at ${where} in this response${o.fields ? ' (keep it in "fields")' : ''}, so apitame read one page.`,
-                    },
-                  }
-                : {}),
-            }),
-          );
+          return jsonResult({
+            status: res.status,
+            data: fitted.value,
+            ...(fitted.note ? { note: fitted.note } : {}),
+            ...(want > 1
+              ? {
+                  pagination: {
+                    pages: 1,
+                    note: `There is no list at ${where} in this response${o.fields ? ' (keep it in "fields")' : ''}, so apitame read one page.`,
+                  },
+                }
+              : {}),
+          });
         }
-        more = true;
-        next = position;
-        notes.push(`Page ${n} has no list at ${where}, so it is not included.`);
+        [more, next, note] = [
+          true,
+          position,
+          `Page ${n} has no list at ${where}, so it is not included.`,
+        ];
         break;
       }
-
       const cont = continuation(
         p,
         { args, body: res.body, items, link: res.link, url: req.url },
         base,
       );
-      const env = sized(shaped);
-      const fixed = jsonBytes(withList(env, p.items, []));
-      const sizes = shown.map(jsonBytes);
-      // The size of the result with the first `count` items of this page added.
-      const total = (count: number) => {
-        let bytes = fixed + mergedBytes + Math.max(0, merged.length + count - 1);
-        for (let i = 0; i < count; i++) bytes += sizes[i]!;
-        return bytes;
-      };
-      if (total(shown.length) <= budget) {
-        merged.push(...shown);
-        for (const b of sizes) mergedBytes += b;
-        envelope = shaped;
-        pages = n;
-        more = cont.more;
-        next = cont.position;
-        if (cont.problem) notes.push(cont.problem);
-      } else {
-        let fit = 0;
-        while (fit < shown.length && total(fit + 1) <= budget) fit++;
-        if (cutsInsidePages(p) && !cont.backwards && fit > 0) {
-          // The cursor or offset can point right after the last item that fits.
-          merged.push(...shown.slice(0, fit));
-          envelope = shaped;
-          pages = n;
-          more = true;
-          next = positionAfter(p, args, items, fit);
-          notes.push(
-            `Page ${n} was cut to ${fit} of ${items.length} items to fit ${budgetText}${next ? '; "next" continues right after the last item returned' : ', and the last item returned has no id to continue from'}.`,
-          );
-        } else if (n === 1 && fit > 0) {
-          merged.push(...shown.slice(0, fit));
-          envelope = shaped;
-          pages = 1;
-          more = true;
-          next = cont.position;
-          notes.push(
-            `Page 1 was cut to ${fit} of ${items.length} items to fit ${budgetText}${next ? `, and "next" skips the ${items.length - fit} that were cut` : ''}. Ask for fewer items per page, or select fewer fields.`,
-          );
-          if (cont.problem) notes.push(cont.problem);
-        } else if (n === 1) {
-          const fitted = fitJson(shaped, budget);
-          return jsonResult(
-            this.redactor.value({
-              status: res.status,
-              data: fitted.value,
-              ...(fitted.note ? { note: fitted.note } : {}),
-              pagination: {
-                pages: 1,
-                more: true,
-                note: `Not even one item fits in ${budgetText}. Select fewer fields.`,
-              },
-            }),
-          );
-        } else {
-          more = true;
-          next = position;
-          notes.push(
-            `Page ${n} did not fit in ${budgetText}, so it is not included. Continue with "next", or select fewer fields to fit more.`,
-          );
-        }
-        break;
+      // Item sizes, measured only as far as they can fit: a page of a million tiny items
+      // costs no more than the budget.
+      const sums = [0];
+      for (let i = 0; i < shown.length && sums[i]! + i <= budget; i++) {
+        sums.push(sums[i]! + jsonBytes(shown[i]));
       }
+      const page: PageData = {
+        args,
+        envelope: shaped,
+        shown,
+        items,
+        fixed: jsonBytes(withList(sized(shaped), p.items, [])),
+        sums,
+        cont,
+      };
+      pages.push(page);
+      if (cont.refused) this.refusedLink(op, o.audit, args, cont.refused);
+      const whole = sums.length === shown.length + 1;
+      used += whole ? sums[shown.length]! : budget + 1;
+      count += shown.length;
+      // Once the items read so far exceed the budget, more pages cannot be shown.
+      if (page.fixed + used + Math.max(0, count - 1) > budget) break;
 
-      if (!more || !next || cont.problem) break;
+      [more, next, note] = [cont.more, cont.position, cont.problem];
+      if (!cont.more || cont.problem || !cont.position) break;
       if (cont.backwards) {
-        if (want > 1)
-          notes.push(
-            `apitame only reads following pages forward (${p.kind === 'cursor' ? p.param.name : 'next'}), so with ${p.kind === 'cursor' && p.before ? p.before.name : 'this position'} it read one page.`,
-          );
+        if (want > 1 && p.kind === 'cursor' && p.before) {
+          note = `apitame only reads following pages forward (${p.param.name}), so with ${p.before.name} it read one page.`;
+        }
         break;
       }
       if (n >= want) break;
 
       // The next page: the same operation and arguments, with only the position replaced.
-      const nextArgs = applyPosition(p, params, next);
-      if (positionKeys(p).every((k) => JSON.stringify(nextArgs[k]) === JSON.stringify(args[k]))) {
-        next = undefined;
-        notes.push('The API pointed to the same page again, so apitame stopped.');
+      const nextArgs = applyPosition(p, params, cont.position);
+      if (seen.has(positionOf(nextArgs))) {
+        [next, note] = [
+          undefined,
+          'The API pointed to a page it already returned, so apitame stopped.',
+        ];
         break;
       }
+      seen.add(positionOf(nextArgs));
       const problems = this.validator.check(op.id, op.inputSchema, nextArgs);
       if (problems.length > 0) {
         next = undefined;
-        notes.push(`The API's position for the next page is not valid: ${problems.join('; ')}.`);
+        note = `The API's position for the next page is not valid: ${problems.join('; ')}.`;
+        o.audit('refused', { args, reason: `next page position: ${problems.join('; ')}` });
         break;
       }
       let nextReq: BuiltRequest;
@@ -1041,20 +1031,20 @@ export class OpenApiRuntime implements Runtime {
           maxUploadBytes: this.config.limits.maxUploadBytes,
         });
       } catch (err) {
-        next = undefined;
-        notes.push((err as Error).message);
+        [next, note] = [undefined, (err as Error).message];
         break;
       }
+      const ms = this.config.limits.timeoutMs;
       const remaining = o.deadline - Date.now();
-      const late = `Stopped before page ${n + 1}: limits.timeoutMs (${this.config.limits.timeoutMs} ms) covers every page of a call. Continue with "next".`;
       if (remaining <= 0) {
-        notes.push(late);
+        note = `Stopped before page ${n + 1}: limits.timeoutMs (${ms} ms) covers every page of a call. Continue with "next".`;
         break;
       }
       // Every page counts against the per-minute limits, like a call of its own.
       const limited = this.guardrails.checkCall(o.ctx?.caller) ?? this.guardrails.checkTool(o.tool);
       if (limited) {
-        notes.push(`Stopped before page ${n + 1}. ${limited}`);
+        note = `Stopped before page ${n + 1}. ${limited}`;
+        o.audit('rate-limited', { args: nextArgs, reason: limited });
         break;
       }
       const started = Date.now();
@@ -1063,11 +1053,10 @@ export class OpenApiRuntime implements Runtime {
       } catch (err) {
         const message = (err as Error).message;
         o.audit('error', { args: nextArgs, durationMs: Date.now() - started, reason: message });
-        notes.push(
+        note =
           Date.now() >= o.deadline
-            ? late
-            : `Page ${n + 1} failed (${message}), so it is not included. Continue with "next" to retry.`,
-        );
+            ? `Page ${n + 1} did not arrive within limits.timeoutMs (${ms} ms), which covers every page of a call, so it is not included. Continue with "next".`
+            : `Page ${n + 1} failed (${message.slice(0, 200)}), so it is not included. Continue with "next" to retry.`;
         break;
       }
       o.audit(res.ok ? 'sent' : 'error', {
@@ -1076,33 +1065,171 @@ export class OpenApiRuntime implements Runtime {
         durationMs: Date.now() - started,
       });
       if (!res.ok || res.body === undefined) {
-        notes.push(
-          `Page ${n + 1} answered with status ${res.status}${res.ok ? ' and no JSON' : ''}, so it is not included. Continue with "next" to retry.`,
-        );
+        note = `Page ${n + 1} answered with status ${res.status}${res.ok ? ' and no JSON' : ''}, so it is not included. Continue with "next" to retry.`;
         break;
       }
       req = nextReq;
       args = nextArgs;
-      position = next;
+      position = cont.position;
     }
 
-    let data = withList(envelope, p.items, merged);
+    // Phase 2: the most items that fit with their pagination, never cutting inside an item.
+    // Each candidate keeps all items of the pages before page k and the first c of page k.
+    const cutAnywhere = (k: number) => k === 0 || (cutsInsidePages(p) && !pages[k]!.cont.backwards);
+    const choices = pages.map((pg, k) =>
+      pg.shown.length === 0 ? 1 : cutAnywhere(k) ? pg.shown.length : 1,
+    );
+    const total = choices.reduce((a, b) => a + b, 0);
+    const before: Array<{ bytes: number; items: number }> = [];
+    for (let k = 0, bytes = 0, items = 0; k < pages.length; k++) {
+      before.push({ bytes, items });
+      bytes += pages[k]!.sums.at(-1)!;
+      items += pages[k]!.shown.length;
+    }
+    const at = (index: number): { k: number; c: number } => {
+      let k = 0;
+      while (index >= choices[k]!) index -= choices[k++]!;
+      const len = pages[k]!.shown.length;
+      return { k, c: len === 0 ? 0 : cutAnywhere(k) ? index + 1 : len };
+    };
+    const outcome = (k: number, c: number) => {
+      const pg = pages[k]!;
+      const len = pg.shown.length;
+      const lead = o.capped ? [o.capped] : [];
+      if (k === pages.length - 1 && c === len) {
+        return { pages: k + 1, more, next, notes: [...lead, ...(note ? [note] : [])] };
+      }
+      if (c === len) {
+        return {
+          pages: k + 1,
+          more: true,
+          next: pg.cont.position,
+          notes: [
+            ...lead,
+            `Page ${k + 2} did not fit in ${budgetText}, so it is not included. Continue with "next", or select fewer fields to fit more.`,
+          ],
+        };
+      }
+      if (cutsInsidePages(p) && !pg.cont.backwards) {
+        // The cursor or offset can point right after the last item kept.
+        const after = positionAfter(p, pg.args, pg.items, c);
+        return {
+          pages: k + 1,
+          more: true,
+          next: after,
+          notes: [
+            ...lead,
+            `Page ${k + 1} was cut to ${c} of ${len} items to fit ${budgetText}${after ? '; "next" continues right after the last item returned' : ', and the last item returned has no id apitame can continue from'}.`,
+          ],
+        };
+      }
+      // Only the first page of other styles is cut: their positions point at whole pages.
+      const skip = pg.cont.position;
+      return {
+        pages: 1,
+        more: true,
+        next: skip,
+        notes: [
+          ...lead,
+          `Page 1 was cut to ${c} of ${len} items to fit ${budgetText}${skip ? `, and "next" skips the ${len - c} that were cut` : ''}. Ask for fewer items per page, or select fewer fields.`,
+          ...(pg.cont.problem ? [pg.cont.problem] : []),
+        ],
+      };
+    };
+    const paginationOf = (out: ReturnType<typeof outcome>) =>
+      this.paginationBlock(out.pages, out.more, out.next, out.notes);
+    const dataBytes = (k: number, c: number) => {
+      const items = before[k]!.items + c;
+      return pages[k]!.fixed + before[k]!.bytes + pages[k]!.sums[c]! + Math.max(0, items - 1);
+    };
+    const fitsAt = (index: number) => {
+      const { k, c } = at(index);
+      if (c >= pages[k]!.sums.length) return false;
+      return dataBytes(k, c) + jsonBytes(paginationOf(outcome(k, c))) <= budget;
+    };
+    let best = -1;
+    if (fitsAt(total - 1)) best = total - 1;
+    else {
+      let hi = total - 2;
+      while (best < hi) {
+        const mid = Math.floor((best + hi + 1) / 2);
+        if (fitsAt(mid)) best = mid;
+        else hi = mid - 1;
+      }
+    }
+
+    if (best < 0) {
+      // Not even one item fits: trimmed as before, and no position to continue from.
+      const pagination = this.paginationBlock(1, true, undefined, [
+        ...(o.capped ? [o.capped] : []),
+        pages[0]!.shown.length === 0
+          ? `The response does not fit in ${budgetText}. Select fewer fields.`
+          : `Not even one item fits in ${budgetText}. Select fewer fields.`,
+      ]);
+      const fitted = fitJson(pages[0]!.envelope, Math.max(0, budget - jsonBytes(pagination)));
+      return jsonResult({
+        status: o.first.status,
+        data: fitted.value,
+        ...(fitted.note ? { note: fitted.note } : {}),
+        pagination,
+      });
+    }
+    const { k, c } = at(best);
+    const out = outcome(k, c);
+    let merged: unknown[] = [];
+    for (let j = 0; j < k; j++) merged = merged.concat(pages[j]!.shown);
+    merged = merged.concat(pages[k]!.shown.slice(0, c));
+    let data = withList(pages[k]!.envelope, p.items, merged);
     if (p.kind === 'cursor' && data && typeof data === 'object' && !Array.isArray(data)) {
       const d = data as Record<string, unknown>;
-      if (p.more in d) data = { ...d, [p.more]: more };
+      if (p.more in d) data = { ...d, [p.more]: out.more };
     }
-    return jsonResult(
-      this.redactor.value({
-        status: o.first.status,
-        data,
-        pagination: {
-          pages,
-          more,
-          ...(more && next ? { next } : {}),
-          ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
-        },
-      }),
-    );
+    // data was redacted page by page; the pagination block is redacted on its own.
+    return jsonResult({ status: o.first.status, data, pagination: paginationOf(out) });
+  }
+
+  /**
+   * The `pagination` block. `next` is redacted by value only: its keys are the operation's own
+   * parameter names, and one called `token` must not hide the cursor the agent passes back.
+   */
+  private paginationBlock(
+    pages: number,
+    more: boolean,
+    next: Record<string, unknown> | undefined,
+    notes: string[],
+  ): Record<string, unknown> {
+    const shown =
+      more && next
+        ? Object.fromEntries(
+            Object.entries(next).map(([k, v]) => [
+              this.redactor.text(k),
+              typeof v === 'string' ? this.redactor.text(v) : v,
+            ]),
+          )
+        : undefined;
+    return {
+      pages,
+      more,
+      ...(shown ? { next: shown } : {}),
+      ...(notes.length > 0 ? { note: this.redactor.text(notes.join(' ')) } : {}),
+    };
+  }
+
+  /** A next link outside the API: refused, audited, and logged at most once a minute per operation. */
+  private refusedLink(
+    op: Operation,
+    audit: (outcome: AuditOutcome, extra?: Partial<AuditEntry>) => void,
+    args: Record<string, unknown>,
+    target: string,
+  ): void {
+    const base = new URL(this.baseUrl!);
+    const reason = `next link to ${target} is outside ${base.origin}${base.pathname.replace(/\/+$/, '')}`;
+    audit('refused', { args, reason });
+    const now = Date.now();
+    if (now - (this.linkWarnings.get(op.id) ?? -Infinity) >= 60_000) {
+      this.linkWarnings.set(op.id, now);
+      this.logger.warn(`${op.id}: refused a ${reason}.`);
+    }
   }
 
   /** Request headers as shown in previews: sensitive ones and every static header from the config are hidden. */

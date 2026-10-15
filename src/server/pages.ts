@@ -5,50 +5,127 @@
  */
 import type { Paging, PagingParam } from '../sources/openapi/pagination.js';
 
+/**
+ * The longest position (cursor, token, item id, link parameter) apitame passes on, in
+ * characters. A longer one is not treated as a position: it would be sent back to the agent
+ * in `next` and could be made as large as the API likes.
+ */
+export const MAX_POSITION = 2048;
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-/** The value at a dot path of object keys (`''` is the value itself). */
+/**
+ * The value at a path of object keys (`''` is the value itself). A key that contains dots,
+ * such as `@odata.nextLink`, is found as it is before the path is split at a dot.
+ */
 export function valueAt(value: unknown, path: string): unknown {
   if (path === '') return value;
-  let cur = value;
-  for (const part of path.split('.')) {
-    if (!isPlainObject(cur)) return undefined;
-    cur = cur[part];
-  }
-  return cur;
+  if (!isPlainObject(value)) return undefined;
+  if (path in value) return value[path];
+  const dot = path.indexOf('.');
+  if (dot < 0) return undefined;
+  const head = path.slice(0, dot);
+  return head in value ? valueAt(value[head], path.slice(dot + 1)) : undefined;
 }
 
-/** The item list of a page, if the body has one where the spec says. */
-export function listAt(value: unknown, path: string): unknown[] | undefined {
-  const v = valueAt(value, path);
+/** The item list of a page: the body itself (`''`) or one of its top-level properties. */
+export function listAt(value: unknown, key: string): unknown[] | undefined {
+  const v = key === '' ? value : isPlainObject(value) ? value[key] : undefined;
   return Array.isArray(v) ? v : undefined;
 }
 
-/** A copy of `value` with the list at `path` replaced. */
-export function withList(value: unknown, path: string, list: unknown[]): unknown {
-  if (path === '') return list;
-  const [head, ...rest] = path.split('.') as [string, ...string[]];
-  if (!isPlainObject(value)) return value;
-  return {
-    ...value,
-    [head]: rest.length === 0 ? list : withList(value[head], rest.join('.'), list),
-  };
+/** A copy of `value` with its list replaced. */
+export function withList(value: unknown, key: string, list: unknown[]): unknown {
+  if (key === '') return list;
+  return isPlainObject(value) ? { ...value, [key]: list } : value;
 }
 
+export interface LinkValue {
+  url: string;
+  rels: string[];
+}
+
+const SPACE = new Set([' ', '\t', '\r', '\n']);
+
 /**
- * The URL of `rel="next"` in a Link header (RFC 8288), if there is one:
- * `<https://api.github.com/repositories/1/issues?page=2>; rel="next", <...>; rel="last"`.
+ * Parse a Link header (RFC 8288) in one pass: `<url>; rel="next"; title="...", <url>; ...`.
+ * Quoted parameter values are read as a whole, so a comma, `<` or `rel=` inside quotes is
+ * never mistaken for another link or relation.
  */
+export function parseLinks(header: string): LinkValue[] {
+  const out: LinkValue[] = [];
+  const n = header.length;
+  let i = 0;
+  const skipSpace = () => {
+    while (i < n && SPACE.has(header[i]!)) i++;
+  };
+  /** Skip to the next `,` that is not inside quotes. */
+  const skipValue = () => {
+    while (i < n && header[i] !== ',') {
+      if (header[i] === '"') readQuoted();
+      else i++;
+    }
+  };
+  const readQuoted = (): string => {
+    let value = '';
+    i++; // opening quote
+    while (i < n && header[i] !== '"') {
+      if (header[i] === '\\' && i + 1 < n) i++;
+      value += header[i];
+      i++;
+    }
+    i++; // closing quote
+    return value;
+  };
+  const readToken = (stop: string): string => {
+    const start = i;
+    while (i < n && !stop.includes(header[i]!) && !SPACE.has(header[i]!)) i++;
+    return header.slice(start, i);
+  };
+
+  while (i < n) {
+    skipSpace();
+    if (header[i] === ',') {
+      i++;
+      continue;
+    }
+    if (header[i] !== '<') {
+      skipValue();
+      continue;
+    }
+    const end = header.indexOf('>', i + 1);
+    if (end < 0) break;
+    const link: LinkValue = { url: header.slice(i + 1, end), rels: [] };
+    i = end + 1;
+    for (;;) {
+      skipSpace();
+      if (header[i] !== ';') break;
+      i++;
+      skipSpace();
+      const name = readToken('=;,').toLowerCase();
+      skipSpace();
+      let value = '';
+      if (header[i] === '=') {
+        i++;
+        skipSpace();
+        value = header[i] === '"' ? readQuoted() : readToken(';,');
+      }
+      if (name === 'rel' && link.rels.length === 0) {
+        link.rels = value.toLowerCase().split(/\s+/).filter(Boolean);
+      }
+    }
+    out.push(link);
+    skipValue();
+  }
+  return out;
+}
+
+/** The URL of the first `rel="next"` link in a Link header, if there is one. */
 export function nextLink(header: string | undefined): string | undefined {
   if (!header) return undefined;
-  for (const m of header.matchAll(/<([^>]*)>((?:\s*;\s*[^;,]*)*)/g)) {
-    const rel = /;\s*rel\s*=\s*(?:"([^"]*)"|([^\s;,]+))/i.exec(m[2] ?? '');
-    const values = (rel?.[1] ?? rel?.[2] ?? '').toLowerCase().split(/\s+/);
-    if (values.includes('next')) return m[1];
-  }
-  return undefined;
+  return parseLinks(header).find((l) => l.rels.includes('next'))?.url;
 }
 
 /** The parameters a strategy owns: they are replaced from one page to the next, nothing else is. */
@@ -63,14 +140,35 @@ export function positionKeys(p: Paging): string[] {
   }
 }
 
-/** The arguments for another page: the same ones, with the position replaced. */
+/** Cursors that point in opposite directions: setting one drops the other. */
+const PAIRS: Array<[string, string]> = [
+  ['after', 'before'],
+  ['starting_after', 'ending_before'],
+];
+
+/**
+ * The arguments for another page: the same ones, with the position replaced. For next links,
+ * only the parameters the link sets are replaced (plus the other half of a cursor pair), so an
+ * argument the agent set and the link leaves out, a filter for example, is kept.
+ */
 export function applyPosition(
   p: Paging,
   args: Record<string, unknown>,
   position: Record<string, unknown>,
 ): Record<string, unknown> {
   const out = { ...args };
-  for (const k of positionKeys(p)) delete out[k];
+  if (p.kind === 'link') {
+    for (const param of p.params) {
+      if (!(param.key in position)) continue;
+      for (const pair of PAIRS) {
+        const other = pair[0] === param.name ? pair[1] : pair[1] === param.name ? pair[0] : '';
+        const partner = p.params.find((x) => x.name === other);
+        if (partner && !(partner.key in position)) delete out[partner.key];
+      }
+    }
+  } else {
+    for (const k of positionKeys(p)) delete out[k];
+  }
   return { ...out, ...position };
 }
 
@@ -86,13 +184,22 @@ export interface Continuation {
   position?: Record<string, unknown>;
   /** Why the next page cannot be read, although there is one. */
   problem?: string;
+  /** A next link apitame refused, as origin and path, for the audit log. */
+  refused?: string;
   /** The position goes backwards (`ending_before`): it is given but never followed. */
   backwards?: boolean;
 }
 
+const TOO_LONG = `The API's position for the next page is longer than ${MAX_POSITION} characters, so apitame does not pass it on.`;
+
 function asInt(v: unknown): number | undefined {
   const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
   return typeof n === 'number' && Number.isInteger(n) ? n : undefined;
+}
+
+/** A value short enough to be a position. */
+function fits(v: string | number): boolean {
+  return String(v).length <= MAX_POSITION;
 }
 
 function idOf(item: unknown): string | number | undefined {
@@ -141,13 +248,17 @@ export function continuation(p: Paging, page: PageRead, base: URL): Continuation
           problem: 'The last item has no id, so apitame cannot tell where the next page starts.',
         };
       }
+      if (!fits(id)) return { more, problem: TOO_LONG };
       const param = backwards ? p.before! : p.param;
       return { more, position: { [param.key]: id }, ...(backwards ? { backwards } : {}) };
     }
     case 'token': {
       const value = valueAt(body, p.field);
-      const ok = (typeof value === 'string' && value !== '') || typeof value === 'number';
-      return ok ? { more: true, position: { [p.param.key]: value } } : { more: false };
+      if ((typeof value !== 'string' && typeof value !== 'number') || value === '') {
+        return { more: false };
+      }
+      if (!fits(value)) return { more: true, problem: TOO_LONG };
+      return { more: true, position: { [p.param.key]: value } };
     }
     case 'link': {
       const raw = p.field ? valueAt(body, p.field) : nextLink(page.link);
@@ -163,7 +274,10 @@ export function continuation(p: Paging, page: PageRead, base: URL): Continuation
         : items.length > 0 && (size === undefined || items.length >= size);
       if (!more) return { more: false };
       const at = asInt(args[p.param.key]) ?? p.first;
-      return { more, position: { [p.param.key]: p.kind === 'page' ? at + 1 : at + items.length } };
+      return {
+        more,
+        position: { [p.param.key]: p.kind === 'page' ? at + 1 : at + items.length },
+      };
     }
   }
 }
@@ -189,12 +303,15 @@ function fromLink(
     return {
       more: true,
       problem: `The API's next link points outside ${base.origin}${basePath}, so apitame did not follow it.`,
+      refused: `${url.protocol}//${url.host}${url.pathname}`.slice(0, 200),
     };
   }
   const position: Record<string, unknown> = {};
   for (const param of p.params) {
     const v = url.searchParams.get(param.name);
-    if (v !== null) position[param.key] = typed(param, v);
+    if (v === null) continue;
+    if (!fits(v)) return { more: true, problem: TOO_LONG };
+    position[param.key] = typed(param, v);
   }
   if (Object.keys(position).length === 0) {
     return {
@@ -217,7 +334,7 @@ export function positionAfter(
   }
   if (p.kind === 'cursor') {
     const id = idOf(items[count - 1]);
-    return id === undefined ? undefined : { [p.param.key]: id };
+    return id === undefined || !fits(id) ? undefined : { [p.param.key]: id };
   }
   return undefined;
 }

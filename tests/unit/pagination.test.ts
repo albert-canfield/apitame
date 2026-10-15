@@ -385,6 +385,29 @@ describe('Link headers', () => {
   });
 });
 
+describe('Link header parsing', () => {
+  it('is not fooled by links and relations inside quoted values', () => {
+    const header =
+      '<https://x.test/a?page=2>; title="x, <https://x.test/a?page=999>; rel=next ; y"; rel="prev"';
+    expect(nextLink(header)).toBeUndefined();
+    expect(
+      nextLink(
+        '<https://x.test/a?page=1>; title="a \\" rel=next"; rel="prev", <https://x.test/a?page=3>; rel="next"',
+      ),
+    ).toBe('https://x.test/a?page=3');
+    // Only the first rel parameter of a link counts.
+    expect(nextLink('<https://x.test/a?page=2>; rel="prev"; rel="next"')).toBeUndefined();
+  });
+
+  it('takes linear time on hostile headers', () => {
+    const started = Date.now();
+    expect(nextLink('<'.repeat(200_000))).toBeUndefined();
+    expect(nextLink(`${'<a>; rel="prev", '.repeat(40_000)}<b>; rel=next`)).toBe('b');
+    expect(nextLink(`<a>; title="${'<'.repeat(200_000)}`)).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+});
+
 describe('where the next page starts', () => {
   const base = new URL('https://api.example.com/v1');
   const url = new URL('https://api.example.com/v1/repos/o/r/issues');
@@ -439,14 +462,37 @@ describe('where the next page starts', () => {
     expect(c.problem).toMatch(/sets none of page, after/);
   });
 
-  it('replaces only the position, never the other arguments', () => {
+  it('replaces only what the link sets, and the other half of a cursor pair', () => {
+    const pair: Paging = {
+      kind: 'link',
+      items: '',
+      params: [
+        { name: 'page', key: 'page', type: 'integer' },
+        { name: 'after', key: 'after', type: 'string' },
+        { name: 'before', key: 'before', type: 'string' },
+      ],
+    };
+    // A position the link leaves out stays as the agent set it.
     expect(
-      applyPosition(link, { owner: 'o', page: 1, after: 'x', per_page: 5 }, { page: 2 }),
-    ).toEqual({
+      applyPosition(pair, { owner: 'o', page: 1, before: 'x', per_page: 5 }, { page: 2 }),
+    ).toEqual({ owner: 'o', page: 2, before: 'x', per_page: 5 });
+    // Going forward drops the cursor that pointed backwards, and the other way round.
+    expect(applyPosition(pair, { owner: 'o', before: 'x' }, { after: 'Y' })).toEqual({
       owner: 'o',
-      page: 2,
-      per_page: 5,
+      after: 'Y',
     });
+    expect(applyPosition(pair, { after: 'x' }, { before: 'Z' })).toEqual({ before: 'Z' });
+    // Other styles replace every parameter they own.
+    const cursor: Paging = {
+      kind: 'cursor',
+      items: 'data',
+      param: { name: 'starting_after', key: 'starting_after', type: 'string' },
+      before: { name: 'ending_before', key: 'ending_before', type: 'string' },
+      more: 'has_more',
+    };
+    expect(
+      applyPosition(cursor, { ending_before: 'a', limit: 3 }, { starting_after: 'b' }),
+    ).toEqual({ limit: 3, starting_after: 'b' });
   });
 
   it('a cursor continues after the last item, or before the first one going back', () => {
