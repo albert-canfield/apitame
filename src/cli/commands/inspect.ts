@@ -20,8 +20,12 @@ export interface InspectOptions {
 export async function inspectCommand(opts: InspectOptions): Promise<void> {
   const loaded = loadConfig(opts.config ?? process.env.APITAME_CONFIG ?? undefined);
   const redactor = new Redactor();
-  // Missing credentials do not matter for inspection.
-  const runtime = await createRuntime(loaded, { redactor, logger: new Logger(redactor, 'silent') });
+  // Missing credentials do not matter for inspection, and secret managers are not asked.
+  const runtime = await createRuntime(loaded, {
+    redactor,
+    logger: new Logger(redactor, 'silent'),
+    secrets: 'placeholder',
+  });
   try {
     const tools = runtime.listTools();
     const summaries = runtime.summarizeTools();

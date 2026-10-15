@@ -37,7 +37,7 @@ Giving an agent an API is easy. Giving it one safely, without flooding its conte
 - **Skills that match the server.** Generated `SKILL.md` files use the real tool names, argument shapes, workflows and safety rules. They are installed where Claude Code, Codex, Cursor, VS Code and Gemini CLI look for them, packaged for Claude Desktop, and served over MCP.
 - **SQL without the usual footguns.** PostgreSQL, MySQL, SQLite and DuckDB with `list_tables`, `describe_table` and a SELECT-only `query`, checked by a lexer and a real SQL parser, then run read-only at the database level with a row limit and a timeout.
 - **One config file you can review in a pull request.** `apitame.config.yaml` holds the tool groups, the allowlist, limits and auth. No daemon, no account, no code generation.
-- **Secrets stay secret.** Credentials come only from environment variables and are redacted from every tool result, error, log line and dry-run preview.
+- **Secrets stay secret.** Credentials come only from environment variables or a secret manager (1Password, AWS Secrets Manager, Google Secret Manager) and are redacted from every tool result, error, log line and dry-run preview.
 
 ## Quick start
 
@@ -204,7 +204,7 @@ apitame assumes the agent will eventually call the wrong thing, and makes that b
 | Dry run | `"dryRun": true` on any write returns the exact request (or, for SQL, the affected row count in a rolled-back transaction) without changing anything. |
 | Validation | Arguments are checked against the operation's schema before anything is sent. Unknown parameters are rejected. |
 | Limits | Per-request timeout and response size cap. Large JSON is trimmed to fit, with a note saying how much was kept. |
-| Secrets | Credentials come only from environment variables (inline secrets in the config are refused) and are redacted from results, errors, logs and previews, even when an API echoes them back. |
+| Secrets | Credentials come only from environment variables or a secret manager, read through its CLI at startup (inline secrets in the config are refused), and are redacted from results, errors, logs and previews, even when an API echoes them back. |
 | HTTP transport | Loopback only by default, with Host and Origin checks. Listening on another interface requires a bearer token, or OAuth access tokens from your identity provider. |
 | Outgoing requests | Path parameters cannot be `.` or `..`; credentials never follow a redirect to another host; files are passed inline, never as local paths, and uploads are capped. |
 | Rate limits | By default 120 calls and 20 writes per minute, so a looping agent cannot hammer an API or database. With OAuth, each user can also get a budget of their own. |
@@ -231,7 +231,7 @@ Read [docs/safety.md](docs/safety.md) for the full model, including what apitame
 | `apitame diff <old-spec> [new-spec]` | Show what a new version of the spec changes for the agent: operations added, removed or renamed, access level changes, new writes that a wildcard in `writes.allow` would let through, config entries left behind and token cost. `--fail-on new-writes` blocks a pull request in CI. Never calls the API. |
 | `apitame test` | Call every read tool against a local mock built from the spec (or `--live`, which also validates responses), and prove that blocked writes are refused. For SQL, check every table and try known injection payloads. |
 | `apitame add-to <client>` | Print or `--write` the config for `claude-code`, `codex`, `cursor`, `vscode`, `gemini` or `claude-desktop`, and install the skills. |
-| `apitame doctor` | Check the setup end to end: config, environment variables, `.env` safety, API or database connectivity and credentials, whether the database role could write, skills and client configs, and for HTTP deployments authentication, the OAuth issuer and keys and the public URL behind the proxy (`--host 0.0.0.0`). |
+| `apitame doctor` | Check the setup end to end: config, environment variables, secret manager references, `.env` safety, API or database connectivity and credentials, whether the database role could write, skills and client configs, and for HTTP deployments authentication, the OAuth issuer and keys and the public URL behind the proxy (`--host 0.0.0.0`). |
 
 Full reference: [docs/cli.md](docs/cli.md).
 
@@ -244,7 +244,7 @@ mode: read-only            # read-write lets allowlisted writes run
 
 auth:
   type: bearer
-  token: ${GITHUB_TOKEN}   # always from the environment or .env
+  token: ${GITHUB_TOKEN}   # from the environment or .env, or ${op://vault/item/field} and the like
 
 tools:                     # task-level tools: rename, regroup, drop operations
   - name: issues

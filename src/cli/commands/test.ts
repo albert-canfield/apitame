@@ -77,13 +77,16 @@ async function testOpenApi(
   const checks: Check[] = [];
   const logger = new Logger(redactor, 'silent');
   const env = opts.live ? process.env : mockEnv(loaded);
-  const probe = (await createRuntime(loaded, { redactor, logger, env })) as OpenApiRuntime;
+  // The mock accepts any credentials, so secret managers are only asked with --live.
+  const secrets = opts.live ? undefined : 'placeholder';
+  const probe = (await createRuntime(loaded, { redactor, logger, env, secrets })) as OpenApiRuntime;
   const mock = opts.live ? undefined : await startMockServer(probe.operations);
   const rt = mock
     ? ((await createRuntime(loaded, {
         redactor,
         logger,
         env,
+        secrets,
         baseUrlOverride: mock.url,
       })) as OpenApiRuntime)
     : probe;

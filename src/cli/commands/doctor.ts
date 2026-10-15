@@ -6,6 +6,14 @@ import { loadConfig, withoutGuardrails, type LoadedConfig } from '../../config/l
 import { Logger } from '../../log.js';
 import { matchesAny } from '../../safety/policy.js';
 import { Redactor } from '../../safety/redact.js';
+import {
+  ALL_SCOPES,
+  placeholderEnvironment,
+  secretReferences,
+  SecretResolver,
+  type ReferenceCheck,
+} from '../../secrets/index.js';
+import { shownReference } from '../../secrets/reference.js';
 import type { OpenApiRuntime } from '../../server/openapi-runtime.js';
 import { createRuntime, type AnyRuntime } from '../../server/runtime.js';
 import type { SqlRuntime } from '../../server/sql-runtime.js';
@@ -89,6 +97,31 @@ function checkEnv(loaded: LoadedConfig, add: (s: Status, check: string, detail: 
       `missing ${missing.join(', ')}. Set ${missing.length === 1 ? 'it' : 'them'} in your shell, the MCP client config, or .env next to the config.`,
     );
   } else add('ok', 'Environment', `${names.join(', ')} set`);
+}
+
+/**
+ * Secret manager references (`${op://...}` and the like): each one, whether its CLI is there and,
+ * unless offline, whether it reads, as `serve` reads it. Values are never shown. Returns each
+ * result, so the checks that need the credentials run only when they were read.
+ */
+async function checkSecrets(
+  loaded: LoadedConfig,
+  opts: DoctorOptions,
+  secrets: SecretResolver,
+  redactor: Redactor,
+  add: (s: Status, check: string, detail: string) => void,
+): Promise<ReferenceCheck[]> {
+  const checks = await secrets.check(loaded.config, ALL_SCOPES, {
+    redactor,
+    offline: opts.offline === true,
+  });
+  for (const c of checks) {
+    const what = `${shownReference(c.reference)} (${c.fields.join(', ')})`;
+    if (c.problem) add('fail', 'Secrets', `${what}: ${c.problem}`);
+    else if (c.ok) add('ok', 'Secrets', `${what} read${c.cli ? ` with ${c.cli}` : ''}`);
+    else add('info', 'Secrets', `${what}: ${c.cli} found, not read (--offline)`);
+  }
+  return checks;
 }
 
 function checkPatterns(
@@ -341,11 +374,35 @@ export async function runDoctor(opts: DoctorOptions): Promise<Finding[]> {
   checkDotEnv(loaded, add);
   loadDotEnv(loaded.dir);
   checkEnv(loaded, add);
+  // One redactor for everything doctor says, which learns each secret as it is read.
+  const redactor = new Redactor();
+  const secrets = new SecretResolver();
+  const secretChecks = await checkSecrets(loaded, opts, secrets, redactor, add);
+  const read = (scopes: Parameters<typeof secretReferences>[1]) =>
+    secretReferences(loaded.config, scopes).every(
+      (u) => secretChecks.find((c) => c.reference === u.reference.text)?.ok,
+    );
+  const secretsRead = read(['auth', 'source']);
   // Before the source: an HTTP deployment can be checked even when the API or database is down.
   const httpToken = process.env.APITAME_HTTP_TOKEN;
   if (wantsHttpChecks(loaded.config.http, opts, httpToken)) {
     const host = opts.host ?? '127.0.0.1';
-    await checkHttp(loaded.config.http, { host, token: httpToken, offline: opts.offline }, add);
+    // The values just read (no second call), or placeholders when they could not be read.
+    const introspectionRead = read(['introspection']);
+    const env = introspectionRead
+      ? await secrets.environment(loaded.config, ['introspection'], { redactor })
+      : placeholderEnvironment(loaded.config, ['introspection']);
+    await checkHttp(
+      loaded.config.http,
+      {
+        host,
+        token: httpToken,
+        offline: opts.offline,
+        env,
+        introspectionSecretUnread: !introspectionRead,
+      },
+      add,
+    );
   }
 
   if (loaded.config.source.type === 'duckdb') {
@@ -356,33 +413,39 @@ export async function runDoctor(opts: DoctorOptions): Promise<Finding[]> {
     } catch (err) {
       add('fail', 'DuckDB driver', (err as Error).message.replace(/\n/g, ' '));
       checkClients(loaded, add);
-      return findings;
+      return findings.map((f) => ({ ...f, detail: redactor.text(f.detail) }));
     }
   }
 
-  const redactor = new Redactor();
   let rt: AnyRuntime;
   try {
     rt = await createRuntime(withoutGuardrails(loaded), {
       redactor,
       logger: new Logger(redactor, 'silent'),
       dotenv: false,
+      // The values read above, or placeholders: the config is still checked when they are not.
+      secrets: secretsRead ? secrets : 'placeholder',
     });
   } catch (err) {
     add('fail', 'Source', redactor.text((err as Error).message));
-    return findings;
+    return findings.map((f) => ({ ...f, detail: redactor.text(f.detail) }));
   }
   try {
     for (const w of rt.warnings.filter((x) => !/Missing environment variable/.test(x)))
       add('warn', w.startsWith('writes.rules') ? 'writes.rules' : 'Config', w);
     checkPatterns(rt, add);
 
+    const skipped = opts.offline
+      ? 'skipped (--offline)'
+      : secretsRead
+        ? undefined
+        : 'skipped: a secret reference could not be read (see Secrets)';
     let canGenerate = true;
     if (rt.sourceType === 'openapi') {
-      if (opts.offline) add('info', 'API', 'skipped (--offline)');
+      if (skipped) add('info', 'API', skipped);
       else await checkApi(rt as OpenApiRuntime, add);
-    } else if (opts.offline) {
-      add('info', 'Database', 'skipped (--offline)');
+    } else if (skipped) {
+      add('info', 'Database', skipped);
       canGenerate = false;
     } else canGenerate = await checkDatabase(rt as SqlRuntime, add);
 

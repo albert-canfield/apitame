@@ -7,6 +7,10 @@ import { apitameCommand, DUCKDB_NPX } from '../sources/sql/duckdb-package.js';
 
 const DOCS = 'https://github.com/albert-canfield/apitame/blob/main/docs/configuration.md';
 
+/** Suggests secret manager references; `init` never reads them or writes a value. */
+const SECRET_MANAGERS_COMMENT =
+  'A secret manager works too: ${op://vault/item/field}, ${aws-sm://secret-name#key} or ${gcp-sm://projects/p/secrets/s}.';
+
 const AUDIT_COMMENT =
   'Add "file: ./apitame-audit.jsonl" to keep a JSON Lines record of every write attempt\n(blocked, dry run, confirmed, sent) and every refused query. include: all also records reads.';
 
@@ -199,9 +203,10 @@ export function renderOpenApiConfig(input: OpenApiConfigInput): string {
   comment(
     doc,
     'auth',
-    input.auth.env.length > 0
-      ? `Credentials come from environment variables (${input.auth.env.join(', ')}). Never put secrets in this file.${input.auth.note ? `\n${input.auth.note}` : ''}`
-      : `Credentials always come from environment variables, for example: type: bearer, token: \${MY_API_TOKEN}${input.auth.note ? `\n${input.auth.note}` : ''}`,
+    (input.auth.env.length > 0
+      ? `Credentials come from environment variables (${input.auth.env.join(', ')}). Never put secrets in this file.`
+      : 'Credentials always come from environment variables, for example: type: bearer, token: ${MY_API_TOKEN}') +
+      `\n${SECRET_MANAGERS_COMMENT}${input.auth.note ? `\n${input.auth.note}` : ''}`,
   );
   comment(
     doc,
@@ -303,7 +308,7 @@ export function renderSqlConfig(input: SqlConfigInput): string {
     doc,
     'source',
     input.type === 'postgres' || input.type === 'mysql'
-      ? 'The connection string comes from an environment variable (or .env next to this file).\nUse a read-only database role: https://github.com/albert-canfield/apitame/blob/main/docs/sql.md#a-read-only-role'
+      ? `The connection string comes from an environment variable (or .env next to this file).\n${SECRET_MANAGERS_COMMENT}\nUse a read-only database role: https://github.com/albert-canfield/apitame/blob/main/docs/sql.md#a-read-only-role`
       : duckdb
         ? `Path to the DuckDB file, relative to this config. It is opened read-only, with file access and extensions turned off.\nRun apitame with the DuckDB driver: ${DUCKDB_NPX} <command>`
         : 'Path to the database file, relative to this config. It is opened read-only.',

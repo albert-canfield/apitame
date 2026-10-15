@@ -99,7 +99,12 @@ export async function skillsFor(runtime: OpenApiRuntime | SqlRuntime): Promise<G
 
 /** `apitame init --skills-only`: regenerate skills from an existing config. */
 async function regenerateSkills(loaded: LoadedConfig): Promise<void> {
-  const runtime = await createRuntime(loaded);
+  // Skills describe tools and tables, never credentials: an OpenAPI source needs none (secret
+  // managers are not asked), a database needs its connection.
+  const runtime = await createRuntime(
+    loaded,
+    loaded.config.source.type === 'openapi' ? { secrets: 'placeholder' } : {},
+  );
   try {
     const files = await skillsFor(runtime);
     const dir = resolve(loaded.dir, loaded.config.skills.dir);

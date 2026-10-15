@@ -1,31 +1,37 @@
 import { z } from 'zod';
 import { MAX_PATTERN_LENGTH } from '../safety/pattern.js';
 import { parseRulePath, RULE_PATH_HELP, ruleProblems } from '../safety/rules.js';
+import { REFERENCE_SOURCE, referenceProblem } from '../secrets/reference.js';
 
 /** Matches a `${VAR}` or `${VAR:-default}` reference anywhere in a string. */
 export const ENV_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/;
 
-const ENV_REFS = new RegExp(ENV_REF.source, 'g');
+/** Environment variable and secret manager references (`${op://...}` and the like). */
+const REFERENCES = new RegExp(REFERENCE_SOURCE, 'g');
 
 /**
- * Why a secret field's value does not come from the environment, if it does not. A value needs a
- * `${VAR}` reference, and may not give a default (`${VAR:-hunter2}` is a secret written in the
- * config). Text around references (`SSWS ${TOKEN}`) needs one reference without a default, so
- * `hunter2${UNSET:-}` cannot pass a literal off as a reference. An empty default alone
- * (`${VAR:-}`) stands for an empty value, as for a password that an API leaves empty.
+ * Why a secret field's value does not come from the environment or a secret manager, if it does
+ * not. A value needs a `${VAR}` or secret manager reference (`${op://vault/item/field}`), and may
+ * not give a default (`${VAR:-hunter2}` is a secret written in the config). Text around
+ * references (`SSWS ${TOKEN}`) needs one reference without a default, so `hunter2${UNSET:-}`
+ * cannot pass a literal off as a reference. An empty default alone (`${VAR:-}`) stands for an
+ * empty value, as for a password that an API leaves empty. Secret manager references have no
+ * default, so they always count.
  */
 export function secretProblem(value: string, field: string, only = false): string | undefined {
-  const inline = `${field} must come from an environment variable, for example "\${MY_SECRET}". Inline secrets are refused.`;
-  const refs = [...value.matchAll(ENV_REFS)];
+  const inline = `${field} must come from an environment variable, for example "\${MY_SECRET}", or a secret manager, for example "\${op://vault/item/field}". Inline secrets are refused.`;
+  const invalid = referenceProblem(value);
+  if (invalid) return invalid;
+  const refs = [...value.matchAll(REFERENCES)];
   if (refs.some((m) => m[2])) {
     return `${field} must not give a default value ("\${NAME:-...}"): a default is a secret written in the config. Set the variable instead.`;
   }
   // Without any reference, the whole value is outside one.
-  const outside = value.replace(ENV_REFS, '');
+  const outside = value.replace(REFERENCES, '');
   if (only && outside !== '') {
-    return `${field} must be environment variable references only, for example "\${MY_SECRET}", with no text around them.`;
+    return `${field} must be environment variable references only, for example "\${MY_SECRET}", or secret manager references such as "\${op://vault/item/field}", with no text around them.`;
   }
-  // With `only`, an empty value is no secret either.
+  // With `only`, an empty value is no secret either. A secret manager reference has no default.
   if ((outside !== '' || only) && refs.every((m) => m[2] !== undefined)) return inline;
   return undefined;
 }
@@ -39,6 +45,16 @@ const envRef = (field: string, only = false) =>
       const problem = secretProblem(v, field, only);
       if (problem) ctx.addIssue({ code: 'custom', message: problem });
     });
+
+/**
+ * A field that reads `${VAR}` without being a secret field: secret manager references are read
+ * there too, and checked here like in secret fields.
+ */
+const withRefs = (schema: z.ZodString) =>
+  schema.superRefine((v, ctx) => {
+    const problem = referenceProblem(v);
+    if (problem) ctx.addIssue({ code: 'custom', message: problem });
+  });
 
 /**
  * Unknown keys are an error, so a typo (`scope:` for `scopes:`) or a block at the wrong level
@@ -95,8 +111,8 @@ export const IntrospectionSchema = z.strictObject(
           'environment variables are not read here (the text "${...}" would be sent as it is). Write the URL itself.',
       }),
     /** apitame's client at the authorization server. May use ${VAR}. */
-    clientId: z.string().min(1),
-    /** Only `${VAR}` references, so the secret itself never sits in the config. */
+    clientId: withRefs(z.string().min(1)),
+    /** Only references (`${VAR}`, `${op://...}`), so the secret itself never sits in the config. */
     clientSecret: envRef('http.oauth.introspection.clientSecret', true),
     clientAuthMethod: z
       .enum(['client_secret_basic', 'client_secret_post'])
@@ -116,6 +132,74 @@ export const IntrospectionSchema = z.strictObject(
       authMethod: 'did you mean clientAuthMethod?',
       cacheTtl: 'did you mean cacheSeconds?',
       ttlSeconds: 'did you mean cacheSeconds?',
+    }),
+  },
+);
+
+/**
+ * The program of a secret manager: its name, looked up on PATH, or the absolute path of the same
+ * program (`/opt/homebrew/bin/op`), for clients that start apitame with a short PATH. Any other
+ * program is refused: the config chooses where a CLI is, not which command runs.
+ */
+const secretCli = (key: string, name: string) =>
+  z
+    .string()
+    .min(1)
+    .default(name)
+    .superRefine((v, ctx) => {
+      if (v === name) return;
+      const absolute = v.startsWith('/') || /^[A-Za-z]:[\\/]/.test(v) || v.startsWith('\\\\');
+      const file = v.split(/[\\/]/).pop() ?? '';
+      if (absolute && file.replace(/\.exe$/i, '') === name) return;
+      ctx.addIssue({
+        code: 'custom',
+        message: `must be "${name}" (found on PATH) or the absolute path of the ${name} program, for example /usr/local/bin/${name}. secrets.${key}.cli chooses where the CLI is, not which program runs.`,
+      });
+    });
+
+/** How secret manager references (`${op://...}`, `${aws-sm://...}`, `${gcp-sm://...}`) are read. */
+export const SecretsSchema = z.strictObject(
+  {
+    /** How long one CLI call may take before it is stopped. */
+    timeoutSeconds: z.number().int().min(1).max(300).default(15),
+    /** 1Password CLI. */
+    op: z.strictObject({ cli: secretCli('op', 'op') }, { error: unknownKeys() }).prefault({}),
+    /** AWS CLI, for AWS Secrets Manager. */
+    aws: z
+      .strictObject(
+        {
+          cli: secretCli('aws', 'aws'),
+          /** --region for every call. Unset: the CLI's own (AWS_REGION, the profile). */
+          region: z
+            .string()
+            .regex(/^[a-z]{2}(?:-[a-z]+)+-\d{1,2}$/, 'Use a region name such as eu-west-1')
+            .optional(),
+          /** --profile for every call. Unset: the CLI's own (AWS_PROFILE, default). */
+          profile: z
+            .string()
+            .regex(
+              /^[A-Za-z0-9_.+@][A-Za-z0-9_.+@-]{0,127}$/,
+              'Use a profile name made of letters, digits and "_.+@-", not starting with "-"',
+            )
+            .optional(),
+        },
+        { error: unknownKeys({ defaultRegion: 'did you mean region?' }) },
+      )
+      .prefault({}),
+    /** Google Cloud CLI, for Google Secret Manager. */
+    gcp: z.strictObject({ cli: secretCli('gcp', 'gcloud') }, { error: unknownKeys() }).prefault({}),
+  },
+  {
+    error: unknownKeys({
+      timeoutMs: 'use timeoutSeconds',
+      timeout: 'did you mean timeoutSeconds?',
+      '1password': 'did you mean op?',
+      onePassword: 'did you mean op?',
+      onepassword: 'did you mean op?',
+      'aws-sm': 'did you mean aws?',
+      'gcp-sm': 'did you mean gcp?',
+      gcloud: 'did you mean gcp?',
+      google: 'did you mean gcp?',
     }),
   },
 );
@@ -165,14 +249,14 @@ export const AuthSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('basic'),
-    username: z.string().min(1),
+    username: withRefs(z.string().min(1)),
     password: envRef('auth.password'),
   }),
   z.object({
     type: z.literal('oauth2'),
     flow: z.literal('client_credentials').default('client_credentials'),
-    tokenUrl: z.string().min(1),
-    clientId: z.string().min(1),
+    tokenUrl: withRefs(z.string().min(1)),
+    clientId: withRefs(z.string().min(1)),
     clientSecret: envRef('auth.clientSecret'),
     scopes: z.array(z.string()).default([]),
     audience: z.string().optional(),
@@ -187,33 +271,33 @@ export const OpenApiSourceSchema = z.object({
   /** File path (relative to the config file) or http(s) URL. */
   spec: z.string().min(1),
   /** Overrides `servers[0].url` from the spec. */
-  baseUrl: z.string().optional(),
+  baseUrl: withRefs(z.string()).optional(),
   /** Extra static headers sent with every request. Values may use ${VAR}. */
-  headers: z.record(z.string(), z.string()).default({}),
+  headers: z.record(z.string(), withRefs(z.string())).default({}),
 });
 
 export const PostgresSourceSchema = z.object({
   type: z.literal('postgres'),
-  url: z.string().min(1).default('${DATABASE_URL}'),
+  url: withRefs(z.string().min(1)).default('${DATABASE_URL}'),
   schemas: z.array(z.string()).min(1).default(['public']),
 });
 
 export const MysqlSourceSchema = z.object({
   type: z.literal('mysql'),
   /** mysql:// (or mariadb://) connection string, normally from an environment variable. */
-  url: z.string().min(1).default('${DATABASE_URL}'),
+  url: withRefs(z.string().min(1)).default('${DATABASE_URL}'),
 });
 
 export const SqliteSourceSchema = z.object({
   type: z.literal('sqlite'),
   /** Database file path, relative to the config file. */
-  path: z.string().min(1),
+  path: withRefs(z.string().min(1)),
 });
 
 export const DuckdbSourceSchema = z.object({
   type: z.literal('duckdb'),
   /** Database file path, relative to the config file. Opened read-only. */
-  path: z.string().min(1),
+  path: withRefs(z.string().min(1)),
 });
 
 export const SourceSchema = z.discriminatedUnion('type', [
@@ -501,6 +585,8 @@ export const ConfigSchema = z
           },
         )
         .prefault({}),
+      /** How secret manager references are read (CLIs, timeout, AWS region and profile). */
+      secrets: SecretsSchema.prefault({}),
     },
     { error: unknownKeys({ oauth: 'it belongs under http.oauth' }) },
   )
@@ -597,3 +683,4 @@ export type PermissionConfig = z.infer<typeof PermissionSchema>;
 export type PermissionsConfig = z.infer<typeof PermissionsSchema>;
 export type OAuthConfig = NonNullable<Config['http']['oauth']>;
 export type IntrospectionConfig = z.infer<typeof IntrospectionSchema>;
+export type SecretsConfig = z.infer<typeof SecretsSchema>;

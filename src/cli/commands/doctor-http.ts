@@ -40,6 +40,11 @@ export interface HttpCheckOptions {
   fetch?: typeof fetch;
   /** Where secrets in the config come from. Default: `process.env`. */
   env?: NodeJS.ProcessEnv | undefined;
+  /**
+   * The introspection secret is a secret manager reference that could not be read (`env` holds a
+   * placeholder for it): the endpoint is not asked, since it would only refuse the placeholder.
+   */
+  introspectionSecretUnread?: boolean | undefined;
   /** How long one request may take, answer included. Default 10 seconds, as for `serve`. */
   timeoutMs?: number | undefined;
 }
@@ -54,6 +59,8 @@ export interface HttpCheckContext {
   offline: boolean;
   fetch: typeof fetch;
   env: NodeJS.ProcessEnv;
+  /** See HttpCheckOptions. */
+  introspectionSecretUnread: boolean;
   timeoutMs: number;
   add: Add;
   /** `http.oauth.resource`, once `checkResource` found it usable. */
@@ -493,6 +500,10 @@ async function checkIntrospection(ctx: HttpCheckContext): Promise<void> {
     add('info', `${settings.url} not contacted (--offline)`);
     return;
   }
+  if (ctx.introspectionSecretUnread) {
+    add('info', `${settings.url} not contacted: the client secret could not be read (see Secrets)`);
+    return;
+  }
   try {
     await verifier.warmUp();
     add(
@@ -541,6 +552,7 @@ export async function checkHttp(http: HttpConfig, opts: HttpCheckOptions, add: A
     offline: opts.offline === true,
     fetch: opts.fetch ?? fetch,
     env: opts.env ?? process.env,
+    introspectionSecretUnread: opts.introspectionSecretUnread === true,
     timeoutMs: opts.timeoutMs ?? FETCH_TIMEOUT_MS,
     add,
   };
