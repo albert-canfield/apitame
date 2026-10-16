@@ -335,7 +335,7 @@ audit:
   include: writes               # writes (default) or all
 ```
 
-See [safety.md](safety.md#audit-log) for the format.
+See [safety.md](safety.md#audit-log) for the format. To send tool calls to an observability stack as well, see [OpenTelemetry](telemetry.md), configured with the standard `OTEL_*` environment variables rather than in this file.
 
 ## `sql`
 
@@ -434,5 +434,8 @@ Names that match no tool or operation, write patterns that grant nothing and ent
 | `APITAME_LOG_LEVEL` | `serve` | `debug`, `info` (default), `warn`, `error` or `silent`. Logs go to stderr. |
 | `APITAME_HTTP_TOKEN` | `serve --transport http`, `doctor` | Static bearer token, required when listening beyond loopback unless `http.oauth` is set. Cannot be combined with `http.oauth`. `doctor` checks the HTTP setup when it is set. |
 | `APITAME_OP_CLI`, `APITAME_AWS_CLI`, `APITAME_GCLOUD_CLI` | commands that read [secret manager references](#secret-managers) | Absolute path of `op`, `aws` or `gcloud` when it is not on `PATH`. Not read from `.env`. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `serve`, `doctor` | Turns on OpenTelemetry export of tool calls (traces and metrics, OTLP over HTTP), with the optional OpenTelemetry packages installed. The other standard `OTEL_*` variables apply too: `OTEL_SDK_DISABLED`, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_EXPORTER_OTLP_HEADERS`, per-signal endpoints, samplers. See [telemetry.md](telemetry.md). |
+| `APITAME_OTEL_SUBJECT`, `APITAME_OTEL_SUBJECT_KEY` | `serve` | Whether spans carry the OAuth subject: `off` (default), `hash` (an HMAC with the key: at least 16 characters with at least 8 different ones, for example from `openssl rand -hex 32`) or `plain` (personal data in your backend). See [telemetry.md](telemetry.md#caller-identity). |
+| `APITAME_OTEL_CLIENT` | `serve` | `off` leaves the OAuth client out of spans (it is on them by default). |
 | `APITAME_DEBUG` | all | Print stack traces for errors. |
 | `NO_COLOR` | all | Disable colors. |

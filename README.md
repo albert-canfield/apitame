@@ -161,6 +161,8 @@ Or: `codex mcp add github -- npx -y apitame@0.3 serve --config /abs/path/apitame
 
 Prefer HTTP? `npx apitame serve --transport http` listens on `http://127.0.0.1:3333/mcp` (destructive actions are approved in the client: right away for clients on MCP protocol 2026-07-28, with `--sessions` for older clients). To share it with a team, `http.oauth` lets your identity provider sign each user in and apitame check their access tokens, and `http.oauth.permissions` gives each scope or client its own tools and writes. More in [docs/clients.md](docs/clients.md). The container image (`ghcr.io/albert-canfield/apitame`) and [docs/deploy.md](docs/deploy.md) cover running it behind a reverse proxy with TLS.
 
+To watch tool calls in your observability stack, set `OTEL_EXPORTER_OTLP_ENDPOINT`: each call becomes an OpenTelemetry span with its tool, operation, access level and outcome, never its arguments or results ([docs/telemetry.md](docs/telemetry.md); the OpenTelemetry packages are an optional extra).
+
 ## What the agent sees
 
 For the GitHub example in read-only mode, `tools/list` returns 8 tools. Related operations share one tool:
@@ -314,6 +316,7 @@ Ideas and votes are welcome in [issues](https://github.com/albert-canfield/apita
 - [Skills](docs/skills.md)
 - [Client setup](docs/clients.md)
 - [Deploying over HTTP](docs/deploy.md) (container image, reverse proxy, OAuth)
+- [OpenTelemetry](docs/telemetry.md) (traces and metrics for tool calls)
 - [Architecture](docs/architecture.md)
 - [Design decisions](docs/decisions.md)
 

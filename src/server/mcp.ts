@@ -12,6 +12,7 @@ import {
   type ServerContext,
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
+import type { Telemetry } from '../telemetry/index.js';
 import { VERSION } from '../version.js';
 import type {
   ApprovalRound,
@@ -19,6 +20,7 @@ import type {
   CallerContext,
   ElicitOutcome,
   Runtime,
+  ToolResult,
 } from '../types.js';
 import { identityOf } from './oauth.js';
 import { findSkillFile, mimeTypeFor, skillListEntry, skillUri, type SkillEntry } from './skills.js';
@@ -30,6 +32,8 @@ export interface McpServerOptions {
   skills?: SkillEntry[] | (() => SkillEntry[]);
   /** Advertise tools/list_changed (set when `serve --watch` can change the tools). */
   listChanged?: boolean;
+  /** OpenTelemetry export: one span per tool call (see docs/telemetry.md). */
+  telemetry?: Telemetry;
 }
 
 /** Servers that `serveHttp` serves without a token or OAuth. */
@@ -199,7 +203,23 @@ export function createMcpServer(
       };
     }
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
-    const result = await current().callTool(request.params.name, args, callCtx);
+    const runtime = current();
+    const trace = opts.telemetry?.startToolCall({
+      name: request.params.name,
+      runtime,
+      ctx,
+      meta: ctx.mcpReq._meta ?? request.params._meta,
+      caller: callCtx.caller,
+      protocolVersion: server.getNegotiatedProtocolVersion(),
+    });
+    if (trace) callCtx.observe = trace.observe;
+    let result: ToolResult | undefined;
+    try {
+      result = await runtime.callTool(request.params.name, args, callCtx);
+    } finally {
+      // Undefined when the call threw.
+      trace?.end(result);
+    }
     if (modern && result.inputRequired) {
       return inputRequired({
         inputRequests: {
