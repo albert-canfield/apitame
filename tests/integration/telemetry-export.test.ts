@@ -97,21 +97,31 @@ const runtime = () =>
       },
     },
     config: { tools: [{ name: 'items', description: 'Items', operations: ['getItem'] }] },
-    respond: () =>
-      new Response(JSON.stringify({ secret: RESPONSE_SECRET }), {
+    // The API answers with its own path, so an ordinary word in it ("items") can be checked.
+    respond: (s) =>
+      new Response(JSON.stringify({ path: new URL(s.url).pathname, secret: RESPONSE_SECRET }), {
         headers: { 'content-type': 'application/json' },
       }),
   }).rt;
 
-async function callOnce(rt: Runtime, telemetry: Telemetry) {
+async function callOnce(rt: Runtime, telemetry: Telemetry, id = ARG_SECRET): Promise<string> {
   const server = createMcpServer(rt, { telemetry });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'export-test', version: '1.0.0' });
   await server.connect(serverSide);
   await client.connect(clientSide);
-  await client.callTool({ name: 'items', arguments: { id: ARG_SECRET } });
+  const res = await client.callTool({ name: 'items', arguments: { id } });
   await client.close();
+  return JSON.stringify(res);
 }
+
+/** A protobuf string attribute as the OTLP exporter encodes it (KeyValue with a string AnyValue). */
+const protoAttribute = (key: string, value: string) =>
+  Buffer.concat([
+    Buffer.from(key),
+    Buffer.from([0x12, value.length + 2, 0x0a, value.length]),
+    Buffer.from(value),
+  ]);
 
 /** One finished span without an MCP connection, for the shutdown tests. */
 function recordOne(telemetry: Telemetry) {
@@ -188,7 +198,8 @@ describe('OTLP export over HTTP', () => {
     const rx = await receiver();
     try {
       vi.stubEnv('OTEL_EXPORTER_OTLP_ENDPOINT', rx.url);
-      vi.stubEnv('OTEL_EXPORTER_OTLP_HEADERS', `x-api-key=${HEADER_SECRET}`);
+      // A vendor key, and an ordinary word, as in the docs' example.
+      vi.stubEnv('OTEL_EXPORTER_OTLP_HEADERS', `x-api-key=${HEADER_SECRET},x-team=items`);
       vi.stubEnv('OTEL_SERVICE_NAME', 'apitame-under-test');
       const q = quiet();
       const telemetry = await startTelemetry(deps(q));
@@ -196,10 +207,17 @@ describe('OTLP export over HTTP', () => {
       expect(q.logs.join('')).toContain(
         `OpenTelemetry: traces to ${rx.url}/v1/traces, metrics every 60 s to ${rx.url}/v1/metrics`,
       );
-      // The vendor key in the headers is a secret now.
-      expect(q.redactor.text(`key ${HEADER_SECRET}`)).not.toContain(HEADER_SECRET);
+      // The header values are hidden in log lines...
+      q.logger.warn(`collector said: key ${HEADER_SECRET} for team items`);
+      expect(q.logs.at(-1)).toBe(
+        '[apitame] warn: collector said: key [REDACTED] for team [REDACTED]\n',
+      );
+      // ...and only there: the redactor for tool results and spans does not know them.
+      expect(q.redactor.text(`/items/1 ${HEADER_SECRET}`)).toBe(`/items/1 ${HEADER_SECRET}`);
 
-      await callOnce(runtime(), telemetry!);
+      const result = await callOnce(runtime(), telemetry!, '1');
+      expect(result).toContain('/items/1');
+      expect(result).not.toContain('[REDACTED]/1');
       // Spans are batched for 5 s and metrics for 60 s: only shutdown sends them now.
       expect(rx.requests).toEqual([]);
       await telemetry!.shutdown();
@@ -218,12 +236,14 @@ describe('OTLP export over HTTP', () => {
       ]) {
         expect(body).toContain(expected);
       }
+      expect(traces[0]!.body.includes(protoAttribute('gen_ai.tool.name', 'items'))).toBe(true);
       const metrics = rx.requests.filter((r) => r.path === '/v1/metrics');
       expect(metrics).toHaveLength(1);
       expect(metrics[0]!.body.toString('latin1')).toContain('apitame.tool.calls');
+      expect(metrics[0]!.body.includes(protoAttribute('gen_ai.tool.name', 'items'))).toBe(true);
       for (const r of rx.requests) {
         const text = r.body.toString('latin1');
-        for (const secret of [ARG_SECRET, RESPONSE_SECRET, HEADER_SECRET])
+        for (const secret of [ARG_SECRET, RESPONSE_SECRET, HEADER_SECRET, '[REDACTED]'])
           expect(text).not.toContain(secret);
       }
     } finally {

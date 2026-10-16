@@ -96,8 +96,10 @@ export async function startTelemetry(opts: StartTelemetryOptions): Promise<Telem
   const settings = readTelemetrySettings(env);
   for (const w of settings.warnings) opts.logger.warn(`OpenTelemetry: ${w}`);
   if (!telemetryOn(settings)) return undefined;
-  // Vendor API keys in the exporter headers, and the subject key, are secrets like any other.
-  for (const value of otlpHeaderValues(env)) opts.redactor.addSecret(value);
+  // Vendor API keys in the exporter headers are hidden in the log, and only there: they never
+  // reach tool results, and a header value that is an ordinary word (`x-team=items`) must not be
+  // cut out of API responses and span attributes. The subject key is a secret like any other.
+  for (const value of otlpHeaderValues(env)) opts.logger.addSecret(value);
   opts.redactor.addSecret(settings.subjectKey);
   let mod: OtelModule;
   try {

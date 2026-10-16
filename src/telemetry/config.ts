@@ -58,6 +58,8 @@ export interface TelemetrySettings {
   subject: SubjectMode;
   /** The HMAC key for `subject: hash`. A secret. */
   subjectKey?: string;
+  /** Whether spans carry the OAuth client (`APITAME_OTEL_CLIENT=off` leaves it out). */
+  client: boolean;
   metricIntervalMs: number;
   metricTimeoutMs: number;
   warnings: string[];
@@ -123,6 +125,18 @@ function readSampler(env: NodeJS.ProcessEnv, warnings: string[]): SamplerSetting
 
 /** The smallest HMAC key accepted for `APITAME_OTEL_SUBJECT=hash`. */
 export const MIN_SUBJECT_KEY_LENGTH = 16;
+/** How many different characters that key needs at least: `kkkkkkkkkkkkkkkk` is no secret. */
+export const MIN_SUBJECT_KEY_DISTINCT = 8;
+
+/** Whether a key is long and varied enough to keep a guess from being checked against a hash. */
+export function strongSubjectKey(key: string | undefined): key is string {
+  return (
+    key !== undefined &&
+    key.length >= MIN_SUBJECT_KEY_LENGTH &&
+    key.trim() !== '' &&
+    new Set(key).size >= MIN_SUBJECT_KEY_DISTINCT
+  );
+}
 
 function readSubject(env: NodeJS.ProcessEnv, warnings: string[]) {
   const mode = word(env.APITAME_OTEL_SUBJECT);
@@ -130,9 +144,9 @@ function readSubject(env: NodeJS.ProcessEnv, warnings: string[]) {
   if (mode === 'plain') return { subject: 'plain' as const };
   if (mode === 'hash') {
     const key = env.APITAME_OTEL_SUBJECT_KEY;
-    if (key && key.length >= MIN_SUBJECT_KEY_LENGTH) return { subject: 'hash' as const, key };
+    if (strongSubjectKey(key)) return { subject: 'hash' as const, key };
     warnings.push(
-      `APITAME_OTEL_SUBJECT=hash needs APITAME_OTEL_SUBJECT_KEY, a secret of at least ${MIN_SUBJECT_KEY_LENGTH} characters, so subjects are left out.`,
+      `APITAME_OTEL_SUBJECT=hash needs APITAME_OTEL_SUBJECT_KEY, a random secret of at least ${MIN_SUBJECT_KEY_LENGTH} characters with at least ${MIN_SUBJECT_KEY_DISTINCT} different ones (for example from \`openssl rand -hex 32\`), so subjects are left out.`,
     );
     return { subject: 'off' as const };
   }
@@ -140,6 +154,16 @@ function readSubject(env: NodeJS.ProcessEnv, warnings: string[]) {
     `APITAME_OTEL_SUBJECT=${mode} is not one of off, hash or plain, so subjects are left out.`,
   );
   return { subject: 'off' as const };
+}
+
+/** The OAuth client is on spans unless `APITAME_OTEL_CLIENT=off`; a value it does not know is off. */
+function readClient(env: NodeJS.ProcessEnv, warnings: string[]): boolean {
+  const mode = word(env.APITAME_OTEL_CLIENT);
+  if (!mode || mode === 'on') return true;
+  if (mode !== 'off') {
+    warnings.push(`APITAME_OTEL_CLIENT=${mode} is not on or off, so clients are left out.`);
+  }
+  return false;
 }
 
 /**
@@ -156,6 +180,7 @@ export function readTelemetrySettings(env: NodeJS.ProcessEnv): TelemetrySettings
     sampler: readSampler(env, warnings),
     subject: subject.subject,
     ...(subject.key ? { subjectKey: subject.key } : {}),
+    client: readClient(env, warnings),
     metricIntervalMs,
     // The reader refuses a timeout longer than the interval.
     metricTimeoutMs: Math.min(
@@ -178,6 +203,7 @@ export function readTelemetrySettings(env: NodeJS.ProcessEnv): TelemetrySettings
   }
 
   const protocols = new Set<string>();
+  const plainHeaders = new Set<string>();
   const signal = (name: 'traces' | 'metrics'): string | undefined => {
     const upper = name.toUpperCase();
     const own = env[`OTEL_EXPORTER_OTLP_${upper}_ENDPOINT`]?.trim();
@@ -208,10 +234,27 @@ export function readTelemetrySettings(env: NodeJS.ProcessEnv): TelemetrySettings
       env[`OTEL_EXPORTER_OTLP_${upper}_PROTOCOL`] ?? env.OTEL_EXPORTER_OTLP_PROTOCOL
     )?.trim();
     if (protocol && protocol !== 'http/protobuf') protocols.add(protocol);
+    // The headers this signal sends, as the exporter merges them (its own over the shared ones).
+    const headers = {
+      ...parseOtlpHeaders(env.OTEL_EXPORTER_OTLP_HEADERS),
+      ...parseOtlpHeaders(env[`OTEL_EXPORTER_OTLP_${upper}_HEADERS`]),
+    };
+    if (
+      Object.keys(headers).length > 0 &&
+      parsed.protocol === 'http:' &&
+      !LOOPBACK.has(parsed.hostname)
+    ) {
+      plainHeaders.add(parsed.host);
+    }
     return displayUrl(url);
   };
   const traces = signal('traces');
   const metrics = signal('metrics');
+  for (const host of plainHeaders) {
+    warnings.push(
+      `OTLP headers (OTEL_EXPORTER_OTLP_HEADERS) go to ${host} over plain http, where anyone on the network path can read them, an API key included. Use an https endpoint (http is fine on loopback only).`,
+    );
+  }
   for (const p of protocols) {
     warnings.push(
       `OTEL_EXPORTER_OTLP_PROTOCOL ${p} is not supported: apitame sends OTLP over HTTP with protobuf (http/protobuf). Point the endpoint at the collector's OTLP/HTTP port, usually 4318.`,
@@ -234,29 +277,50 @@ export function readTelemetrySettings(env: NodeJS.ProcessEnv): TelemetrySettings
   };
 }
 
+/** Hosts where an OTLP endpoint may use plain http, as for the token introspection URL. */
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+
 /**
- * The values of `OTEL_EXPORTER_OTLP_HEADERS` (and the per-signal variants): vendor API keys
- * usually travel there, so they are registered with the redactor like any other secret.
+ * One OTLP headers variable (`key=value,key2=value2`), parsed exactly as the exporters parse it:
+ * `parseKeyPairsIntoRecord` and `parsePairKeyValue` in @opentelemetry/core 2.12.0. Entries are
+ * split on `,` and cut at the first `;`; the key and the value around the first `=` are trimmed,
+ * must not be empty and are percent-decoded, and an entry that does not decode is dropped. A
+ * later entry with the same key wins.
+ */
+export function parseOtlpHeaders(value: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (typeof value !== 'string' || value.length === 0) return out;
+  for (const entry of value.split(',')) {
+    if (!entry) continue;
+    const semicolon = entry.indexOf(';');
+    const pair = semicolon === -1 ? entry : entry.slice(0, semicolon);
+    const at = pair.indexOf('=');
+    if (at <= 0) continue;
+    const rawKey = pair.slice(0, at).trim();
+    const rawValue = pair.slice(at + 1).trim();
+    if (!rawKey || !rawValue) continue;
+    try {
+      const key = decodeURIComponent(rawKey);
+      const decoded = decodeURIComponent(rawValue);
+      if (decoded.length > 0) out[key] = decoded;
+    } catch {
+      // The exporter drops an entry it cannot decode, so nothing of it is sent.
+    }
+  }
+  return out;
+}
+
+/**
+ * The header values the OTLP exporters send (`OTEL_EXPORTER_OTLP_HEADERS` and the per-signal
+ * variants): vendor API keys usually travel there. They are hidden in apitame's log, and only
+ * there (see `Logger.addSecret`).
  */
 export function otlpHeaderValues(env: NodeJS.ProcessEnv): string[] {
-  const values: string[] = [];
-  for (const name of [
+  const values = [
     'OTEL_EXPORTER_OTLP_HEADERS',
     'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
     'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
-  ]) {
-    for (const pair of env[name]?.split(',') ?? []) {
-      const at = pair.indexOf('=');
-      if (at < 0) continue;
-      const raw = pair.slice(at + 1).trim();
-      values.push(raw);
-      try {
-        values.push(decodeURIComponent(raw));
-      } catch {
-        // not percent-encoded
-      }
-    }
-  }
+  ].flatMap((name) => Object.values(parseOtlpHeaders(env[name])));
   return [...new Set(values)];
 }
 

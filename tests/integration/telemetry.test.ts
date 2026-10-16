@@ -26,7 +26,7 @@ import { serveHttp } from '../../src/server/transport.js';
 import { SqliteDriver } from '../../src/sources/sql/sqlite.js';
 import { hashSubject, readTelemetrySettings } from '../../src/telemetry/config.js';
 import type { Telemetry } from '../../src/telemetry/index.js';
-import { createTelemetry } from '../../src/telemetry/otel.js';
+import { createTelemetry, sessionHash } from '../../src/telemetry/otel.js';
 import type { Runtime } from '../../src/types.js';
 import { createSqliteShop, fakeApi, tempDir, type SentRequest } from '../helpers.js';
 import { claimsFor, FakeAuthServer, makeKey, signers, signJwt } from '../oauth-fixtures.js';
@@ -36,6 +36,8 @@ import { claimsFor, FakeAuthServer, makeKey, signers, signJwt } from '../oauth-f
 const AUTH_SECRET = 'fake-key-auth-token-5f1c2d9a';
 const ARG_SECRET = 'fake-key-argument-7e3b1f20';
 const RESPONSE_SECRET = 'fake-key-response-c0ffee42';
+const TRACESTATE_SECRET = 'fake-key-tracestate-3b9d1e70';
+const BAGGAGE_SECRET = 'fake-key-baggage-9c2e4a18';
 const SECRETS = [AUTH_SECRET, ARG_SECRET, RESPONSE_SECRET];
 
 const SEMCONV_BUCKETS = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300];
@@ -596,6 +598,56 @@ describe('telemetry: trace context', () => {
     }
   });
 
+  it('reads neither tracestate nor baggage from params._meta', async () => {
+    const o = otel();
+    const { client } = await connect(api(), o.telemetry);
+    await client.callTool({
+      name: 'broken',
+      arguments: {},
+      _meta: {
+        traceparent: `00-${TRACE}-${PARENT}-01`,
+        tracestate: `vendor=${TRACESTATE_SECRET}`,
+        baggage: `user=${BAGGAGE_SECRET}`,
+      },
+    });
+    const [span] = await o.spans();
+    expect(span!.spanContext().traceId).toBe(TRACE);
+    expect(span!.spanContext().traceState).toBeUndefined();
+    expect(span!.parentSpanContext?.traceState).toBeUndefined();
+    const text = exported([span!], await o.metrics());
+    expect(text).not.toContain(TRACESTATE_SECRET);
+    expect(text).not.toContain(BAGGAGE_SECRET);
+    await client.close();
+  });
+
+  it('with traceidratio, a client trace id neither hides a call nor forces it in', async () => {
+    const o = otel({ OTEL_TRACES_SAMPLER: 'traceidratio', OTEL_TRACES_SAMPLER_ARG: '0.5' });
+    const { client } = await connect(api(), o.telemetry);
+    // TraceIdRatioBasedSampler never samples the first id at 0.5 and always samples the second.
+    const hide = 'ffffffff' + '0'.repeat(23) + '1';
+    const force = '0'.repeat(31) + '1';
+    for (const traceId of [hide, force]) {
+      for (let i = 0; i < 60; i++) {
+        await client.callTool({
+          name: 'broken',
+          arguments: {},
+          _meta: { traceparent: `00-${traceId}-${PARENT}-01` },
+        });
+      }
+    }
+    const spans = await o.spans();
+    for (const traceId of [hide, force]) {
+      const n = spans.filter((sp) => sp.spanContext().traceId === traceId).length;
+      // About 30 of 60 each, decided on the server.
+      expect(n, traceId).toBeGreaterThan(10);
+      expect(n, traceId).toBeLessThan(50);
+    }
+    // Metrics count every call, sampled or not.
+    const calls = (await o.metrics()).find((m) => m.descriptor.name === 'apitame.tool.calls')!;
+    expect(calls.dataPoints[0]!.value).toBe(120);
+    await client.close();
+  });
+
   it('follows the incoming sampled flag only with a parentbased sampler', async () => {
     const o = otel({ OTEL_TRACES_SAMPLER: 'parentbased_always_on' });
     const { client } = await connect(api(), o.telemetry);
@@ -715,13 +767,18 @@ describe('telemetry over HTTP with OAuth: caller identity, sessions and the trac
     Accept: 'application/json, text/event-stream',
     'MCP-Protocol-Version': '2025-11-25',
   };
-  const call = (url: string, headers: Record<string, string> = {}, meta?: unknown) =>
+  const call = (
+    url: string,
+    headers: Record<string, string> = {},
+    meta?: unknown,
+    id: string | number = 7,
+  ) =>
     fetch(url, {
       method: 'POST',
       headers: { ...HEADERS, Authorization: `Bearer ${token()}`, ...headers },
       body: JSON.stringify({
         jsonrpc: '2.0',
-        id: 7,
+        id,
         method: 'tools/call',
         params: { name: 'broken', arguments: {}, ...(meta ? { _meta: meta } : {}) },
       }),
@@ -758,8 +815,16 @@ describe('telemetry over HTTP with OAuth: caller identity, sessions and the trac
     try {
       await call(
         url,
-        { traceparent: `00-${TRACE}-${GATEWAY}-01` },
-        { traceparent: `00-${META_TRACE}-2222222222222222-01` },
+        {
+          traceparent: `00-${TRACE}-${GATEWAY}-01`,
+          tracestate: `vendor=${TRACESTATE_SECRET}`,
+          baggage: `user=${BAGGAGE_SECRET}`,
+        },
+        {
+          traceparent: `00-${META_TRACE}-2222222222222222-01`,
+          tracestate: `vendor=${TRACESTATE_SECRET}`,
+          baggage: `user=${BAGGAGE_SECRET}`,
+        },
       );
     } finally {
       await stop(http);
@@ -767,6 +832,13 @@ describe('telemetry over HTTP with OAuth: caller identity, sessions and the trac
     const [span] = await o.spans();
     expect(span!.spanContext().traceId).toBe(META_TRACE);
     expect(span!.links.map((l) => l.context.spanId)).toEqual([GATEWAY]);
+    // Neither tracestate nor baggage is read, from the header or from params._meta.
+    expect(span!.spanContext().traceState).toBeUndefined();
+    expect(span!.parentSpanContext?.traceState).toBeUndefined();
+    expect(span!.links[0]!.context.traceState).toBeUndefined();
+    const text = exported([span!], await o.metrics());
+    expect(text).not.toContain(TRACESTATE_SECRET);
+    expect(text).not.toContain(BAGGAGE_SECRET);
   });
 
   it('exports the subject hashed with APITAME_OTEL_SUBJECT=hash, or as it is with plain, never in metrics', async () => {
@@ -829,15 +901,110 @@ describe('telemetry over HTTP with OAuth: caller identity, sessions and the trac
         body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
       }).then((r) => r.text());
       await call(url, { 'Mcp-Session-Id': session! });
+      const [span] = await o.spans();
+      const exportedId = span!.attributes['mcp.session.id'] as string;
+      // A hash of the id: the spans of one session stay together...
+      expect(exportedId).toBe(sessionHash(session!));
+      expect(exportedId).toMatch(/^[0-9a-f]{32}$/);
+      expect(exported([span!])).not.toContain(session!);
+      // ...but whoever reads the traces cannot use it to reach the session.
+      const replay = await fetch(url, {
+        method: 'POST',
+        headers: { ...HEADERS, Authorization: `Bearer ${token()}`, 'Mcp-Session-Id': exportedId },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/list' }),
+      });
+      await replay.text();
+      expect(replay.status).toBe(404);
+      const own = await call(url, { 'Mcp-Session-Id': session! });
+      expect(own).toContain('boom');
+    } finally {
+      await stop(http);
+    }
+  });
+
+  it('leaves the client out with APITAME_OTEL_CLIENT=off', async () => {
+    const o = otel({ APITAME_OTEL_CLIENT: 'off' }, 'http');
+    const { http, url } = await serve(o.telemetry);
+    try {
+      await call(url);
     } finally {
       await stop(http);
     }
     const [span] = await o.spans();
-    expect(span!.attributes['mcp.session.id']).toBe(session);
+    expect(span!.attributes['apitame.caller.client']).toBeUndefined();
+    expect(span!.attributes['apitame.outcome']).toBe('error');
+    expect(exported([span!])).not.toContain('triage-bot');
+  });
+
+  it('exports a JSON-RPC id only when it is a number or a short plain token', async () => {
+    const o = otel({}, 'http');
+    const { http, url } = await serve(o.telemetry);
+    const ids: Array<[string | number, string | undefined]> = [
+      [42, '42'],
+      ['req-1.a:b', 'req-1.a:b'],
+      ['a'.repeat(64), 'a'.repeat(64)],
+      ['a'.repeat(65), undefined],
+      [`alice@example.com/${'p'.repeat(20)}`, undefined],
+      ['two words', undefined],
+      ['line\nbreak', undefined],
+      ['under_score', 'under_score'],
+      ['slash/inside', undefined],
+    ];
+    try {
+      for (const [id] of ids) await call(url, {}, undefined, id);
+    } finally {
+      await stop(http);
+    }
+    const spans = await o.spans();
+    expect(spans.map((sp) => sp.attributes['jsonrpc.request.id'])).toEqual(ids.map(([, e]) => e));
+    expect(exported(spans)).not.toContain('alice@example.com');
+  });
+});
+
+describe('telemetry: attribute limits', () => {
+  it('caps string attributes at 256 characters', async () => {
+    const longId = `op${'x'.repeat(300)}`;
+    const { rt } = fakeApi({
+      paths: { '/long': { get: { operationId: longId, responses: ok() } } },
+      respond: () => reply({ ok: true }),
+    });
+    const o = otel();
+    const { client } = await connect(rt, o.telemetry);
+    await client.callTool({
+      name: 'call_operation',
+      arguments: { operationId: longId, params: {} },
+    });
+    const [span] = await o.spans();
+    expect(span!.attributes['apitame.outcome']).toBe('sent');
+    expect(span!.attributes['apitame.operation']).toBe(longId.slice(0, 256));
+    await client.close();
   });
 });
 
 describe('telemetry never breaks a tool call', () => {
+  it('a collector cannot forge log lines: response bodies are skipped, and line breaks become spaces', () => {
+    const o = otel();
+    // What the exporter logs when a collector answers 200 with a body that is not protobuf.
+    diag.error(
+      'OTLPExportDelegate Export succeeded but could not deserialize response - is the response specification compliant?',
+      new Error('Unknown wire type 7, cannot safely skip'),
+      Buffer.concat([
+        Buffer.from([0xff, 0xff, 0xff]),
+        Buffer.from('\n[apitame] warn: FORGED log line from the collector\n'),
+      ]),
+    );
+    expect(o.logs).toEqual([
+      '[apitame] warn: OpenTelemetry: OTLPExportDelegate Export succeeded but could not deserialize response - is the response specification compliant? Unknown wire type 7, cannot safely skip\n',
+    ]);
+    const other = otel();
+    diag.warn(
+      new Error('Bad Request\n[apitame] warn: FORGED\r\u2028again\u0007') as unknown as string,
+    );
+    expect(other.logs).toEqual([
+      '[apitame] warn: OpenTelemetry: Bad Request [apitame] warn: FORGED again\n',
+    ]);
+  });
+
   it("OpenTelemetry's own errors reach the log as their message, without the stack", () => {
     const o = otel();
     diag.error(

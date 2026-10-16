@@ -8,6 +8,7 @@
  * `apitame.*` attributes with what the audit log records about the call. Never arguments,
  * results, reasons, headers, SQL or secrets: see docs/telemetry.md.
  */
+import { createHash, randomBytes } from 'node:crypto';
 import {
   diag,
   DiagLogLevel,
@@ -16,6 +17,7 @@ import {
   SpanStatusCode,
   trace,
   type Attributes,
+  type AttributeValue,
   type Context,
   type DiagLogger,
   type Link,
@@ -38,9 +40,11 @@ import {
   AlwaysOnSampler,
   BatchSpanProcessor,
   ParentBasedSampler,
+  SamplingDecision,
   TraceIdRatioBasedSampler,
   TracerProvider,
   type Sampler,
+  type SamplingResult,
   type SpanExporter,
 } from '@opentelemetry/sdk-trace';
 import type { Logger } from '../log.js';
@@ -73,21 +77,94 @@ export interface OtelOptions extends TelemetryDeps {
   shutdownTimeoutMs?: number;
 }
 
-function samplerOf(s: SamplerSetting): Sampler {
-  const root =
-    s.kind === 'always_off'
-      ? new AlwaysOffSampler()
-      : s.kind === 'traceidratio'
-        ? new TraceIdRatioBasedSampler(s.ratio)
-        : new AlwaysOnSampler();
-  return s.parentBased ? new ParentBasedSampler({ root }) : root;
+/** A uniform number in [0, 1) from the operating system's random source. */
+const secureRandom = () => randomBytes(4).readUInt32BE(0) / 0x1_0000_0000;
+
+/**
+ * The `traceidratio` sampler when it is not parent based. A span with a parent takes its trace
+ * id from the client (`traceparent`), and `TraceIdRatioBasedSampler` decides from the trace id
+ * alone, so a client could pick an id that is never sampled, or always. With a parent, this
+ * sampler draws a random number on the server instead; without one, the trace id is apitame's
+ * own random id and the usual ratio sampler applies.
+ */
+export class ServerRatioSampler implements Sampler {
+  private readonly byTraceId: TraceIdRatioBasedSampler;
+
+  constructor(
+    private readonly ratio: number,
+    private readonly random: () => number = secureRandom,
+  ) {
+    this.byTraceId = new TraceIdRatioBasedSampler(ratio);
+  }
+
+  shouldSample(context: Context, traceId: string): SamplingResult {
+    // apitame never has a local parent: any parent came from the client.
+    if (trace.getSpanContext(context) === undefined) {
+      return this.byTraceId.shouldSample(context, traceId);
+    }
+    return {
+      decision:
+        this.random() < this.ratio
+          ? SamplingDecision.RECORD_AND_SAMPLED
+          : SamplingDecision.NOT_RECORD,
+    };
+  }
+
+  toString(): string {
+    return `ServerRatioSampler{${this.ratio}}`;
+  }
 }
+
+function samplerOf(s: SamplerSetting): Sampler {
+  if (s.parentBased) {
+    // The parent's sampled flag decides (an explicit choice); the root sampler only runs for
+    // calls without a parent, whose trace id apitame generated.
+    const root =
+      s.kind === 'always_off'
+        ? new AlwaysOffSampler()
+        : s.kind === 'traceidratio'
+          ? new TraceIdRatioBasedSampler(s.ratio)
+          : new AlwaysOnSampler();
+    return new ParentBasedSampler({ root });
+  }
+  return s.kind === 'always_off'
+    ? new AlwaysOffSampler()
+    : s.kind === 'traceidratio'
+      ? new ServerRatioSampler(s.ratio)
+      : new AlwaysOnSampler();
+}
+
+/** Control characters and line breaks, which could forge log lines. */
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
+
+/** One line of text, whatever the collector or an error put in it. */
+const oneLine = (text: string) => text.replace(CONTROL, ' ').trim();
+
+/** What a JSON-RPC request id may look like to be exported: no free text in the trace backend. */
+const REQUEST_ID = /^[A-Za-z0-9._:-]{1,64}$/;
+
+function requestIdOf(id: unknown): AttributeValue | undefined {
+  if (typeof id === 'number') return Number.isFinite(id) ? String(id) : undefined;
+  return typeof id === 'string' && REQUEST_ID.test(id) ? id : undefined;
+}
+
+/**
+ * The session id as exported: its SHA-256, so the spans of one session stay together, but whoever
+ * reads the traces cannot send requests into the session (with a shared `APITAME_HTTP_TOKEN`, the
+ * id is all that tells one person's session from another's). The id is a random UUID, so an
+ * unkeyed hash is enough.
+ */
+export const sessionHash = (id: string): string =>
+  createHash('sha256').update(id).digest('hex').slice(0, 32);
 
 /**
  * The message of an error. OpenTelemetry's global error handler hands over errors as JSON with
  * their stack; only the message is worth a log line.
  */
-function describe(value: unknown): string {
+function describe(value: unknown): string | undefined {
+  // A response body (the collector's), never worth a log line and possibly crafted.
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return undefined;
   if (value instanceof Error) return value.message;
   const text = String(value);
   if (text.startsWith('{')) {
@@ -117,7 +194,12 @@ function diagnostics(
       return;
     }
     last = now;
-    const text = [message, ...args].map(describe).join(' ').slice(0, 500);
+    const text = oneLine(
+      [message, ...args]
+        .map(describe)
+        .filter((t) => t !== undefined)
+        .join(' '),
+    ).slice(0, 500);
     logger.warn(
       `OpenTelemetry: ${text}${skipped > 0 ? ` (${skipped} similar message${skipped === 1 ? '' : 's'} skipped)` : ''}`,
     );
@@ -242,7 +324,9 @@ export function createTelemetry(settings: TelemetrySettings, opts: OtelOptions):
   const failed = (err: unknown) => {
     if (warned) return;
     warned = true;
-    logger.warn(`OpenTelemetry: recording a tool call failed: ${(err as Error)?.message ?? err}`);
+    logger.warn(
+      `OpenTelemetry: recording a tool call failed: ${oneLine(String((err as Error)?.message ?? err))}`,
+    );
   };
 
   const startToolCall = (info: ToolCallInfo): ToolCallTrace => {
@@ -271,7 +355,7 @@ export function createTelemetry(settings: TelemetrySettings, opts: OtelOptions):
           : settings.subject === 'hash' && settings.subjectKey
             ? { 'user.hash': hashSubject(settings.subjectKey, caller.subject) }
             : {};
-    const requestId = String(info.ctx.mcpReq.id);
+    const requestId = requestIdOf(info.ctx.mcpReq.id);
 
     // The client's trace context: from params._meta (the MCP semantic conventions), else the
     // HTTP request's traceparent header (a gateway's). With both, the header becomes a link.
@@ -293,9 +377,9 @@ export function createTelemetry(settings: TelemetrySettings, opts: OtelOptions):
           kind: SpanKind.SERVER,
           attributes: clean({
             ...common,
-            ...(requestId.length <= 128 ? { 'jsonrpc.request.id': requestId } : {}),
-            ...(info.ctx.sessionId ? { 'mcp.session.id': info.ctx.sessionId } : {}),
-            ...(caller.client ? { 'apitame.caller.client': caller.client } : {}),
+            'jsonrpc.request.id': requestId,
+            ...(info.ctx.sessionId ? { 'mcp.session.id': sessionHash(info.ctx.sessionId) } : {}),
+            ...(caller.client && settings.client ? { 'apitame.caller.client': caller.client } : {}),
             ...subject,
           }),
           links,

@@ -43,16 +43,17 @@ apitame reads the standard OpenTelemetry environment variables, from the environ
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | unset | The full URL for one signal. Setting only one of them exports only that signal. |
 | `OTEL_SDK_DISABLED` | `false` | `true` turns telemetry off whatever else is set. |
 | `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `otlp` | `none` turns that signal off. Other exporters (`zipkin`, `prometheus`, `console`) are not supported: apitame warns and sends nothing for that signal. |
-| `OTEL_EXPORTER_OTLP_HEADERS` (and `_TRACES_HEADERS`, `_METRICS_HEADERS`) | unset | Headers for the collector, such as a vendor API key: `x-api-key=...,x-team=...`. Their values are treated as secrets and redacted from apitame's log. |
-| `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_EXPORTER_OTLP_COMPRESSION`, `OTEL_EXPORTER_OTLP_CERTIFICATE` and the other OTLP exporter variables | the SDK's | Read by the OpenTelemetry exporters themselves, as documented by OpenTelemetry. |
+| `OTEL_EXPORTER_OTLP_HEADERS` (and `_TRACES_HEADERS`, `_METRICS_HEADERS`) | unset | Headers for the collector, such as a vendor API key: `x-api-key=...,x-team=...`. apitame reads them exactly as the exporter does and hides their values in its own log, including OpenTelemetry's error messages. Only there: they never reach tool results, so a value that is an ordinary word (`x-team=items`) does not disappear from API responses or span attributes. With headers set, an endpoint that uses plain `http` on a host other than loopback is a warning at startup: anyone on the network path could read them. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_EXPORTER_OTLP_COMPRESSION`, `OTEL_EXPORTER_OTLP_CERTIFICATE` and the other OTLP exporter variables | the SDK's | Read by the OpenTelemetry exporters themselves, as documented by OpenTelemetry. Certificate and key paths resolve from the folder apitame runs in (its working directory), not from the folder that holds the config: use absolute paths. |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | apitame always sends `http/protobuf`. Any other value (`grpc`, `http/json`) is a warning: point the endpoint at the collector's OTLP/HTTP port, usually 4318, not the gRPC port 4317. |
 | `OTEL_SERVICE_NAME` | `apitame` | The service name in your backend. |
 | `OTEL_RESOURCE_ATTRIBUTES` | unset | Extra resource attributes, such as `deployment.environment.name=prod,service.namespace=tools`. They win over apitame's own. |
-| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | `always_on` | `always_on`, `always_off`, `traceidratio` (with a ratio from 0 to 1 in the argument) or their `parentbased_` variants. See [Trace context](#trace-context) for why the default is not parent based. |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | `always_on` | `always_on`, `always_off`, `traceidratio` (with a ratio from 0 to 1 in the argument) or their `parentbased_` variants. See [Trace context](#trace-context) for why the default is not parent based, and how `traceidratio` decides for calls that bring a trace context. |
 | `OTEL_PROPAGATORS` | `tracecontext` | `none` ignores the trace context clients send. Only W3C trace context is read. |
 | `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_METRIC_EXPORT_TIMEOUT` | `60000`, `30000` | How often metrics are sent, and how long one export may take, in milliseconds. |
 | `APITAME_OTEL_SUBJECT` | `off` | Whether spans carry the OAuth subject: `off`, `hash` or `plain`. See [Caller identity](#caller-identity). |
-| `APITAME_OTEL_SUBJECT_KEY` | unset | The HMAC key for `APITAME_OTEL_SUBJECT=hash`, at least 16 characters. A secret: keep it out of the config and out of your observability stack. |
+| `APITAME_OTEL_SUBJECT_KEY` | unset | The HMAC key for `APITAME_OTEL_SUBJECT=hash`: at least 16 characters, not only spaces, with at least 8 different characters. Make one with `openssl rand -hex 32`. A secret: keep it out of the config and out of your observability stack. |
+| `APITAME_OTEL_CLIENT` | `on` | `off` leaves the OAuth client out of spans. See [Caller identity](#caller-identity). |
 
 Unsupported values are warnings, never errors: telemetry is not worth a server that does not start.
 
@@ -67,9 +68,9 @@ Each `tools/call` request becomes one span of kind `SERVER`, named `tools/call <
 | `mcp.method.name` | MCP conventions | `tools/call` |
 | `gen_ai.tool.name` | MCP conventions | The tool, when the server has a tool of that name. A name the client made up is left out, and the span is named `tools/call`. |
 | `gen_ai.operation.name` | MCP conventions | `execute_tool` |
-| `jsonrpc.request.id` | MCP conventions | The JSON-RPC id of the request (at most 128 characters). |
+| `jsonrpc.request.id` | MCP conventions | The JSON-RPC id of the request, when it is a number or a short token (1 to 64 letters, digits and `.`, `_`, `:` or `-`). Any other id is left out, so a client cannot write free text into your traces. |
 | `mcp.protocol.version` | MCP conventions | The protocol version of the request, such as `2025-11-25` or `2026-07-28`. |
-| `mcp.session.id` | MCP conventions | The session, with `serve --transport http --sessions`. |
+| `mcp.session.id` | MCP conventions | With `serve --transport http --sessions`: a hash of the session id (SHA-256, first 32 hexadecimal characters), never the id itself. The spans of one session share it, but it cannot be used to send requests into the session. |
 | `network.transport`, `network.protocol.name` | MCP conventions | `pipe` over stdio; `tcp` and `http` over HTTP. |
 | `error.type` | MCP conventions | `tool_error` when the result is an error, `_OTHER` when the request failed outright. The span status is then `ERROR`, with the outcome as its message. |
 | `apitame.outcome` | apitame | What happened to the call, see below. |
@@ -77,7 +78,7 @@ Each `tools/call` request becomes one span of kind `SERVER`, named `tools/call <
 | `apitame.operation` | apitame | The OpenAPI operation id or the SQL named query, when known. |
 | `apitame.upstream.status_code` | apitame | The HTTP status of the API's answer (the first page's, for a paged call). |
 | `apitame.upstream.requests` | apitame | Requests sent to the API or the database for this call: 1, or one per page read with `pages`. Not set when nothing was sent. |
-| `apitame.caller.client` | apitame | The OAuth client the access token was issued to, over HTTP with `http.oauth`. |
+| `apitame.caller.client` | apitame | The OAuth client the access token was issued to, over HTTP with `http.oauth`, unless `APITAME_OTEL_CLIENT=off`. |
 | `user.hash` or `user.id` | OpenTelemetry user attributes | The OAuth subject, only when `APITAME_OTEL_SUBJECT` asks for it. |
 
 The outcome uses the audit log's words, so a span and an audit entry about the same call agree:
@@ -117,18 +118,18 @@ Metric attributes are few on purpose: no client, no subject, no operation id (a 
 - SQL text, request URLs, query strings, headers and bodies.
 - Credentials of any kind: API keys, database URLs, OAuth access tokens, the scopes of a token, the introspection secret. String attributes also pass through the redactor before they leave, as a second line of defense.
 - The OAuth subject, unless `APITAME_OTEL_SUBJECT` says otherwise, and the client's IP address.
-- Tool names the server does not have, `tracestate` and `baggage`.
+- Tool names the server does not have, JSON-RPC ids that are not plain tokens, session ids (only their hash), `tracestate` and `baggage`.
 
 The audit log stays the record of what the agent asked for, with redacted arguments and reasons ([safety.md](safety.md#audit-log)). Telemetry is for dashboards and alerts: how often each tool runs, how often writes are blocked or declined, which calls are slow.
 
 ## Caller identity
 
-Over HTTP with `http.oauth`, every span names the OAuth client (`apitame.caller.client`), as the audit log does. A client id names an application, not a person, and it is what you need to tell your triage bot from your developers' editors.
+Over HTTP with `http.oauth`, every span names the OAuth client (`apitame.caller.client`), as the audit log does. A client id names an application, not a person, and it is what you need to tell your triage bot from your developers' editors. Some identity providers register one client per user and install (dynamic client registration), where a client id comes close to naming a person: `APITAME_OTEL_CLIENT=off` leaves it out.
 
 The subject is usually a person: a user id, sometimes an email address. That is personal data, and your observability backend probably keeps it longer and shows it to more people than your audit log. So it is left out by default:
 
-- `APITAME_OTEL_SUBJECT=hash` exports `user.hash`: an HMAC-SHA256 of the subject with `APITAME_OTEL_SUBJECT_KEY`, as 32 hexadecimal characters. The same user always gets the same value, so you can count users and follow one user's calls, and whoever holds the key can compute the value for a given user when they need to. Without the key, nobody can check a guess against it. It is still a pseudonym, not anonymous data. Changing the key changes every value.
-- `APITAME_OTEL_SUBJECT=plain` exports the subject as it is, as `user.id`. Use it only where your backend may hold personal data.
+- `APITAME_OTEL_SUBJECT=hash` exports `user.hash`: an HMAC-SHA256 of the subject with `APITAME_OTEL_SUBJECT_KEY`, as 32 hexadecimal characters. The same user always gets the same value, so you can count users and follow one user's calls, and whoever holds the key can compute the value for a given user when they need to. Without the key, nobody can check a guess against it. It is still a pseudonym, not anonymous data. Changing the key changes every value. The key must be random: at least 16 characters, with at least 8 different ones (a key such as `kkkkkkkkkkkkkkkk` or sixteen spaces is refused, and subjects are then left out). `openssl rand -hex 32` makes a good one.
+- `APITAME_OTEL_SUBJECT=plain` exports the subject as it is, as `user.id`. That is personal data in your observability backend: use it only where the backend may hold it, and only by explicit choice.
 
 Neither ever goes into metrics. Over stdio, with `APITAME_HTTP_TOKEN` and without authentication there is no caller to name.
 
@@ -141,7 +142,13 @@ A client can make apitame's span part of its own trace. apitame looks for a W3C 
 
 Only the trace id and the parent span id are taken. An invalid value is ignored, and the call starts a new trace. Trace context is read inside the tool call, after authentication, and changes nothing about how the call is checked, decided or sent: it only says which trace the span belongs to. A client that sends one can attach apitame's spans to a trace of its choosing, so treat incoming trace ids as hints, not as proof of where a call came from. `OTEL_PROPAGATORS=none` ignores them.
 
-The default sampler is `always_on` and not parent based, on purpose: with a parent-based sampler, a client could keep its calls out of your traces by sending a trace context marked "not sampled". Set `OTEL_TRACES_SAMPLER=parentbased_always_on` (or `parentbased_traceidratio`) if your clients are trusted and you want their sampling decisions to apply.
+Sampling stays apitame's decision unless you choose otherwise:
+
+- The default sampler is `always_on` and not parent based, on purpose: with a parent-based sampler, a client could keep its calls out of your traces by sending a trace context marked "not sampled".
+- `traceidratio` normally decides from the trace id. A call that brings a trace context takes its trace id from the client, which could then pick an id that is never sampled (to hide its calls) or always sampled. So for such a call apitame draws a random number on the server instead, and the client's trace id has no say. A call without a trace context gets apitame's own random trace id, and the ratio applies to it as usual.
+- `parentbased_always_on`, `parentbased_traceidratio` and the other `parentbased_` samplers let the client's sampled flag decide. Choose one only if your clients are trusted and you want their sampling decisions to apply.
+
+Metrics count every call, whatever the sampler decides.
 
 ## Stdio and shutdown
 

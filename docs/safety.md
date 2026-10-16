@@ -345,13 +345,21 @@ With a file set, apitame appends one JSON object per line:
 
 With `OTEL_EXPORTER_OTLP_ENDPOINT` set (and the optional OpenTelemetry packages installed), apitame sends one span per tool call and two metrics to that OTLP endpoint ([telemetry.md](telemetry.md)). This is what leaves the process:
 
-- Per call: the tool name (only names the server has), the operation id or named query, the access level, the outcome in the audit log's words, the API's HTTP status, the number of requests sent, the duration, the JSON-RPC request id, the protocol version, the session id with `--sessions`, and over HTTP with `http.oauth` the OAuth client. The OAuth subject only with `APITAME_OTEL_SUBJECT`: `hash` sends an HMAC with a key that never leaves the process, `plain` sends it as it is.
+- Per call: the tool name (only names the server has), the operation id or named query, the access level, the outcome in the audit log's words, the API's HTTP status, the number of requests sent, the duration, the JSON-RPC request id when it is a number or a short token (so a client cannot write free text into the traces), the protocol version, with `--sessions` a SHA-256 hash of the session id, and over HTTP with `http.oauth` the OAuth client (unless `APITAME_OTEL_CLIENT=off`). The OAuth subject only with `APITAME_OTEL_SUBJECT`: `hash` sends an HMAC with a key that never leaves the process, `plain` sends it as it is, which puts personal data in the backend.
 - Metrics: call counts by tool, access level and outcome, and durations by tool. No caller, no operation id, no session.
 - Never: arguments, results, error and refusal texts, audit reasons, SQL, URLs, headers, credentials, tokens or scopes. There is no option to export arguments or results. String attributes also go through the redactor.
 
-Whoever can read your traces learns which tools ran, when, how they ended and which OAuth client called them: protect the backend like the audit log. The headers apitame sends to the collector (`OTEL_EXPORTER_OTLP_HEADERS`, usually a vendor API key) are secrets: they are redacted from apitame's log like every other secret, and `APITAME_OTEL_SUBJECT_KEY` is too.
+Whoever can read your traces learns which tools ran, when, how they ended and which OAuth client called them: protect the backend like the audit log. They do not learn session ids: with a shared `APITAME_HTTP_TOKEN`, a session id is all that keeps one person's session apart from another's, so someone who held the token and read an id from a trace could send requests into that session or close it. Spans carry only a hash of it.
 
-A client can send W3C trace context (`params._meta.traceparent`, or the HTTP `traceparent` header from a gateway), and apitame's span then joins that trace. It is read after authentication and decides nothing: not who the caller is, not what the call may do. It cannot hide a call either. The default sampler records every call whatever the incoming "sampled" flag says, unless you choose a `parentbased_` sampler, and metrics count every call regardless. `OTEL_PROPAGATORS=none` ignores incoming trace context.
+The headers apitame sends to the collector (`OTEL_EXPORTER_OTLP_HEADERS`, usually a vendor API key) are secrets of the deployment. apitame parses them exactly as the exporter does and hides the values it sends in its own log, OpenTelemetry's error messages included. It does not hide them in tool results or span attributes, where they never appear: a header value that is an ordinary word (`x-team=items`) would otherwise be cut out of every API response. With headers set, an endpoint on plain `http` beyond loopback is a startup warning, since anyone on the path could read them. `APITAME_OTEL_SUBJECT_KEY` is redacted like other secrets, and a weak one (shorter than 16 characters, only spaces, or fewer than 8 different characters) is refused.
+
+A client can send W3C trace context (`params._meta.traceparent`, or the HTTP `traceparent` header from a gateway), and apitame's span then joins that trace. It is read after authentication and decides nothing: not who the caller is, not what the call may do. It cannot hide a call either, unless you let it:
+
+- The default sampler (`always_on`) records every call, whatever the incoming "sampled" flag says.
+- `traceidratio` decides a call that brings a trace context on a random draw on the server, not on its trace id: the client chose that id, and a ratio sampler that read it would let a client pick ids that are never sampled, or always.
+- Only a `parentbased_` sampler, chosen on purpose, lets the client's sampled flag decide.
+
+Metrics count every call regardless. `OTEL_PROPAGATORS=none` ignores incoming trace context, and `tracestate` and `baggage` are never read.
 
 Telemetry never changes a tool call's result: an export that fails is a warning in the log (at most once a minute), and shutdown waits at most 3 seconds for the collector. Without an endpoint, none of the OpenTelemetry code is loaded.
 
