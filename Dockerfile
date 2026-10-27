@@ -37,7 +37,7 @@ RUN npm install --global --omit=dev --ignore-scripts --no-audit --no-fund /tmp/a
  && test -f "prebuilds/linux-$(node -p process.arch).node"
 
 # 3. The runtime: Debian, the Node.js binary and apitame. No npm, npx, yarn or corepack.
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 COPY --from=install /usr/local/bin/node /usr/local/bin/node
 COPY --from=install /usr/local/lib/node_modules/apitame /usr/local/lib/node_modules/apitame
 # A dedicated user with a fixed UID, so Kubernetes can check runAsNonRoot. /audit is the one place
