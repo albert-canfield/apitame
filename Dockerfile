@@ -12,7 +12,7 @@
 
 # 1. Build and pack the package. The result is JavaScript, so this runs once, natively on the
 #    build machine, for every target platform.
-FROM --platform=$BUILDPLATFORM node:22-trixie-slim@sha256:154ba2f4d6fec323d28e4f4bb86bba4677f1223391a1979cf521304e03a98dfa AS pack
+FROM --platform=$BUILDPLATFORM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS pack
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 WORKDIR /src
 RUN corepack enable
@@ -28,7 +28,7 @@ RUN pnpm build \
 # 2. Install the package and its production dependencies for the target platform. No install
 #    scripts run: better-sqlite3 ships prebuilt binaries, and only the one for this platform is
 #    kept. The optional DuckDB driver is not installed (see docs/deploy.md to add it).
-FROM node:22-trixie-slim@sha256:154ba2f4d6fec323d28e4f4bb86bba4677f1223391a1979cf521304e03a98dfa AS install
+FROM node:22-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf AS install
 COPY --from=pack /pack/apitame.tgz /tmp/apitame.tgz
 RUN npm install --global --omit=dev --ignore-scripts --no-audit --no-fund /tmp/apitame.tgz \
  && cd /usr/local/lib/node_modules/apitame/node_modules/better-sqlite3 \
